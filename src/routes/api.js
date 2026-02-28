@@ -1,8 +1,8 @@
-const express = require('express');
+import express from 'express';
 const router = express.Router();
-const { compileArduinoCode } = require('../controllers/compileController');
+import { compileArduinoCode } from '../controllers/compileController.js';
 
 // Compile Arduino code
 router.post('/compile', compileArduinoCode);
 
-module.exports = router;
+export default router;

@@ -1,13 +1,17 @@
-const fs = require('fs');
-const path = require('path');
-const { exec } = require('child_process');
-const crypto = require('crypto');
+import fs from 'fs';
+import path from 'path';
+import { execFile } from 'child_process';
+import crypto from 'crypto';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Path to the arduino-cli executable relative to this backend project
 const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 
-exports.compileArduinoCode = (req, res) => {
+export const compileArduinoCode = (req, res) => {
     const { code } = req.body;
 
     if (!code) {
@@ -32,9 +36,7 @@ exports.compileArduinoCode = (req, res) => {
     // Compile using arduino-cli
     // We specify target FQBN as arduino:avr:uno
     const fqbn = 'arduino:avr:uno';
-    const command = `"${ARDUINO_CLI_PATH}" compile --fqbn ${fqbn} --build-path "${buildDir}" "${sketchFile}"`;
-
-    exec(command, (error, stdout, stderr) => {
+    execFile(ARDUINO_CLI_PATH, ['compile', '--fqbn', fqbn, '--build-path', buildDir, sketchFile], (error, stdout, stderr) => {
         // Read the resulting hex regardless of warnings, but handle hard errors
         let hexContent = '';
         const hexFilePath = path.join(buildDir, `sketch_${sketchId}.ino.hex`);

@@ -1,4 +1,4 @@
-const mongoose = require("mongoose");
+import mongoose from "mongoose";
 
 const assignmentSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: "Class", required: true },
@@ -10,4 +10,4 @@ const assignmentSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now }
 });
 
-module.exports = mongoose.model("Assignment", assignmentSchema);
+export default mongoose.model("Assignment", assignmentSchema);
