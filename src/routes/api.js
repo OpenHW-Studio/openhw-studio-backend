@@ -5,6 +5,6 @@ import compileRoutes from "./compile.js";
 const router = Router();
 
 router.use("/user", userRoutes);
-router.use("/", compileRoutes);
+router.use("/compile", compileRoutes);
 
 export default router;

@@ -1,16 +1,16 @@
 import { Router } from 'express';
 import {
 	signupUser,
-	loginUser,
+	signinUser,
 	logoutController,
 	updateUserProfile,
-} from '../controllers/authController.js';
+} from '../controllers/userController.js';
 import { protectRoute } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
 router.post('/signup', signupUser);
-router.post('/login', loginUser);
+router.post('/signin', signinUser);
 router.post('/logout', protectRoute, logoutController);
 router.put('/profile', protectRoute, updateUserProfile);
 
