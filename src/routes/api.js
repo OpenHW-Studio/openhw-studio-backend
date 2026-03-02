@@ -13,6 +13,6 @@ router.post('/lib-install', installLibrary);
 router.get('/lib-list', listLibraries);
 
 // Authentication
-router.post('/auth/signup', signupUser);
+router.post('/signup', signupUser);
 
 export default router;
