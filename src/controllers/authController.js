@@ -15,27 +15,27 @@ export const signupUser = async (req, res) => {
         const hasValidPassword = isNonEmptyString(password);
 
         if (!hasValidName || !hasValidEmail || !hasValidPassword) {
-            return res.status(400).json({ message: 'Name, email, and password must be non-empty strings.' });
+            return res.status(400).json({ error: 'Name, email, and password must be non-empty strings.' });
         }
 
         if (password.length < 8) {
-            return res.status(400).json({ message: 'Password must be at least 8 characters long.' });
+            return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
         }
 
         const sanitizedEmail = typeof email === 'string' ? normalizeEmail(email) : '';
         if (!isValidEmailFormat(sanitizedEmail)) {
-            return res.status(400).json({ message: 'Please provide a valid email address.' });
+            return res.status(400).json({ error: 'Please provide a valid email address.' });
         }
 
         const jwtSecret = process.env.JWT_SECRET;
         if (!jwtSecret) {
             console.error('JWT_SECRET is not configured.');
-            return res.status(500).json({ message: 'Server configuration error.' });
+            return res.status(500).json({ error: 'Server configuration error.' });
         }
 
         const existingUser = await User.findOne({ email: sanitizedEmail });
         if (existingUser) {
-            return res.status(409).json({ message: 'An account with this email already exists.' });
+            return res.status(409).json({ error: 'An account with this email already exists.' });
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -71,9 +71,9 @@ export const signupUser = async (req, res) => {
         });
     } catch (error) {
         if (error && (error.code === 11000 || error.code === 11001)) {
-            return res.status(409).json({ message: 'An account with this email already exists.' });
+            return res.status(409).json({ error: 'An account with this email already exists.' });
         }
         console.error('Error during user signup:', error);
-        return res.status(500).json({ message: 'Failed to register user.' });
+        return res.status(500).json({ error: 'Failed to register user.' });
     }
 };
