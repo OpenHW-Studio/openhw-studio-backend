@@ -7,8 +7,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Path to the arduino-cli executable relative to this backend project
-const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
+// Find arduino-cli globally via system PATH
+const ARDUINO_CLI_PATH = 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 
 export const compileArduinoCode = (req, res) => {
