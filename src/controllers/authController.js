@@ -3,12 +3,17 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 
 const normalizeEmail = (rawEmail = '') => rawEmail.trim().toLowerCase();
+const isNonEmptyString = (value) => typeof value === 'string' && value.trim().length > 0;
 
 export const signupUser = async (req, res) => {
     try {
         const { name, email, password, role } = req.body || {};
 
-        if (!name || !email || !password) {
+        const hasValidName = isNonEmptyString(name);
+        const hasValidEmail = isNonEmptyString(email);
+        const hasValidPassword = typeof password === 'string' && password.trim().length > 0;
+
+        if (!hasValidName || !hasValidEmail || !hasValidPassword) {
             return res.status(400).json({ message: 'Name, email, and password are required.' });
         }
 
