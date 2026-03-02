@@ -45,7 +45,7 @@ The server runs on **http://localhost:5000**.
 | nodemon | Auto-reload during development |
 
 ---
-
+<!--
 ## Project Structure
 
 ```
@@ -66,7 +66,7 @@ openhw-studio-backend-danish/
 ├── package.json
 └── .gitignore
 ```
-
+-->
 ---
 
 ## API Endpoints
