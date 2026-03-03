@@ -8,7 +8,7 @@ const isNonEmptyString = (value) =>
 const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
-export const loginUser = async (req, res) => {
+const signinUser = async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -49,7 +49,7 @@ export const loginUser = async (req, res) => {
   }
 };
 
-export const signupUser = async (req, res) => {
+const signupUser = async (req, res) => {
   try {
     const { name, email, password, role, college, branch, semester, bio } = req.body || {};
 
@@ -140,7 +140,7 @@ export const signupUser = async (req, res) => {
   }
 };
 
-export const logoutController = async (req, res) => {
+const logoutController = async (req, res) => {
   try {
     res.cookie("jwt", "", { maxAge: 1 });
     res.status(200).json({ message: "User logged out successfully" });
@@ -150,7 +150,7 @@ export const logoutController = async (req, res) => {
   }
 };
 
-export const updateUserProfile = async (req, res) => {
+const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
     const updatableFields = ["name", "role", "college", "branch", "semester", "bio"];
@@ -193,3 +193,5 @@ export const updateUserProfile = async (req, res) => {
     return res.status(500).json({ message: "Failed to update profile", error: error.message });
   }
 };
+
+export { signinUser, signupUser, logoutController, updateUserProfile }
