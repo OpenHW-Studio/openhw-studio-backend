@@ -2,6 +2,7 @@ import express from 'express';
 const router = express.Router();
 import { compileArduinoCode } from '../controllers/compileController.js';
 import { searchLibrary, installLibrary, listLibraries } from '../controllers/libController.js';
+import userRoutes from './user.js';
 
 // Compile Arduino code
 router.post('/compile', compileArduinoCode);
@@ -10,5 +11,8 @@ router.post('/compile', compileArduinoCode);
 router.get('/lib-search', searchLibrary);
 router.post('/lib-install', installLibrary);
 router.get('/lib-list', listLibraries);
+
+// User routes for authentication and management
+router.use('/user', userRoutes);
 
 export default router;

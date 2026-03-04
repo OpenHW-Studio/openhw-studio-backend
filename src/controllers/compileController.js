@@ -36,7 +36,7 @@ export const compileArduinoCode = (req, res) => {
     // Compile using arduino-cli
     // We specify target FQBN as arduino:avr:uno
     const fqbn = 'arduino:avr:uno';
-    execFile(ARDUINO_CLI_PATH, ['compile', '--fqbn', fqbn, '--build-path', buildDir, sketchFile], (error, stdout, stderr) => {
+    execFile(ARDUINO_CLI_PATH, ['compile', '--fqbn', fqbn, '--output-dir', buildDir, sketchFile], (error, stdout, stderr) => {
         // Read the resulting hex regardless of warnings, but handle hard errors
         let hexContent = '';
         const hexFilePath = path.join(buildDir, `sketch_${sketchId}.ino.hex`);
