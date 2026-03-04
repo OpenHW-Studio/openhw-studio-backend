@@ -15,6 +15,11 @@ ENV PATH=$PATH:/root/bin
 RUN arduino-cli core update-index
 RUN arduino-cli core install arduino:avr
 
+# Pre-install common libraries for the simulator
+RUN arduino-cli lib install "Adafruit NeoPixel"
+RUN arduino-cli lib install "Stepper"
+RUN arduino-cli lib install "Servo"
+
 # Set working directory
 WORKDIR /app
 
