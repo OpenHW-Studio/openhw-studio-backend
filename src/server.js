@@ -29,6 +29,10 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Serve demo/guide files from openhw-studio-examples repo
+const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
+app.use('/examples', express.static(examplesDir));
+
 // Routes
 app.use('/api', apiRoutes);
 
@@ -37,3 +41,4 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`OpenHW Studio Backend running on port ${PORT}`);
 });
+
