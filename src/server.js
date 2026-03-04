@@ -8,8 +8,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load environment variables FIRST before importing local modules that rely on them
+// Try to load from '../env' (local) or process.env directly (production/Docker)
 dotenv.config({ path: path.join(__dirname, '../env') });
+dotenv.config(); // Also load from root .env if it exists
 
 import connectDB from './db/connections.js';
 import apiRoutes from './routes/api.js';
