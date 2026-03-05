@@ -54,7 +54,9 @@ openhw-studio-backend-danish/
 │   ├── server.js                   # Entry point — Express app setup & startup
 │   ├── controllers/
 │   │   ├── compileController.js    # POST /api/compile — runs arduino-cli
-│   │   └── libController.js        # Library search & install via arduino-cli
+│   │   ├── libController.js        # Library search & install via arduino-cli
+│   │   ├── componentController.js  # Asset Registry & Approval pipeline
+│   │   └── userController.js       # Admin & User profile management
 │   ├── routes/
 │   │   └── api.js                  # Route definitions
 │   ├── models/                     # Mongoose data models (users, projects, etc.)
@@ -98,12 +100,18 @@ openhw-studio-backend-danish/
 | `GET` | `/api/libraries/search?q=Servo` | Search arduino-cli library index |
 | `POST` | `/api/libraries/install` | Install a named library via arduino-cli |
 
-### Authentication
+### Component Registry & Pipeline
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `POST` | `/api/auth/register` | Register a new user |
-| `POST` | `/api/auth/login` | Login and receive JWT |
+| `POST` | `/api/components/submit` | Users upload a custom component (ZIP content) for review |
+| `GET` | `/api/admin/components/pending` | List all submissions waiting for admin approval |
+| `POST` | `/api/admin/components/approve` | Permanently merge a submission into the emulator library |
+| `DELETE` | `/api/admin/components/reject/:subId` | Reject a specific submission by its unique ID |
+| `GET` | `/api/admin/components/installed` | List all manually installed custom components |
+| `DELETE` | `/api/admin/components/installed/:id` | Remove an installed component from the emulator |
+
+### Authentication
 
 ---
 
@@ -123,11 +131,13 @@ openhw-studio-backend-danish/
 - Wraps `arduino-cli lib search` and `arduino-cli lib install` as API endpoints
 - Allows the frontend's Library Manager UI to search and install Arduino libraries at runtime
 
-### 🔐 Authentication
+### 🛡️ Component Review Pipeline (`componentController.js`)
 
-- Passwords are hashed with **bcryptjs** before storage
-- Login issues a signed **JWT** returned to the client
-- Protected routes use middleware to verify the JWT and attach the user to the request
+- **unique submissonIds**: Each upload gets a timestamped ID so rejecting one doesn't affect other pending versions.
+- **Permanent Integration**: Approval physically writes the `ui.tsx`, `logic.ts`, etc., to the emulator's component directory and updates its registry.
+- **Atomic Rejection**: One-click removal of specific submissions from the in-memory pending store.
+
+### 🔐 Authentication
 
 ### 🛡️ Stability: nodemon + temp/ Ignore
 
