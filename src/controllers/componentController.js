@@ -1,7 +1,19 @@
 import fs from 'fs';
 import path from 'path';
 
-const EMULATOR_COMPONENTS_PATH = path.resolve(process.cwd(), '../openhw-studio-emulator-danish/src/components');
+const DEFAULT_EMULATOR_PATH = path.resolve(process.cwd(), '../openhw-studio-emulator-danish/src/components');
+const LOCAL_DATA_PATH = path.resolve(process.cwd(), 'data/components');
+
+// Environment variable override for production/Docker environments
+const EMULATOR_COMPONENTS_PATH = process.env.EMULATOR_COMPONENTS_PATH || (fs.existsSync(DEFAULT_EMULATOR_PATH) ? DEFAULT_EMULATOR_PATH : LOCAL_DATA_PATH);
+
+// Ensure the directory exists to prevent ENOENT crashes
+if (!fs.existsSync(EMULATOR_COMPONENTS_PATH)) {
+    console.log(`Creating component directory at: ${EMULATOR_COMPONENTS_PATH}`);
+    fs.mkdirSync(EMULATOR_COMPONENTS_PATH, { recursive: true });
+} else {
+    console.log(`Using component directory: ${EMULATOR_COMPONENTS_PATH}`);
+}
 
 let pendingComponentsStore = [];
 
@@ -87,8 +99,12 @@ export const approveComponent = async (req, res) => {
 
         return res.json({ success: true, message: `Successfully installed component ${id} to backend.` });
     } catch (error) {
-        console.error('Component approval error:', error);
-        return res.status(500).json({ error: 'Failed to approve component.' });
+        console.error('CRITICAL: Component approval error:', error);
+        return res.status(500).json({
+            error: 'Failed to approve component.',
+            details: error.message,
+            path: EMULATOR_COMPONENTS_PATH
+        });
     }
 };
 
@@ -108,7 +124,12 @@ export const getInstalledComponents = (req, res) => {
         }
         return res.json({ components });
     } catch (error) {
-        return res.status(500).json({ error: 'Failed to fetch installed components.' });
+        console.error('CRITICAL: Fetch installed components error:', error);
+        return res.status(500).json({
+            error: 'Failed to fetch installed components.',
+            details: error.message,
+            path: EMULATOR_COMPONENTS_PATH
+        });
     }
 };
 
@@ -129,7 +150,11 @@ export const deleteInstalledComponent = (req, res) => {
 
         return res.json({ success: true, message: `Component ${id} deleted successfully.` });
     } catch (error) {
-        return res.status(500).json({ error: 'Failed to delete component.' });
+        console.error('CRITICAL: Delete component error:', error);
+        return res.status(500).json({
+            error: 'Failed to delete component.',
+            details: error.message
+        });
     }
 };
 
@@ -153,6 +178,10 @@ export const backupInstalledComponents = (req, res) => {
         }
         return res.json({ components });
     } catch (error) {
-        return res.status(500).json({ error: 'Failed to backup components.' });
+        console.error('CRITICAL: Backup components error:', error);
+        return res.status(500).json({
+            error: 'Failed to backup components.',
+            details: error.message
+        });
     }
 };

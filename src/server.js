@@ -15,13 +15,18 @@ dotenv.config(); // Also load from root .env if it exists
 import connectDB from './db/connections.js';
 import apiRoutes from './routes/api.js';
 
-// Ensure temp directory exists
+// Ensure required directories exist
 const tempDir = path.join(__dirname, '../temp');
-if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir);
-}
+const dataDir = path.join(__dirname, '../data/components');
+[tempDir, dataDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+        console.log(`Created directory: ${dir}`);
+    }
+});
 
 // Connect to MongoDB
+console.log("Attempting to connect to MongoDB...");
 connectDB();
 
 const app = express();

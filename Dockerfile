@@ -32,8 +32,9 @@ RUN npm install
 # Copy the rest of the application code
 COPY . .
 
-# Ensure temp directory exists for compilation
+# Ensure temp and data directories exist
 RUN mkdir -p temp
+RUN mkdir -p data/components
 
 # Expose the port
 EXPOSE 5000
