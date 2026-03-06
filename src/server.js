@@ -15,15 +15,22 @@ dotenv.config(); // Also load from root .env if it exists
 import connectDB from './db/connections.js';
 import apiRoutes from './routes/api.js';
 
-// Ensure required directories exist
+// Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
 const dataDir = path.join(__dirname, '../data/components');
+const indexFile = path.join(dataDir, 'index.ts');
+
 [tempDir, dataDir].forEach(dir => {
     if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
         console.log(`Created directory: ${dir}`);
     }
 });
+
+if (!fs.existsSync(indexFile)) {
+    fs.writeFileSync(indexFile, '// OpenHW Studio Component Index\n');
+    console.log(`Initialized: ${indexFile}`);
+}
 
 // Connect to MongoDB
 console.log("Attempting to connect to MongoDB...");

@@ -84,7 +84,14 @@ export const approveComponent = async (req, res) => {
 
         // 3. Update the emulator's root components/index.ts to export this new component
         const mainIndexFile = path.join(EMULATOR_COMPONENTS_PATH, 'index.ts');
-        let indexContent = fs.readFileSync(mainIndexFile, 'utf8');
+        let indexContent = '';
+
+        if (fs.existsSync(mainIndexFile)) {
+            indexContent = fs.readFileSync(mainIndexFile, 'utf8');
+        } else {
+            console.log(`Creating missing main index file at: ${mainIndexFile}`);
+            indexContent = '// OpenHW Studio Component Index\n';
+        }
 
         // Clean ID for valid ES6 export identifier
         const safeExportName = (manifest.exportName || id).replace(/-([a-z0-9])/g, (g) => g[1].toUpperCase()).replace(/[^a-zA-Z0-9]/g, '');
