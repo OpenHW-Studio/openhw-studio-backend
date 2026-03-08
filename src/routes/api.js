@@ -1,18 +1,10 @@
-import express from 'express';
-const router = express.Router();
-import { compileArduinoCode } from '../controllers/compileController.js';
-import { searchLibrary, installLibrary, listLibraries } from '../controllers/libController.js';
-import { signupUser } from '../controllers/authController.js';
+import { Router } from "express";
+import userRoutes from "./user.js";
+import compileRoutes from "./compile.js";
 
-// Compile Arduino code
-router.post('/compile', compileArduinoCode);
+const router = Router();
 
-// Library Management
-router.get('/lib-search', searchLibrary);
-router.post('/lib-install', installLibrary);
-router.get('/lib-list', listLibraries);
-
-// Authentication
-router.post('/signup', signupUser);
+router.use("/user", userRoutes);
+router.use("/compile", compileRoutes);
 
 export default router;
