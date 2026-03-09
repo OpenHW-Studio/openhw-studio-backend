@@ -177,7 +177,9 @@ export const backupInstalledComponents = (req, res) => {
                     const files = {};
                     const dirFiles = fs.readdirSync(itemPath);
                     for (const file of dirFiles) {
-                        files[file] = fs.readFileSync(path.join(itemPath, file), 'utf8');
+                        const filePath = path.join(itemPath, file);
+                        if (!fs.statSync(filePath).isFile()) continue; // skip subdirs like doc/
+                        files[file] = fs.readFileSync(filePath, 'utf8');
                     }
                     components.push({ id: item, files });
                 }

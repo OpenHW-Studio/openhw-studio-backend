@@ -21,13 +21,16 @@
 The Compiler Backend is the **central API server** for OpenHW Studio. It:
 
 - Accepts Arduino C++ source code from the frontend
-- Invokes `arduino-cli.exe` to compile it into an AVR `.hex` file
+- Invokes `arduino-cli` to compile it into an AVR `.hex` file
 - Returns the `.hex` payload to the frontend for simulation
 - Handles user **authentication** (login / registration) using JWT + bcrypt
 - Manages **library installation** via `arduino-cli` library commands
 - Connects to **MongoDB** for user and project data persistence
+- Receives and reviews **custom component** submissions from users
 
 The server runs on **http://localhost:5000**.
+
+> **Note on offline usage:** The frontend now caches compiled `.hex` results in IndexedDB (browser-side). Once a sketch has been compiled at least once, subsequent runs with the same code bypass this server entirely and run from the local cache. See [OFFLINE_AND_STORAGE.md](../OFFLINE_AND_STORAGE.md) for details.
 
 ---
 
@@ -93,12 +96,16 @@ openhw-studio-backend-danish/
 }
 ```
 
+> The frontend caches successful responses in IndexedDB (`openhw-offline` / `hexCache`). Repeated runs with unchanged code skip this endpoint entirely.
+
 ### Library Management
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/libraries/search?q=Servo` | Search arduino-cli library index |
-| `POST` | `/api/libraries/install` | Install a named library via arduino-cli |
+| `GET` | `/api/lib-search?q=Servo` | Search arduino-cli library index |
+| `POST` | `/api/lib-install` | Install a named library via arduino-cli |
+| `POST` | `/api/lib-uninstall` | Uninstall a named library |
+| `GET` | `/api/lib-list` | List all installed libraries |
 
 ### Component Registry & Pipeline
 
@@ -110,41 +117,51 @@ openhw-studio-backend-danish/
 | `DELETE` | `/api/admin/components/reject/:subId` | Reject a specific submission by its unique ID |
 | `GET` | `/api/admin/components/installed` | List all manually installed custom components |
 | `DELETE` | `/api/admin/components/installed/:id` | Remove an installed component from the emulator |
+| `GET` | `/api/admin/components/backup` | Full export of all installed components with source files |
+
+> Component submissions made while offline are queued in the browser's IndexedDB and auto-submitted when connectivity is restored. The backend endpoint is unchanged.
 
 ### Authentication
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/user/signup` | Register a new user |
+| `POST` | `/api/user/signin` | Authenticate and receive JWT |
+| `POST` | `/api/user/logout` | Invalidate session |
+| `PUT` | `/api/user/profile` | Update user profile |
 
 ---
 
 ## Key Features
 
-### ⚙️ Compilation Pipeline (`compileController.js`)
+### Compilation Pipeline (`compileController.js`)
 
 1. Receives raw C++ code via `POST /api/compile`
 2. Creates a uniquely named temporary `.ino` sketch file in `temp/`
-3. Executes `arduino-cli.exe compile` targeting the `arduino:avr:uno` FQBN via Node's `child_process.execFile`
+3. Executes `arduino-cli compile` targeting the `arduino:avr:uno` FQBN via Node's `child_process.execFile`
 4. Extracts the generated `.hex` content from the build output
 5. Sends the `.hex` string back to the frontend
 6. **Cleans up** the temporary directory recursively to prevent disk bloat
 
-### 📚 Library Management (`libController.js`)
+The frontend caches this response in IndexedDB. Subsequent `Run` clicks with the same code are served from the browser cache and never reach this endpoint.
+
+### Library Management (`libController.js`)
 
 - Wraps `arduino-cli lib search` and `arduino-cli lib install` as API endpoints
 - Allows the frontend's Library Manager UI to search and install Arduino libraries at runtime
 
-### 🛡️ Component Review Pipeline (`componentController.js`)
+### Component Review Pipeline (`componentController.js`)
 
-- **unique submissonIds**: Each upload gets a timestamped ID so rejecting one doesn't affect other pending versions.
+- **Unique submissionIds**: Each upload gets a timestamped ID so rejecting one doesn't affect other pending versions.
 - **Permanent Integration**: Approval physically writes the `ui.tsx`, `logic.ts`, etc., to the emulator's component directory and updates its registry.
 - **Atomic Rejection**: One-click removal of specific submissions from the in-memory pending store.
+- **Offline-Tolerant**: The frontend queues failed submissions locally and retries automatically — no data is lost if the backend is temporarily unreachable.
 
-### 🔐 Authentication
-
-### 🛡️ Stability: nodemon + temp/ Ignore
+### Stability: nodemon + temp/ Ignore
 
 The `nodemon.json` explicitly ignores the `temp/` directory. Without this, file changes inside `temp/` (created during active compilation) would cause nodemon to restart the server mid-compilation, resulting in `ERR_CONNECTION_RESET` errors on the frontend.
 
 ```json
-// nodemon.json
 {
   "ignore": ["temp/"]
 }
