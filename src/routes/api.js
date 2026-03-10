@@ -3,9 +3,8 @@ const router = express.Router();
 import { compileArduinoCode } from '../controllers/compileController.js';
 import { searchLibrary, installLibrary, listLibraries, uninstallLibrary } from '../controllers/libController.js';
 import userRoutes from './user.js';
-
-// Compile Arduino code
-router.post('/compile', compileArduinoCode);
+import compileRoutes from './compile.js';
+import classroomRoutes from './classroom.js';
 
 // Library Management
 router.get('/lib-search', searchLibrary);
@@ -24,5 +23,7 @@ router.get('/admin/components/backup', backupInstalledComponents);
 
 // User routes for authentication and management
 router.use('/user', userRoutes);
+router.use('/compile', compileRoutes);
+router.use('/classroom', classroomRoutes);
 
 export default router;
