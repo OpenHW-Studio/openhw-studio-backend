@@ -31,6 +31,12 @@ const userCanAccessClass = (classroom, user) => {
   return isOwner || isStudent;
 };
 
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number.parseInt(value, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) return fallback;
+  return parsed;
+};
+
 export const createClassroom = async (req, res) => {
   try {
     if (!isTeacher(req.user)) {
@@ -153,6 +159,54 @@ export const getMyClassrooms = async (req, res) => {
   }
 };
 
+export const joinClassroomByCode = async (req, res) => {
+  try {
+    if (req.user.role !== "student") {
+      return res.status(403).json({ message: "Only students can join classes using code." });
+    }
+
+    const { joinCode } = req.body || {};
+    if (typeof joinCode !== "string" || !joinCode.trim()) {
+      return res.status(400).json({ message: "joinCode is required." });
+    }
+
+    const normalizedJoinCode = joinCode.trim().toUpperCase();
+    const classroom = await Class.findOne({ joinCode: normalizedJoinCode });
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found for the given join code." });
+    }
+
+    if (classroom.teacher.toString() === req.user._id.toString()) {
+      return res.status(400).json({ message: "Teacher cannot join their own class as student." });
+    }
+
+    const alreadyJoined = classroom.students.some(
+      (studentId) => studentId.toString() === req.user._id.toString()
+    );
+
+    if (!alreadyJoined) {
+      await Class.findByIdAndUpdate(classroom._id, {
+        $addToSet: { students: req.user._id }
+      });
+
+      await User.findByIdAndUpdate(req.user._id, {
+        $addToSet: { classes: classroom._id }
+      });
+    }
+
+    const updatedClassroom = await Class.findById(classroom._id)
+      .populate("teacher", "name email role")
+      .populate("students", "name email role");
+
+    return res.status(200).json({
+      message: alreadyJoined ? "Already joined this class." : "Joined class successfully.",
+      classroom: updatedClassroom
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to join classroom.", error: error.message });
+  }
+};
+
 export const createAssignment = async (req, res) => {
   try {
     if (!isTeacher(req.user)) {
@@ -207,7 +261,37 @@ export const createAssignment = async (req, res) => {
 
 export const getAssignments = async (req, res) => {
   try {
-    const { classId } = req.query;
+    const { classId, page, limit, search, fromDueDate, toDueDate } = req.query;
+    const pageNumber = parsePositiveInt(page, 1);
+    const limitNumber = Math.min(parsePositiveInt(limit, 10), 100);
+    const skip = (pageNumber - 1) * limitNumber;
+
+    const filters = {};
+    if (typeof search === "string" && search.trim()) {
+      filters.$or = [
+        { title: { $regex: search.trim(), $options: "i" } },
+        { description: { $regex: search.trim(), $options: "i" } }
+      ];
+    }
+
+    if (fromDueDate || toDueDate) {
+      const dueDateFilter = {};
+      if (fromDueDate) {
+        const parsedFrom = new Date(fromDueDate);
+        if (Number.isNaN(parsedFrom.getTime())) {
+          return res.status(400).json({ message: "Invalid fromDueDate format." });
+        }
+        dueDateFilter.$gte = parsedFrom;
+      }
+      if (toDueDate) {
+        const parsedTo = new Date(toDueDate);
+        if (Number.isNaN(parsedTo.getTime())) {
+          return res.status(400).json({ message: "Invalid toDueDate format." });
+        }
+        dueDateFilter.$lte = parsedTo;
+      }
+      filters.dueDate = dueDateFilter;
+    }
 
     if (classId) {
       if (!isValidObjectId(classId)) {
@@ -223,35 +307,83 @@ export const getAssignments = async (req, res) => {
         return res.status(403).json({ message: "You are not part of this class." });
       }
 
-      const assignments = await Assignment.find({ classId })
+      const query = { ...filters, classId };
+      const total = await Assignment.countDocuments(query);
+      const assignments = await Assignment.find(query)
         .populate("createdBy", "name email role")
+        .skip(skip)
+        .limit(limitNumber)
         .sort({ createdAt: -1 });
 
-      return res.status(200).json({ assignments });
+      return res.status(200).json({
+        assignments,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber)
+        }
+      });
     }
 
     if (req.user.role === "teacher") {
-      const assignments = await Assignment.find({ createdBy: req.user._id })
+      const query = { ...filters, createdBy: req.user._id };
+      const total = await Assignment.countDocuments(query);
+      const assignments = await Assignment.find(query)
         .populate("classId", "name joinCode")
+        .skip(skip)
+        .limit(limitNumber)
         .sort({ createdAt: -1 });
 
-      return res.status(200).json({ assignments });
+      return res.status(200).json({
+        assignments,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber)
+        }
+      });
     }
 
     if (req.user.role === "student") {
       const classrooms = await Class.find({ students: req.user._id }).select("_id");
       const classIds = classrooms.map((classroom) => classroom._id);
 
-      const assignments = await Assignment.find({ classId: { $in: classIds } })
+      const query = { ...filters, classId: { $in: classIds } };
+      const total = await Assignment.countDocuments(query);
+      const assignments = await Assignment.find(query)
         .populate("classId", "name joinCode")
         .populate("createdBy", "name email role")
+        .skip(skip)
+        .limit(limitNumber)
         .sort({ createdAt: -1 });
 
-      return res.status(200).json({ assignments });
+      return res.status(200).json({
+        assignments,
+        pagination: {
+          total,
+          page: pageNumber,
+          limit: limitNumber,
+          totalPages: Math.ceil(total / limitNumber)
+        }
+      });
     }
 
-    const assignments = await Assignment.find().sort({ createdAt: -1 });
-    return res.status(200).json({ assignments });
+    const total = await Assignment.countDocuments(filters);
+    const assignments = await Assignment.find(filters)
+      .skip(skip)
+      .limit(limitNumber)
+      .sort({ createdAt: -1 });
+    return res.status(200).json({
+      assignments,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber)
+      }
+    });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch assignments.", error: error.message });
   }
@@ -306,6 +438,10 @@ export const createNotice = async (req, res) => {
 export const getClassroomNotices = async (req, res) => {
   try {
     const { classId } = req.params;
+    const { page, limit, search } = req.query;
+    const pageNumber = parsePositiveInt(page, 1);
+    const limitNumber = Math.min(parsePositiveInt(limit, 10), 100);
+    const skip = (pageNumber - 1) * limitNumber;
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -320,11 +456,30 @@ export const getClassroomNotices = async (req, res) => {
       return res.status(403).json({ message: "You are not part of this class." });
     }
 
-    const notices = await Notice.find({ classId })
+    const query = { classId };
+    if (typeof search === "string" && search.trim()) {
+      query.$or = [
+        { title: { $regex: search.trim(), $options: "i" } },
+        { message: { $regex: search.trim(), $options: "i" } }
+      ];
+    }
+
+    const total = await Notice.countDocuments(query);
+    const notices = await Notice.find(query)
       .populate("createdBy", "name email role")
+      .skip(skip)
+      .limit(limitNumber)
       .sort({ createdAt: -1 });
 
-    return res.status(200).json({ notices });
+    return res.status(200).json({
+      notices,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber)
+      }
+    });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch notices.", error: error.message });
   }

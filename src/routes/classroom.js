@@ -2,6 +2,7 @@ import { Router } from "express";
 import { protectRoute } from "../middleware/authMiddleware.js";
 import {
   createClassroom,
+  joinClassroomByCode,
   inviteStudents,
   getMyClassrooms,
   createAssignment,
@@ -13,6 +14,7 @@ import {
 const router = Router();
 
 router.post("/", protectRoute, createClassroom);
+router.post("/join", protectRoute, joinClassroomByCode);
 router.post("/:classId/invite", protectRoute, inviteStudents);
 router.get("/", protectRoute, getMyClassrooms);
 
