@@ -70,3 +70,19 @@ export const installLibrary = (req, res) => {
         return res.json({ success: true, message: `Successfully installed ${name}` });
     });
 };
+
+export const uninstallLibrary = (req, res) => {
+    const { name } = req.body;
+    if (!name) {
+        return res.status(400).json({ error: 'Library "name" is required for uninstallation.' });
+    }
+
+    // Run: arduino-cli lib uninstall "name"
+    execFile(ARDUINO_CLI_PATH, ['lib', 'uninstall', name], (error, stdout, stderr) => {
+        if (error) {
+            console.error('Library uninstall error:', stderr || stdout);
+            return res.status(500).json({ error: 'Failed to uninstall library.' });
+        }
+        return res.json({ success: true, message: `Successfully uninstalled ${name}` });
+    });
+};
