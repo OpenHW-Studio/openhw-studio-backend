@@ -6,7 +6,7 @@ import { searchLibrary, installLibrary, listLibraries } from '../controllers/lib
 const router = Router();
 
 // Compile Arduino code
-router.post('/compile', compileArduinoCode);
+router.post('/', compileArduinoCode);
 
 // Library Management
 router.get('/lib-search', searchLibrary);
