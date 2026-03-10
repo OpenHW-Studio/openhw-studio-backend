@@ -1,0 +1,26 @@
+ .gitignore                             |   1 +
+ readmek.md => compiler_Backend.md      |   0
+ package-lock.json                      |  52 +++-
+ package.json                           |  15 +-
+ src/controllers/.gitkeep               |   0
+ src/controllers/classroomController.js | 486 +++++++++++++++++++++++++++++++++
+ src/controllers/userController.js      | 197 +++++++++++++
+ src/db/connections.js                  |   1 +
+ src/middleware/.gitkeep                |   0
+ src/middleware/authMiddleware.js       |  38 +++
+ src/models/.gitkeep                    |   0
+ src/models/Assignment.js               |   5 +-
+ src/models/Class.js                    |   4 +-
+ src/models/Notice.js                   |  10 +
+ src/models/Progress.js                 |   2 +-
+ src/models/Project.js                  |   6 +-
+ src/models/Submission.js               |   5 +-
+ src/models/User.js                     |   9 +-
+ src/routes/.gitkeep                    |   0
+ src/routes/api.js                      |  20 +-
+ src/routes/classroom.js                |  27 ++
+ src/routes/compile.js                  |  16 ++
+ src/routes/user.js                     |  17 ++
+ src/server.js                          |  42 ++-
+ src/utils/helper/token.js              |  11 +
+ 25 files changed, 908 insertions(+), 56 deletions(-)
