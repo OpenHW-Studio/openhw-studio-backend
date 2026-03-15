@@ -1,0 +1,4 @@
+origin	https://github.com/OpenHW-Studio/openhw-studio-backend.git (fetch)
+origin	https://github.com/OpenHW-Studio/openhw-studio-backend.git (push)
+temp_upstream	https://github.com/OpenHW-Studio/openhw-studio-backend.git (fetch)
+temp_upstream	https://github.com/OpenHW-Studio/openhw-studio-backend.git (push)

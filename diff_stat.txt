@@ -1,0 +1,15 @@
+ .gitignore                             |   1 -
+ Dockerfile                             |  46 ----
+ README.md                              |  57 +---
+ data/components/index.ts               |   1 -
+ src/controllers/classroomController.js | 486 ---------------------------------
+ src/controllers/compileController.js   |   2 +-
+ src/controllers/componentController.js | 196 -------------
+ src/controllers/libController.js       |  16 --
+ src/models/Class.js                    |   3 +-
+ src/models/Notice.js                   |  10 -
+ src/routes/api.js                      |  33 +--
+ src/routes/classroom.js                |  27 --
+ src/routes/compile.js                  |   2 +-
+ src/server.js                          |  31 +--
+ 14 files changed, 33 insertions(+), 878 deletions(-)

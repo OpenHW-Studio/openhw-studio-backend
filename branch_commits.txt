@@ -1,0 +1,16 @@
+d655957 added joinClassroomByCode api
+ce855f7 removed the vscode file
+d84d3b7 added all the apis for the classroom
+6d37cfc update the file name and restructure it
+f75b90b added the controller for logout, profile udpate, added the middleware, update all the models, and restructre the files
+72fa1b3 Merge pull request #8 from OpenHW-Studio/feature/user-login
+8fdb399 Merge branch 'develop' into feature/user-login
+975b639 Merge pull request #7 from geekypooky/pr-user-signup
+bd84f7b updated
+01c2e9f Fix signup controller: validation, JWT_SECRET check, duplicate email handling Merged remote updates for authController.jsFix signup controller: validation, JWT_SECRET check, duplicate email handling
+e094f57 Update src/controllers/authController.js
+1a66e43 Update src/controllers/authController.js
+af5e49a Update src/controllers/authController.js
+ba50003 routes and controllers for user sign-up
+d579e8b Added JWT login controller and updated routes
+eba45af Merge pull request #5 from OpenHW-Studio/danish

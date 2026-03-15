@@ -6,12 +6,15 @@ const userSchema = new mongoose.Schema({
   googleId: { type: String },
   password: { type: String }, // Optional for Google Auth users
   role: { type: String, enum: ["student", "teacher", "admin"], default: "student" },
+  college: { type: String, trim: true },
+  branch: { type: String, trim: true },
+  semester: { type: Number, min: 1, max: 12 },
+  bio: { type: String, trim: true, maxlength: 500 },
   classes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Class" }],
   points: { type: Number, default: 0 },
   coins: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
-  badges: [String],
-  createdAt: { type: Date, default: Date.now }
-});
+  badges: [String]
+}, { timestamps: true });
 
 export default mongoose.model("User", userSchema);
