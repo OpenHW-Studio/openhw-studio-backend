@@ -1,11 +1,14 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import connectDB from "./db/connections.js";
-import apiRoutes from "./routes/api.js";
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import connectDB from './db/connections.js';
+import apiRoutes from './routes/api.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import session from 'express-session';
+import passport from './config/passport.js';
+import authRoutes from './routes/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -37,11 +40,24 @@ console.log("Attempting to connect to MongoDB...");
 connectDB();
 const app = express();
 
-app.use(cors()); 
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
+// Session Middleware (Needed for Passport)
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'supersecretcatsession',
+    resave: false,
+    saveUninitialized: true,
+}));
 
-app.use("/api", apiRoutes);
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Routes
+app.use('/api', apiRoutes);
+app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
