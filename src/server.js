@@ -6,6 +6,9 @@ import apiRoutes from './routes/api.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import session from 'express-session';
+import passport from './config/passport.js';
+import authRoutes from './routes/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,12 +27,24 @@ connectDB();
 
 const app = express();
 
+// Session Middleware (Needed for Passport)
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'supersecretcatsession',
+    resave: false,
+    saveUninitialized: true,
+}));
+
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
+
 // Middleware
 app.use(cors());
 app.use(express.json());
 
 // Routes
 app.use('/api', apiRoutes);
+app.use('/auth', authRoutes);
 
 const PORT = process.env.PORT || 5000;
 
