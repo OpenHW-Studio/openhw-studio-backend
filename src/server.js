@@ -13,18 +13,31 @@ import authRoutes from './routes/auth.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load environment variables
+// Try to load from '../env' (local) or process.env directly (production/Docker)
 dotenv.config({ path: path.join(__dirname, '../env') });
+dotenv.config(); // Also load from root .env if it exists
 
-// Ensure temp directory exists
+// Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
-if (!fs.existsSync(tempDir)) {
-    fs.mkdirSync(tempDir);
+const dataDir = path.join(__dirname, '../data/components');
+const indexFile = path.join(dataDir, 'index.ts');
+
+[tempDir, dataDir].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+    console.log(`Created directory: ${dir}`);
+  }
+});
+
+if (!fs.existsSync(indexFile)) {
+  fs.writeFileSync(indexFile, '// OpenHW Studio Component Index\n');
+  console.log(`Initialized: ${indexFile}`);
 }
 
 // Connect to MongoDB
-connectDB();
+console.log("Attempting to connect to MongoDB...");
 
+connectDB();
 const app = express();
 
 // Session Middleware (Needed for Passport)
@@ -46,8 +59,11 @@ app.use(express.json());
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
-const PORT = process.env.PORT || 5000;
+// Serve demo/guide files from openhw-studio-examples repo
+const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
+app.use('/examples', express.static(examplesDir));
 
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-    console.log(`OpenHW Studio Backend running on port ${PORT}`);
+  console.log(`OpenHW Studio Backend running on port ${PORT}`);
 });

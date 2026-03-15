@@ -5,8 +5,7 @@ const submissionSchema = new mongoose.Schema({
   studentId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project", required: true },
   score: { type: Number },
-  feedback: { type: String },
-  submittedAt: { type: Date, default: Date.now }
-});
+  feedback: { type: String }
+}, { timestamps: true });
 
 export default mongoose.model("Submission", submissionSchema);

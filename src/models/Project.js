@@ -7,9 +7,7 @@ const projectSchema = new mongoose.Schema({
   connections: { type: Array, default: [] },
   code: { type: String, default: "" },
   isAssignment: { type: Boolean, default: false },
-  assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: "Assignment" },
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now }
-});
+  assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: "Assignment" }
+}, { timestamps: true });
 
 export default mongoose.model("Project", projectSchema);

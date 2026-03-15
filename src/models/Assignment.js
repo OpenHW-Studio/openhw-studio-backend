@@ -6,8 +6,7 @@ const assignmentSchema = new mongoose.Schema({
   description: { type: String },
   templateProjectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
   dueDate: { type: Date },
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-  createdAt: { type: Date, default: Date.now }
-});
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
+}, { timestamps: true });
 
 export default mongoose.model("Assignment", assignmentSchema);

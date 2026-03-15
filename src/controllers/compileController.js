@@ -7,8 +7,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Path to the arduino-cli executable relative to this backend project
-const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
+// Find arduino-cli globally via system PATH
+const ARDUINO_CLI_PATH = 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 
 export const compileArduinoCode = (req, res) => {
@@ -36,7 +36,7 @@ export const compileArduinoCode = (req, res) => {
     // Compile using arduino-cli
     // We specify target FQBN as arduino:avr:uno
     const fqbn = 'arduino:avr:uno';
-    execFile(ARDUINO_CLI_PATH, ['compile', '--fqbn', fqbn, '--build-path', buildDir, sketchFile], (error, stdout, stderr) => {
+    execFile(ARDUINO_CLI_PATH, ['compile', '--fqbn', fqbn, '--output-dir', buildDir, sketchFile], (error, stdout, stderr) => {
         // Read the resulting hex regardless of warnings, but handle hard errors
         let hexContent = '';
         const hexFilePath = path.join(buildDir, `sketch_${sketchId}.ino.hex`);

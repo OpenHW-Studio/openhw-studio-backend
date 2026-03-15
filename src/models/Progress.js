@@ -6,6 +6,6 @@ const progressSchema = new mongoose.Schema({
   xp: { type: Number, default: 0 },
   unlockedComponents: [String],
   badges: [String]
-});
+}, { timestamps: true });
 
 export default mongoose.model("Progress", progressSchema);
