@@ -7,7 +7,9 @@ passport.use(
         {
             clientID: process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID,
             clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-            callbackURL: 'https://openhw-studio-backend-oew2.onrender.com/auth/google/callback',
+            callbackURL: process.env.NODE_ENV === 'production'
+                ? 'https://openhw-studio-backend-oew2.onrender.com/auth/google/callback'
+                : 'http://localhost:5000/auth/google/callback',
         },
         async (accessToken, refreshToken, profile, done) => {
             try {
