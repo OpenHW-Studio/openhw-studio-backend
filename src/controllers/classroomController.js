@@ -485,7 +485,7 @@ export const createAssignment = async (req, res) => {
     }
 
     const { classId } = req.params;
-    const { title, description, templateProjectId, dueDate, files } = req.body || {};
+    const { title, description, templateProjectId, dueDate, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -510,8 +510,9 @@ export const createAssignment = async (req, res) => {
       return res.status(400).json({ message: "Invalid dueDate format." });
     }
 
-    const sanitizedFiles = Array.isArray(files)
-      ? files.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    const rawAttachments = Array.isArray(attachments) ? attachments : files;
+    const sanitizedAttachments = Array.isArray(rawAttachments)
+      ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
       : [];
 
     const assignment = await Assignment.create({
@@ -523,7 +524,7 @@ export const createAssignment = async (req, res) => {
         ? templateProjectId
         : undefined,
       dueDate: dueDate ? new Date(dueDate) : undefined,
-      files: sanitizedFiles,
+      attachments: sanitizedAttachments,
       createdBy: req.user._id,
     });
 
@@ -690,7 +691,7 @@ export const createNotice = async (req, res) => {
     }
 
     const { classId } = req.params;
-    const { title, message, files } = req.body || {};
+    const { title, message, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -711,8 +712,9 @@ export const createNotice = async (req, res) => {
         .json({ message: "Only the class teacher can create notices." });
     }
 
-    const sanitizedFiles = Array.isArray(files)
-      ? files.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    const rawAttachments = Array.isArray(attachments) ? attachments : files;
+    const sanitizedAttachments = Array.isArray(rawAttachments)
+      ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
       : [];
 
     const notice = await Notice.create({
@@ -720,7 +722,7 @@ export const createNotice = async (req, res) => {
       title:
         typeof title === "string" && title.trim() ? title.trim() : "Notice",
       message: message.trim(),
-      files: sanitizedFiles,
+      attachments: sanitizedAttachments,
       createdBy: req.user._id,
     });
 
@@ -913,7 +915,7 @@ export const updateAssignment = async (req, res) => {
     }
 
     const { classId, assignmentId } = req.params;
-    const { title, description, dueDate, files } = req.body || {};
+    const { title, description, dueDate, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
       return res.status(400).json({ message: "Invalid classId or assignmentId." });
@@ -951,9 +953,10 @@ export const updateAssignment = async (req, res) => {
       }
       updates.dueDate = dueDate ? new Date(dueDate) : null;
     }
-    if (files !== undefined) {
-      updates.files = Array.isArray(files)
-        ? files.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    if (attachments !== undefined || files !== undefined) {
+      const rawAttachments = Array.isArray(attachments) ? attachments : files;
+      updates.attachments = Array.isArray(rawAttachments)
+        ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
         : [];
     }
 
@@ -983,7 +986,7 @@ export const updateNotice = async (req, res) => {
     }
 
     const { classId, noticeId } = req.params;
-    const { title, message, files } = req.body || {};
+    const { title, message, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId) || !isValidObjectId(noticeId)) {
       return res.status(400).json({ message: "Invalid classId or noticeId." });
@@ -1015,9 +1018,10 @@ export const updateNotice = async (req, res) => {
       }
       updates.message = message.trim();
     }
-    if (files !== undefined) {
-      updates.files = Array.isArray(files)
-        ? files.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+    if (attachments !== undefined || files !== undefined) {
+      const rawAttachments = Array.isArray(attachments) ? attachments : files;
+      updates.attachments = Array.isArray(rawAttachments)
+        ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
         : [];
     }
 
@@ -1070,6 +1074,22 @@ export const createComment = async (req, res) => {
         .json({ message: "You are not part of this class." });
     }
 
+    if (req.user?.role === "student" && postType !== "notice") {
+      return res
+        .status(403)
+        .json({ message: "Students can only comment on notices." });
+    }
+
+    const targetPost = postType === "assignment"
+      ? await Assignment.findOne({ _id: postId, classId }).select("_id")
+      : await Notice.findOne({ _id: postId, classId }).select("_id");
+
+    if (!targetPost) {
+      return res
+        .status(404)
+        .json({ message: `${postType} not found in this class.` });
+    }
+
     const comment = await Comment.create({
       classId,
       postId,
@@ -1120,6 +1140,16 @@ export const getComments = async (req, res) => {
         .json({ message: "You are not part of this class." });
     }
 
+    const targetPost = postType === "assignment"
+      ? await Assignment.findOne({ _id: postId, classId }).select("_id")
+      : await Notice.findOne({ _id: postId, classId }).select("_id");
+
+    if (!targetPost) {
+      return res
+        .status(404)
+        .json({ message: `${postType} not found in this class.` });
+    }
+
     const comments = await Comment.find({ classId, postId, postType })
       .populate("createdBy", "name email role image")
       .sort({ createdAt: 1 });
@@ -1129,5 +1159,48 @@ export const getComments = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to fetch comments.", error: error.message });
+  }
+};
+
+export const deleteComment = async (req, res) => {
+  try {
+    const { classId, commentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(commentId)) {
+      return res.status(400).json({ message: "Invalid classId or commentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    const comment = await Comment.findOne({ _id: commentId, classId });
+    if (!comment) {
+      return res.status(404).json({ message: "Comment not found." });
+    }
+
+    const isClassTeacher = extractId(classroom.teacher) === extractId(req.user?._id || req.user?.id);
+    const isCommentOwner = comment.createdBy.toString() === req.user._id.toString();
+
+    if (!isClassTeacher && !isCommentOwner) {
+      return res
+        .status(403)
+        .json({ message: "You can only delete your own comments." });
+    }
+
+    await Comment.findByIdAndDelete(commentId);
+
+    return res.status(200).json({ message: "Comment deleted successfully." });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to delete comment.", error: error.message });
   }
 };

@@ -20,7 +20,8 @@ import {
   deleteAssignment,
   deleteNotice,
   createComment,
-  getComments
+  getComments,
+  deleteComment
 } from "../controllers/classroomController.js";
 
 const router = Router();
@@ -45,6 +46,7 @@ router.delete("/:classId/notices/:noticeId", protectRoute, deleteNotice);
 
 router.post("/:classId/comments", protectRoute, createComment);
 router.get("/:classId/comments", protectRoute, getComments);
+router.delete("/:classId/comments/:commentId", protectRoute, deleteComment);
 
 router.get("/:classId", protectRoute, getClassroomById);
 router.put("/:classId", protectRoute, updateClassroom);
