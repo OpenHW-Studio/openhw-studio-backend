@@ -6,6 +6,8 @@ const assignmentSchema = new mongoose.Schema({
   description: { type: String },
   templateProjectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
   dueDate: { type: Date },
+  attachments: [{ type: String, trim: true }],
+  files: [{ type: String, trim: true }],
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
 }, { timestamps: true });
 

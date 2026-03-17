@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 
 const classSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  bio: { type: String, trim: true, maxlength: 500 },
+  image: { type: String, trim: true },
   teacher: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
   joinCode: { type: String, required: true, unique: true },
   students: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
