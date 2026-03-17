@@ -9,6 +9,7 @@ const userSchema = new mongoose.Schema({
   branch: { type: String, trim: true },
   semester: { type: Number, min: 1, max: 12 },
   bio: { type: String, trim: true, maxlength: 500 },
+  image: { type: String, trim: true },
   classes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Class" }],
   points: { type: Number, default: 0 },
   coins: { type: Number, default: 0 },
