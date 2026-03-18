@@ -1,6 +1,6 @@
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import connectDB from './db/connections.js';
 import apiRoutes from './routes/api.js';
 import fs from 'fs';
@@ -12,10 +12,6 @@ import authRoutes from './routes/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Try to load from '../env' (local) or process.env directly (production/Docker)
-dotenv.config({ path: path.join(__dirname, '../env') });
-dotenv.config(); // Also load from root .env if it exists
 
 // Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
