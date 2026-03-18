@@ -3,12 +3,14 @@ import mongoose from "mongoose";
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+  googleId: { type: String },
+  password: { type: String }, // Optional for Google Auth users
   role: { type: String, enum: ["student", "teacher", "admin"], default: "student" },
   college: { type: String, trim: true },
   branch: { type: String, trim: true },
   semester: { type: Number, min: 1, max: 12 },
   bio: { type: String, trim: true, maxlength: 500 },
+  image: { type: String, trim: true },
   classes: [{ type: mongoose.Schema.Types.ObjectId, ref: "Class" }],
   points: { type: Number, default: 0 },
   coins: { type: Number, default: 0 },

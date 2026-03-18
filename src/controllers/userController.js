@@ -44,6 +44,7 @@ const signinUser = async (req, res) => {
         branch: user.branch,
         semester: user.semester,
         bio: user.bio,
+        image: user.image,
       },
     });
   } catch (error) {
@@ -53,7 +54,7 @@ const signinUser = async (req, res) => {
 
 const signupUser = async (req, res) => {
   try {
-    const { name, email, password, role, college, branch, semester, bio } = req.body || {};
+    const { name, email, password, role, college, branch, semester, bio, image } = req.body || {};
 
     const hasValidName = isNonEmptyString(name);
     const hasValidEmail = isNonEmptyString(email);
@@ -105,6 +106,7 @@ const signupUser = async (req, res) => {
       branch: isNonEmptyString(branch) ? branch.trim() : undefined,
       semester: Number.isInteger(semester) ? semester : undefined,
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
+      image: isNonEmptyString(image) ? image.trim() : undefined,
     });
 
     const token = generateToken(user);
@@ -125,6 +127,7 @@ const signupUser = async (req, res) => {
         branch: user.branch,
         semester: user.semester,
         bio: user.bio,
+        image: user.image,
         points: user.points,
         coins: user.coins,
         level: user.level,
@@ -155,7 +158,7 @@ const logoutController = async (req, res) => {
 const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
-    const updatableFields = ["name", "role", "college", "branch", "semester", "bio"];
+    const updatableFields = ["name", "role", "college", "branch", "semester", "bio", "image"];
     const updates = {};
 
     for (const field of updatableFields) {
@@ -168,6 +171,7 @@ const updateUserProfile = async (req, res) => {
     if (typeof updates.college === "string") updates.college = updates.college.trim();
     if (typeof updates.branch === "string") updates.branch = updates.branch.trim();
     if (typeof updates.bio === "string") updates.bio = updates.bio.trim();
+    if (typeof updates.image === "string") updates.image = updates.image.trim();
 
     if (updates.role && !allowedRoles.includes(updates.role)) {
       return res.status(400).json({ message: "Invalid role" });

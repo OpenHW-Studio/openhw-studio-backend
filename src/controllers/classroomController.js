@@ -2,6 +2,8 @@ import mongoose from "mongoose";
 import Class from "../models/Class.js";
 import Assignment from "../models/Assignment.js";
 import Notice from "../models/Notice.js";
+import Comment from "../models/Comment.js";
+import Submission from "../models/Submission.js";
 import User from "../models/User.js";
 
 const { ObjectId } = mongoose.Types;
@@ -9,7 +11,18 @@ const { ObjectId } = mongoose.Types;
 const isTeacher = (user) => user?.role === "teacher";
 const isValidObjectId = (id) => ObjectId.isValid(id);
 
-const generateJoinCode = () => Math.random().toString(36).slice(2, 8).toUpperCase();
+const extractId = (value) => {
+  if (!value) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    if (value._id) return value._id.toString();
+    if (typeof value.toString === "function") return value.toString();
+  }
+  return null;
+};
+
+const generateJoinCode = () =>
+  Math.random().toString(36).slice(2, 8).toUpperCase();
 
 const createUniqueJoinCode = async () => {
   for (let attempts = 0; attempts < 5; attempts += 1) {
@@ -21,12 +34,13 @@ const createUniqueJoinCode = async () => {
 };
 
 const userCanAccessClass = (classroom, user) => {
-  const userId = user?._id?.toString();
+  const userId = extractId(user?._id || user?.id);
   if (!userId || !classroom) return false;
 
-  const isOwner = classroom.teacher?.toString() === userId;
-  const isStudent = Array.isArray(classroom.students) &&
-    classroom.students.some((studentId) => studentId.toString() === userId);
+  const isOwner = extractId(classroom.teacher) === userId;
+  const isStudent =
+    Array.isArray(classroom.students) &&
+    classroom.students.some((studentValue) => extractId(studentValue) === userId);
 
   return isOwner || isStudent;
 };
@@ -40,10 +54,12 @@ const parsePositiveInt = (value, fallback) => {
 export const createClassroom = async (req, res) => {
   try {
     if (!isTeacher(req.user)) {
-      return res.status(403).json({ message: "Only teachers can create classes." });
+      return res
+        .status(403)
+        .json({ message: "Only teachers can create classes." });
     }
 
-    const { name } = req.body || {};
+    const { name, bio, image } = req.body || {};
     if (typeof name !== "string" || !name.trim()) {
       return res.status(400).json({ message: "Class name is required." });
     }
@@ -51,20 +67,24 @@ export const createClassroom = async (req, res) => {
     const joinCode = await createUniqueJoinCode();
     const classroom = await Class.create({
       name: name.trim(),
+      bio: typeof bio === "string" && bio.trim() ? bio.trim() : undefined,
+      image: typeof image === "string" && image.trim() ? image.trim() : undefined,
       teacher: req.user._id,
-      joinCode
+      joinCode,
     });
 
     await User.findByIdAndUpdate(req.user._id, {
-      $addToSet: { classes: classroom._id }
+      $addToSet: { classes: classroom._id },
     });
 
     return res.status(201).json({
       message: "Class created successfully.",
-      classroom
+      classroom,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to create class.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to create class.", error: error.message });
   }
 };
 
@@ -83,7 +103,9 @@ export const inviteStudents = async (req, res) => {
     }
 
     if (classroom.teacher.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Only the class teacher can invite students." });
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can invite students." });
     }
 
     const normalizedStudentIds = Array.isArray(studentIds)
@@ -91,22 +113,26 @@ export const inviteStudents = async (req, res) => {
       : [];
     const normalizedEmails = Array.isArray(emails)
       ? emails
-        .filter((email) => typeof email === "string" && email.trim())
-        .map((email) => email.trim().toLowerCase())
+          .filter((email) => typeof email === "string" && email.trim())
+          .map((email) => email.trim().toLowerCase())
       : [];
 
     if (!normalizedStudentIds.length && !normalizedEmails.length) {
       return res.status(400).json({
-        message: "Provide at least one student via studentIds or emails."
+        message: "Provide at least one student via studentIds or emails.",
       });
     }
 
     const students = await User.find({
       role: "student",
       $or: [
-        ...(normalizedStudentIds.length ? [{ _id: { $in: normalizedStudentIds } }] : []),
-        ...(normalizedEmails.length ? [{ email: { $in: normalizedEmails } }] : [])
-      ]
+        ...(normalizedStudentIds.length
+          ? [{ _id: { $in: normalizedStudentIds } }]
+          : []),
+        ...(normalizedEmails.length
+          ? [{ email: { $in: normalizedEmails } }]
+          : []),
+      ],
     }).select("_id name email role");
 
     if (!students.length) {
@@ -118,23 +144,25 @@ export const inviteStudents = async (req, res) => {
     const updatedClassroom = await Class.findByIdAndUpdate(
       classId,
       { $addToSet: { students: { $each: studentObjectIds } } },
-      { new: true }
+      { new: true },
     )
-      .populate("teacher", "name email role")
-      .populate("students", "name email role");
+      .populate("teacher", "name email role bio image")
+      .populate("students", "name email role image");
 
     await User.updateMany(
       { _id: { $in: studentObjectIds } },
-      { $addToSet: { classes: classId } }
+      { $addToSet: { classes: classId } },
     );
 
     return res.status(200).json({
       message: "Students invited successfully.",
       invitedCount: studentObjectIds.length,
-      classroom: updatedClassroom
+      classroom: updatedClassroom,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to invite students.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to invite students.", error: error.message });
   }
 };
 
@@ -149,20 +177,253 @@ export const getMyClassrooms = async (req, res) => {
     }
 
     const classrooms = await Class.find(query)
-      .populate("teacher", "name email role")
-      .populate("students", "name email role")
+      .populate("teacher", "name email role bio image")
+      .populate("students", "name email role image")
       .sort({ createdAt: -1 });
 
     return res.status(200).json({ classrooms });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to fetch classrooms.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch classrooms.", error: error.message });
+  }
+};
+
+export const getClassroomById = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    const classroom = await Class.findById(classId)
+      .populate("teacher", "name email role bio image")
+      .populate("students", "name email role image")
+      .populate("assignments")
+      .populate({
+        path: "notices",
+        populate: { path: "createdBy", select: "name email role image" },
+      });
+
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    return res.status(200).json({ classroom });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch class details.", error: error.message });
+  }
+};
+
+export const getClassroomStudents = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    const classroom = await Class.findById(classId)
+      .select("teacher students")
+      .populate("teacher", "name email role")
+      .populate("students", "name email role image");
+
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    return res.status(200).json({
+      students: classroom.students || [],
+      count: classroom.students?.length || 0,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch students.", error: error.message });
+  }
+};
+
+export const removeClassroomStudent = async (req, res) => {
+  try {
+    const { classId, studentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(studentId)) {
+      return res.status(400).json({ message: "Invalid classId or studentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can remove students." });
+    }
+
+    const alreadyInClass = classroom.students.some(
+      (studentObjectId) => studentObjectId.toString() === studentId,
+    );
+
+    if (!alreadyInClass) {
+      return res.status(404).json({ message: "Student is not in this class." });
+    }
+
+    const updatedClassroom = await Class.findByIdAndUpdate(
+      classId,
+      { $pull: { students: studentId } },
+      { new: true },
+    ).populate("students", "name email role image");
+
+    await User.findByIdAndUpdate(studentId, {
+      $pull: { classes: classId },
+    });
+
+    return res.status(200).json({
+      message: "Student removed from class.",
+      students: updatedClassroom?.students || [],
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to remove student.", error: error.message });
+  }
+};
+
+export const getAssignmentSubmissions = async (req, res) => {
+  try {
+    const { classId, assignmentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can view submissions." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
+      "_id title dueDate createdAt",
+    );
+
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    const submissions = await Submission.find({ assignmentId })
+      .populate("studentId", "name email role image")
+      .populate("projectId", "_id board updatedAt createdAt")
+      .sort({ updatedAt: -1 });
+
+    const classStudentCount = classroom.students?.length || 0;
+
+    return res.status(200).json({
+      assignment,
+      submissions,
+      stats: {
+        submittedCount: submissions.length,
+        classStudentCount,
+        missingCount: Math.max(classStudentCount - submissions.length, 0),
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to fetch assignment submissions.",
+      error: error.message,
+    });
+  }
+};
+
+export const updateClassroom = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { name, bio, image } = req.body || {};
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can update this class." });
+    }
+
+    const updates = {};
+
+    if (name !== undefined) {
+      if (typeof name !== "string" || !name.trim()) {
+        return res.status(400).json({ message: "Class name is required." });
+      }
+      updates.name = name.trim();
+    }
+
+    if (bio !== undefined) {
+      updates.bio = typeof bio === "string" && bio.trim() ? bio.trim() : "";
+    }
+
+    if (image !== undefined) {
+      updates.image =
+        typeof image === "string" && image.trim() ? image.trim() : "";
+    }
+
+    const updatedClassroom = await Class.findByIdAndUpdate(classId, updates, {
+      new: true,
+      runValidators: true,
+    })
+      .populate("teacher", "name email role bio image")
+      .populate("students", "name email role image")
+      .populate("assignments")
+      .populate({
+        path: "notices",
+        populate: { path: "createdBy", select: "name email role image" },
+      });
+
+    return res.status(200).json({
+      message: "Class updated successfully.",
+      classroom: updatedClassroom,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to update class.", error: error.message });
   }
 };
 
 export const joinClassroomByCode = async (req, res) => {
   try {
     if (req.user.role !== "student") {
-      return res.status(403).json({ message: "Only students can join classes using code." });
+      return res
+        .status(403)
+        .json({ message: "Only students can join classes using code." });
     }
 
     const { joinCode } = req.body || {};
@@ -173,48 +434,58 @@ export const joinClassroomByCode = async (req, res) => {
     const normalizedJoinCode = joinCode.trim().toUpperCase();
     const classroom = await Class.findOne({ joinCode: normalizedJoinCode });
     if (!classroom) {
-      return res.status(404).json({ message: "Class not found for the given join code." });
+      return res
+        .status(404)
+        .json({ message: "Class not found for the given join code." });
     }
 
     if (classroom.teacher.toString() === req.user._id.toString()) {
-      return res.status(400).json({ message: "Teacher cannot join their own class as student." });
+      return res
+        .status(400)
+        .json({ message: "Teacher cannot join their own class as student." });
     }
 
     const alreadyJoined = classroom.students.some(
-      (studentId) => studentId.toString() === req.user._id.toString()
+      (studentId) => studentId.toString() === req.user._id.toString(),
     );
 
     if (!alreadyJoined) {
       await Class.findByIdAndUpdate(classroom._id, {
-        $addToSet: { students: req.user._id }
+        $addToSet: { students: req.user._id },
       });
 
       await User.findByIdAndUpdate(req.user._id, {
-        $addToSet: { classes: classroom._id }
+        $addToSet: { classes: classroom._id },
       });
     }
 
     const updatedClassroom = await Class.findById(classroom._id)
-      .populate("teacher", "name email role")
-      .populate("students", "name email role");
+      .populate("teacher", "name email role bio image")
+      .populate("students", "name email role image");
 
     return res.status(200).json({
-      message: alreadyJoined ? "Already joined this class." : "Joined class successfully.",
-      classroom: updatedClassroom
+      message: alreadyJoined
+        ? "Already joined this class."
+        : "Joined class successfully.",
+      classroom: updatedClassroom,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to join classroom.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to join classroom.", error: error.message });
   }
 };
 
 export const createAssignment = async (req, res) => {
   try {
     if (!isTeacher(req.user)) {
-      return res.status(403).json({ message: "Only teachers can create assignments." });
+      return res
+        .status(403)
+        .json({ message: "Only teachers can create assignments." });
     }
 
     const { classId } = req.params;
-    const { title, description, templateProjectId, dueDate } = req.body || {};
+    const { title, description, templateProjectId, dueDate, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -230,32 +501,45 @@ export const createAssignment = async (req, res) => {
     }
 
     if (classroom.teacher.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Only the class teacher can create assignments." });
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can create assignments." });
     }
 
     if (dueDate && Number.isNaN(new Date(dueDate).getTime())) {
       return res.status(400).json({ message: "Invalid dueDate format." });
     }
 
+    const rawAttachments = Array.isArray(attachments) ? attachments : files;
+    const sanitizedAttachments = Array.isArray(rawAttachments)
+      ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+      : [];
+
     const assignment = await Assignment.create({
       classId,
       title: title.trim(),
-      description: typeof description === "string" ? description.trim() : undefined,
-      templateProjectId: isValidObjectId(templateProjectId) ? templateProjectId : undefined,
+      description:
+        typeof description === "string" ? description.trim() : undefined,
+      templateProjectId: isValidObjectId(templateProjectId)
+        ? templateProjectId
+        : undefined,
       dueDate: dueDate ? new Date(dueDate) : undefined,
-      createdBy: req.user._id
+      attachments: sanitizedAttachments,
+      createdBy: req.user._id,
     });
 
     await Class.findByIdAndUpdate(classId, {
-      $addToSet: { assignments: assignment._id }
+      $addToSet: { assignments: assignment._id },
     });
 
     return res.status(201).json({
       message: "Assignment created successfully.",
-      assignment
+      assignment,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to create assignment.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to create assignment.", error: error.message });
   }
 };
 
@@ -270,7 +554,7 @@ export const getAssignments = async (req, res) => {
     if (typeof search === "string" && search.trim()) {
       filters.$or = [
         { title: { $regex: search.trim(), $options: "i" } },
-        { description: { $regex: search.trim(), $options: "i" } }
+        { description: { $regex: search.trim(), $options: "i" } },
       ];
     }
 
@@ -279,7 +563,9 @@ export const getAssignments = async (req, res) => {
       if (fromDueDate) {
         const parsedFrom = new Date(fromDueDate);
         if (Number.isNaN(parsedFrom.getTime())) {
-          return res.status(400).json({ message: "Invalid fromDueDate format." });
+          return res
+            .status(400)
+            .json({ message: "Invalid fromDueDate format." });
         }
         dueDateFilter.$gte = parsedFrom;
       }
@@ -298,13 +584,16 @@ export const getAssignments = async (req, res) => {
         return res.status(400).json({ message: "Invalid classId." });
       }
 
-      const classroom = await Class.findById(classId).select("teacher students");
+      const classroom =
+        await Class.findById(classId).select("teacher students");
       if (!classroom) {
         return res.status(404).json({ message: "Class not found." });
       }
 
       if (!userCanAccessClass(classroom, req.user)) {
-        return res.status(403).json({ message: "You are not part of this class." });
+        return res
+          .status(403)
+          .json({ message: "You are not part of this class." });
       }
 
       const query = { ...filters, classId };
@@ -321,8 +610,8 @@ export const getAssignments = async (req, res) => {
           total,
           page: pageNumber,
           limit: limitNumber,
-          totalPages: Math.ceil(total / limitNumber)
-        }
+          totalPages: Math.ceil(total / limitNumber),
+        },
       });
     }
 
@@ -341,13 +630,15 @@ export const getAssignments = async (req, res) => {
           total,
           page: pageNumber,
           limit: limitNumber,
-          totalPages: Math.ceil(total / limitNumber)
-        }
+          totalPages: Math.ceil(total / limitNumber),
+        },
       });
     }
 
     if (req.user.role === "student") {
-      const classrooms = await Class.find({ students: req.user._id }).select("_id");
+      const classrooms = await Class.find({ students: req.user._id }).select(
+        "_id",
+      );
       const classIds = classrooms.map((classroom) => classroom._id);
 
       const query = { ...filters, classId: { $in: classIds } };
@@ -365,8 +656,8 @@ export const getAssignments = async (req, res) => {
           total,
           page: pageNumber,
           limit: limitNumber,
-          totalPages: Math.ceil(total / limitNumber)
-        }
+          totalPages: Math.ceil(total / limitNumber),
+        },
       });
     }
 
@@ -381,22 +672,26 @@ export const getAssignments = async (req, res) => {
         total,
         page: pageNumber,
         limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber)
-      }
+        totalPages: Math.ceil(total / limitNumber),
+      },
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to fetch assignments.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch assignments.", error: error.message });
   }
 };
 
 export const createNotice = async (req, res) => {
   try {
     if (!isTeacher(req.user)) {
-      return res.status(403).json({ message: "Only teachers can create notices." });
+      return res
+        .status(403)
+        .json({ message: "Only teachers can create notices." });
     }
 
     const { classId } = req.params;
-    const { title, message } = req.body || {};
+    const { title, message, attachments, files } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -412,26 +707,37 @@ export const createNotice = async (req, res) => {
     }
 
     if (classroom.teacher.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Only the class teacher can create notices." });
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can create notices." });
     }
+
+    const rawAttachments = Array.isArray(attachments) ? attachments : files;
+    const sanitizedAttachments = Array.isArray(rawAttachments)
+      ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+      : [];
 
     const notice = await Notice.create({
       classId,
-      title: typeof title === "string" && title.trim() ? title.trim() : "Notice",
+      title:
+        typeof title === "string" && title.trim() ? title.trim() : "Notice",
       message: message.trim(),
-      createdBy: req.user._id
+      attachments: sanitizedAttachments,
+      createdBy: req.user._id,
     });
 
     await Class.findByIdAndUpdate(classId, {
-      $addToSet: { notices: notice._id }
+      $addToSet: { notices: notice._id },
     });
 
     return res.status(201).json({
       message: "Notice created successfully.",
-      notice
+      notice,
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to create notice.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to create notice.", error: error.message });
   }
 };
 
@@ -453,20 +759,22 @@ export const getClassroomNotices = async (req, res) => {
     }
 
     if (!userCanAccessClass(classroom, req.user)) {
-      return res.status(403).json({ message: "You are not part of this class." });
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
     }
 
     const query = { classId };
     if (typeof search === "string" && search.trim()) {
       query.$or = [
         { title: { $regex: search.trim(), $options: "i" } },
-        { message: { $regex: search.trim(), $options: "i" } }
+        { message: { $regex: search.trim(), $options: "i" } },
       ];
     }
 
     const total = await Notice.countDocuments(query);
     const notices = await Notice.find(query)
-      .populate("createdBy", "name email role")
+      .populate("createdBy", "name email role image")
       .skip(skip)
       .limit(limitNumber)
       .sort({ createdAt: -1 });
@@ -477,10 +785,422 @@ export const getClassroomNotices = async (req, res) => {
         total,
         page: pageNumber,
         limit: limitNumber,
-        totalPages: Math.ceil(total / limitNumber)
-      }
+        totalPages: Math.ceil(total / limitNumber),
+      },
     });
   } catch (error) {
-    return res.status(500).json({ message: "Failed to fetch notices.", error: error.message });
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch notices.", error: error.message });
+  }
+};
+
+export const deleteClassroom = async (req, res) => {
+  try {
+    const { classId } = req.params;
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can delete this class." });
+    }
+
+    await Assignment.deleteMany({ classId });
+    await Notice.deleteMany({ classId });
+
+    await User.updateMany(
+      { classes: classroom._id },
+      { $pull: { classes: classroom._id } },
+    );
+
+    await Class.findByIdAndDelete(classId);
+
+    return res.status(200).json({ message: "Class deleted successfully." });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to delete class.", error: error.message });
+  }
+};
+
+export const deleteAssignment = async (req, res) => {
+  try {
+    const { classId, assignmentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can delete assignments." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId });
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    await Assignment.findByIdAndDelete(assignmentId);
+    await Class.findByIdAndUpdate(classId, {
+      $pull: { assignments: assignmentId },
+    });
+
+    return res.status(200).json({ message: "Assignment deleted successfully." });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to delete assignment.", error: error.message });
+  }
+};
+
+export const deleteNotice = async (req, res) => {
+  try {
+    const { classId, noticeId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(noticeId)) {
+      return res.status(400).json({ message: "Invalid classId or noticeId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can delete notices." });
+    }
+
+    const notice = await Notice.findOne({ _id: noticeId, classId });
+    if (!notice) {
+      return res.status(404).json({ message: "Notice not found." });
+    }
+
+    await Notice.findByIdAndDelete(noticeId);
+    await Class.findByIdAndUpdate(classId, {
+      $pull: { notices: noticeId },
+    });
+
+    return res.status(200).json({ message: "Notice deleted successfully." });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to delete notice.", error: error.message });
+  }
+};
+
+export const updateAssignment = async (req, res) => {
+  try {
+    if (!isTeacher(req.user)) {
+      return res
+        .status(403)
+        .json({ message: "Only teachers can update assignments." });
+    }
+
+    const { classId, assignmentId } = req.params;
+    const { title, description, dueDate, attachments, files } = req.body || {};
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can update assignments." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId });
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    const updates = {};
+    if (title !== undefined) {
+      if (typeof title !== "string" || !title.trim()) {
+        return res.status(400).json({ message: "Assignment title is required." });
+      }
+      updates.title = title.trim();
+    }
+    if (description !== undefined) {
+      updates.description = typeof description === "string" ? description.trim() : "";
+    }
+    if (dueDate !== undefined) {
+      if (dueDate && Number.isNaN(new Date(dueDate).getTime())) {
+        return res.status(400).json({ message: "Invalid dueDate format." });
+      }
+      updates.dueDate = dueDate ? new Date(dueDate) : null;
+    }
+    if (attachments !== undefined || files !== undefined) {
+      const rawAttachments = Array.isArray(attachments) ? attachments : files;
+      updates.attachments = Array.isArray(rawAttachments)
+        ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+        : [];
+    }
+
+    const updatedAssignment = await Assignment.findByIdAndUpdate(
+      assignmentId,
+      updates,
+      { new: true, runValidators: true }
+    ).populate("createdBy", "name email role");
+
+    return res.status(200).json({
+      message: "Assignment updated successfully.",
+      assignment: updatedAssignment,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to update assignment.", error: error.message });
+  }
+};
+
+export const updateNotice = async (req, res) => {
+  try {
+    if (!isTeacher(req.user)) {
+      return res
+        .status(403)
+        .json({ message: "Only teachers can update notices." });
+    }
+
+    const { classId, noticeId } = req.params;
+    const { title, message, attachments, files } = req.body || {};
+
+    if (!isValidObjectId(classId) || !isValidObjectId(noticeId)) {
+      return res.status(400).json({ message: "Invalid classId or noticeId." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can update notices." });
+    }
+
+    const notice = await Notice.findOne({ _id: noticeId, classId });
+    if (!notice) {
+      return res.status(404).json({ message: "Notice not found." });
+    }
+
+    const updates = {};
+    if (title !== undefined) {
+      updates.title = typeof title === "string" && title.trim() ? title.trim() : "Notice";
+    }
+    if (message !== undefined) {
+      if (typeof message !== "string" || !message.trim()) {
+        return res.status(400).json({ message: "Notice message is required." });
+      }
+      updates.message = message.trim();
+    }
+    if (attachments !== undefined || files !== undefined) {
+      const rawAttachments = Array.isArray(attachments) ? attachments : files;
+      updates.attachments = Array.isArray(rawAttachments)
+        ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+        : [];
+    }
+
+    const updatedNotice = await Notice.findByIdAndUpdate(
+      noticeId,
+      updates,
+      { new: true, runValidators: true }
+    ).populate("createdBy", "name email role image");
+
+    return res.status(200).json({
+      message: "Notice updated successfully.",
+      notice: updatedNotice,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to update notice.", error: error.message });
+  }
+};
+
+export const createComment = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { postId, postType, message } = req.body || {};
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    if (!postId || !isValidObjectId(postId)) {
+      return res.status(400).json({ message: "Invalid postId." });
+    }
+
+    if (!["assignment", "notice"].includes(postType)) {
+      return res.status(400).json({ message: "postType must be 'assignment' or 'notice'." });
+    }
+
+    if (typeof message !== "string" || !message.trim()) {
+      return res.status(400).json({ message: "Comment message is required." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    if (req.user?.role === "student" && postType !== "notice") {
+      return res
+        .status(403)
+        .json({ message: "Students can only comment on notices." });
+    }
+
+    const targetPost = postType === "assignment"
+      ? await Assignment.findOne({ _id: postId, classId }).select("_id")
+      : await Notice.findOne({ _id: postId, classId }).select("_id");
+
+    if (!targetPost) {
+      return res
+        .status(404)
+        .json({ message: `${postType} not found in this class.` });
+    }
+
+    const comment = await Comment.create({
+      classId,
+      postId,
+      postType,
+      message: message.trim(),
+      createdBy: req.user._id,
+    });
+
+    const populated = await Comment.findById(comment._id)
+      .populate("createdBy", "name email role image");
+
+    return res.status(201).json({
+      message: "Comment added successfully.",
+      comment: populated,
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to add comment.", error: error.message });
+  }
+};
+
+export const getComments = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { postId, postType } = req.query;
+
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({ message: "Invalid classId." });
+    }
+
+    if (!postId || !isValidObjectId(postId)) {
+      return res.status(400).json({ message: "Invalid postId." });
+    }
+
+    if (!["assignment", "notice"].includes(postType)) {
+      return res.status(400).json({ message: "postType must be 'assignment' or 'notice'." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    const targetPost = postType === "assignment"
+      ? await Assignment.findOne({ _id: postId, classId }).select("_id")
+      : await Notice.findOne({ _id: postId, classId }).select("_id");
+
+    if (!targetPost) {
+      return res
+        .status(404)
+        .json({ message: `${postType} not found in this class.` });
+    }
+
+    const comments = await Comment.find({ classId, postId, postType })
+      .populate("createdBy", "name email role image")
+      .sort({ createdAt: 1 });
+
+    return res.status(200).json({ comments });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to fetch comments.", error: error.message });
+  }
+};
+
+export const deleteComment = async (req, res) => {
+  try {
+    const { classId, commentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(commentId)) {
+      return res.status(400).json({ message: "Invalid classId or commentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res
+        .status(403)
+        .json({ message: "You are not part of this class." });
+    }
+
+    const comment = await Comment.findOne({ _id: commentId, classId });
+    if (!comment) {
+      return res.status(404).json({ message: "Comment not found." });
+    }
+
+    const isClassTeacher = extractId(classroom.teacher) === extractId(req.user?._id || req.user?.id);
+    const isCommentOwner = comment.createdBy.toString() === req.user._id.toString();
+
+    if (!isClassTeacher && !isCommentOwner) {
+      return res
+        .status(403)
+        .json({ message: "You can only delete your own comments." });
+    }
+
+    await Comment.findByIdAndDelete(commentId);
+
+    return res.status(200).json({ message: "Comment deleted successfully." });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ message: "Failed to delete comment.", error: error.message });
   }
 };

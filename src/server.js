@@ -1,18 +1,17 @@
-import express from "express";
-import cors from "cors";
-import dotenv from "dotenv";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import connectDB from "./db/connections.js";
-import apiRoutes from "./routes/api.js";
+import './loadEnv.js';
+import express from 'express';
+import cors from 'cors';
+import connectDB from './db/connections.js';
+import apiRoutes from './routes/api.js';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import session from 'express-session';
+import passport from './config/passport.js';
+import authRoutes from './routes/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Try to load from '../env' (local) or process.env directly (production/Docker)
-dotenv.config({ path: path.join(__dirname, '../env') });
-dotenv.config(); // Also load from root .env if it exists
 
 // Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
@@ -41,6 +40,11 @@ const allowedOrigins = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
   : ["http://localhost:5173"];
 
+const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+if (!allowedOrigins.includes(frontendUrl)) {
+  allowedOrigins.push(frontendUrl);
+}
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -57,7 +61,20 @@ app.use(
 app.use(express.json()); 
 app.use(express.urlencoded({ extended: true }));
 
-app.use("/api", apiRoutes);
+// Session Middleware (Needed for Passport)
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'supersecretcatsession',
+    resave: false,
+    saveUninitialized: true,
+}));
+
+// Initialize Passport
+app.use(passport.initialize());
+app.use(passport.session());
+
+// Routes
+app.use('/api', apiRoutes);
+app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
