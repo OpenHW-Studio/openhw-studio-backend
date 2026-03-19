@@ -1,9 +1,7 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import User from "../models/User.js";
 import generateToken from "../utils/helper/token.js";
-import { OAuth2Client } from "google-auth-library";
-
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 
 const normalizeEmail = (rawEmail = "") => rawEmail.trim().toLowerCase();
@@ -149,7 +147,7 @@ const signupUser = async (req, res) => {
 
 const logoutController = async (req, res) => {
   try {
-    res.cookie("jwt", "", { maxAge: 1 });
+    res.cookie("jwt", "", { httpOnly: true, sameSite: "strict", maxAge: 1 });
     res.status(200).json({ message: "User logged out successfully" });
   } catch (error) {
     console.log("Error in logoutController: ", error);
@@ -177,6 +175,11 @@ const updateUserProfile = async (req, res) => {
 
     if (updates.role && !allowedRoles.includes(updates.role)) {
       return res.status(400).json({ message: "Invalid role" });
+    }
+
+    // Prevent privilege escalation — only an admin can grant admin role
+    if (updates.role === "admin" && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorised to assign admin role" });
     }
 
     if (
@@ -235,7 +238,7 @@ const googleLogin = async (req, res) => {
         name,
         email,
         role: selectedRole,
-        password: Math.random().toString(36).slice(-8) + Math.random().toString(36).slice(-8), // Dummy password since they use Google
+        password: crypto.randomBytes(32).toString("hex"), // Secure dummy password — Google users authenticate via OAuth
         // Optional: save picture if your schema supports it
       });
     }

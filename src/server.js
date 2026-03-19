@@ -36,6 +36,31 @@ console.log("Attempting to connect to MongoDB...");
 connectDB();
 const app = express();
 
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
+  : ["http://localhost:5173"];
+
+const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+if (!allowedOrigins.includes(frontendUrl)) {
+  allowedOrigins.push(frontendUrl);
+}
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow server-to-server requests (no Origin header) and listed origins
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  })
+);
+app.use(express.json()); 
+app.use(express.urlencoded({ extended: true }));
+
 // Session Middleware (Needed for Passport)
 app.use(session({
     secret: process.env.SESSION_SECRET || 'supersecretcatsession',
@@ -46,13 +71,6 @@ app.use(session({
 // Initialize Passport
 app.use(passport.initialize());
 app.use(passport.session());
-
-// Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-  credentials: true,
-}));
-app.use(express.json());
 
 // Routes
 app.use('/api', apiRoutes);
