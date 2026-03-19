@@ -28,7 +28,7 @@ The Compiler Backend is the **central API server** for OpenHW Studio. It:
 - Connects to **MongoDB** for user and project data persistence
 - Receives and reviews **custom component** submissions from users
 
-The server runs on **http://localhost:5000**.
+The server runs on **http://localhost:5001**.
 
 > **Note on offline usage:** The frontend now caches compiled `.hex` results in IndexedDB (browser-side). Once a sketch has been compiled at least once, subsequent runs with the same code bypass this server entirely and run from the local cache. See [OFFLINE_AND_STORAGE.md](../OFFLINE_AND_STORAGE.md) for details.
 
@@ -192,7 +192,7 @@ npm install
 Create a file named `env` in the project root (this file is gitignored):
 
 ```env
-PORT=5000
+PORT=5001
 MONGO_URI=mongodb://localhost:27017/openhw-studio
 JWT_SECRET=your_secret_key_here
 ```
@@ -207,18 +207,36 @@ npm run dev
 npm start
 ```
 
-Server will be available at **http://localhost:5000**
+Server will be available at **http://localhost:5001**
 
 ---
 
 ## Environment Variables
 
+The backend uses a `.env` (or `env`) file for configuration. Create one in the root directory based on the table below:
+
 | Variable | Description | Default |
 |---|---|---|
-| `PORT` | Port the server listens on | `5000` |
-| `MONGO_URI` | MongoDB connection string | — |
-| `JWT_SECRET` | Secret key for signing JWTs | — |
+| `PORT` | Port the Express server listens on | `5001` |
+| `MONGO_URI` | MongoDB connection string (local or Atlas) | — |
+| `JWT_SECRET` | Secret key for signing JSON Web Tokens | — |
+| `JWT_EXPIRES_IN` | JWT expiration time (e.g., `7d`) | `7d` |
+| `SESSION_SECRET` | Secret key for Passport/express-session | — |
+| `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID | — |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Client Secret | — |
+| `GOOGLE_CALLBACK_URL` | Authorised redirect URI for Google Login | `http://localhost:5001/auth/google/callback` |
+| `FRONTEND_URL` | Frontend URL for CORS configuration | `http://localhost:5173` |
 
----
+### Sample `.env` Setup:
 
-*Part of the OpenHW Studio platform. See also: [OpenHW-studio-frontend-danish](../OpenHW-studio-frontend-danish) and [openhw-studio-emulator-danish](../openhw-studio-emulator-danish).*
+```env
+PORT=5001
+MONGO_URI=mongodb://localhost:27017/openhw-studio
+JWT_SECRET=your_secret_key_here
+JWT_EXPIRES_IN=7d
+SESSION_SECRET=your_session_secret_here
+GOOGLE_CLIENT_ID=your_id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your_secret_here
+GOOGLE_CALLBACK_URL=http://localhost:5001/auth/google/callback
+FRONTEND_URL=http://localhost:5173
+```
