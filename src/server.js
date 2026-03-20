@@ -77,7 +77,9 @@ app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
-const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
+const examplesDir = process.env.EXAMPLES_PATH 
+  ? path.resolve(process.env.EXAMPLES_PATH)
+  : path.resolve(__dirname, '../../openhw-studio-examples/examples');
 app.use('/examples', express.static(examplesDir));
 
 const PORT = process.env.PORT || 5000;

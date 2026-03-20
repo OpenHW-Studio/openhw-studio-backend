@@ -5,7 +5,9 @@ const DEFAULT_EMULATOR_PATH = path.resolve(process.cwd(), '../openhw-studio-emul
 const LOCAL_DATA_PATH = path.resolve(process.cwd(), 'data/components');
 
 // Environment variable override for production/Docker environments
-const EMULATOR_COMPONENTS_PATH = process.env.EMULATOR_COMPONENTS_PATH || (fs.existsSync(DEFAULT_EMULATOR_PATH) ? DEFAULT_EMULATOR_PATH : LOCAL_DATA_PATH);
+const EMULATOR_COMPONENTS_PATH = process.env.EMULATOR_COMPONENTS_PATH || 
+    (process.env.EMULATOR_PATH ? path.resolve(process.env.EMULATOR_PATH, 'src/components') : 
+    (fs.existsSync(DEFAULT_EMULATOR_PATH) ? DEFAULT_EMULATOR_PATH : LOCAL_DATA_PATH));
 
 // Ensure the directory exists to prevent ENOENT crashes
 if (!fs.existsSync(EMULATOR_COMPONENTS_PATH)) {
