@@ -26,57 +26,30 @@ const indexFile = path.join(dataDir, 'index.ts');
 });
 
 if (!fs.existsSync(indexFile)) {
-  fs.writeFileSync(indexFile, '// OpenHW Studio Component Index\n');
+  fs.writeFileSync(indexFile, '\n');
   console.log(`Initialized: ${indexFile}`);
 }
 
-// Connect to MongoDB
 console.log("Attempting to connect to MongoDB...");
-
 connectDB();
+
 const app = express();
 
-const allowedOrigins = process.env.ALLOWED_ORIGINS
-  ? process.env.ALLOWED_ORIGINS.split(",").map((o) => o.trim())
-  : ["http://localhost:5173"];
-
-const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-if (!allowedOrigins.includes(frontendUrl)) {
-  allowedOrigins.push(frontendUrl);
-}
-
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow server-to-server requests (no Origin header) and listed origins
-      if (!origin || allowedOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
-    credentials: true,
-  })
-);
-app.use(express.json()); 
-app.use(express.urlencoded({ extended: true }));
-
-// Session Middleware (Needed for Passport)
 app.use(session({
     secret: process.env.SESSION_SECRET || 'supersecretcatsession',
     resave: false,
     saveUninitialized: true,
 }));
 
-// Initialize Passport
 app.use(passport.initialize());
 app.use(passport.session());
 
-// Routes
+app.use(cors());
+app.use(express.json());
+
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
-// Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = path.resolve(__dirname, '../../openhw-studio-examples/examples');
 app.use('/examples', express.static(examplesDir));
 
