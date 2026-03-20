@@ -195,6 +195,8 @@ Create a file named `env` in the project root (this file is gitignored):
 PORT=5001
 MONGO_URI=mongodb://localhost:27017/openhw-studio
 JWT_SECRET=your_secret_key_here
+EXAMPLES_PATH=../path-to-openhw-studio-examples/examples
+EMULATOR_PATH=../path-to-openhw-studio-emulator
 ```
 
 ### Start the Server
@@ -226,7 +228,13 @@ The backend uses a `.env` (or `env`) file for configuration. Create one in the r
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Client Secret | — |
 | `GOOGLE_CALLBACK_URL` | Authorised redirect URI for Google Login | `http://localhost:5001/auth/google/callback` |
 | `FRONTEND_URL` | Frontend URL for CORS configuration | `http://localhost:5173` |
-| `EXAMPLES_PATH` | Path to the examples directory (relative or absolute) | `../../openhw-studio-examples/examples` |
+| `EXAMPLES_PATH` | Path to the examples directory served at `/examples` (absolute or relative to the backend root) | `../openhw-studio-examples-danish/examples` |
+| `EMULATOR_PATH` | Path to the emulator repo root; the backend uses `src/components` inside it | `../openhw-studio-emulator-danish` |
+| `EMULATOR_COMPONENTS_PATH` | Optional direct path to the emulator component directory | — |
+
+Notes:
+- Paths may be absolute or relative to the backend repository root.
+- Use `EMULATOR_COMPONENTS_PATH` if your emulator layout differs from the standard `src/components` structure.
 
 ### Sample `.env` Setup:
 
@@ -240,4 +248,6 @@ GOOGLE_CLIENT_ID=your_id.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=your_secret_here
 GOOGLE_CALLBACK_URL=http://localhost:5001/auth/google/callback
 FRONTEND_URL=http://localhost:5173
+EXAMPLES_PATH=../path-to-openhw-studio-examples/examples
+EMULATOR_PATH=../path-to-openhw-studio-emulator
 ```

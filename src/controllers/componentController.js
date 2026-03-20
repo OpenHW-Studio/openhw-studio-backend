@@ -1,13 +1,48 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 
-const DEFAULT_EMULATOR_PATH = path.resolve(process.cwd(), '../openhw-studio-emulator-danish/src/components');
-const LOCAL_DATA_PATH = path.resolve(process.cwd(), 'data/components');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const backendRoot = path.resolve(__dirname, '..', '..');
+const localDataPath = path.resolve(backendRoot, 'data/components');
 
-// Environment variable override for production/Docker environments
-const EMULATOR_COMPONENTS_PATH = process.env.EMULATOR_COMPONENTS_PATH || 
-    (process.env.EMULATOR_PATH ? path.resolve(process.env.EMULATOR_PATH, 'src/components') : 
-    (fs.existsSync(DEFAULT_EMULATOR_PATH) ? DEFAULT_EMULATOR_PATH : LOCAL_DATA_PATH));
+const resolveFromBackendRoot = (candidate) => (
+    path.isAbsolute(candidate) ? candidate : path.resolve(backendRoot, candidate)
+);
+
+const resolveFirstExisting = (candidates) => {
+    for (const candidate of candidates) {
+        const resolvedCandidate = resolveFromBackendRoot(candidate);
+        if (fs.existsSync(resolvedCandidate)) {
+            return resolvedCandidate;
+        }
+    }
+    return null;
+};
+
+const emulatorComponentsPath = (() => {
+    if (process.env.EMULATOR_COMPONENTS_PATH) {
+        return resolveFromBackendRoot(process.env.EMULATOR_COMPONENTS_PATH);
+    }
+
+    if (process.env.EMULATOR_PATH) {
+        return path.join(resolveFromBackendRoot(process.env.EMULATOR_PATH), 'src/components');
+    }
+
+    const resolvedRoot = resolveFirstExisting([
+        '../openhw-studio-emulator-danish',
+        '../openhw-studio-emulator',
+    ]);
+
+    if (resolvedRoot) {
+        return path.join(resolvedRoot, 'src/components');
+    }
+
+    return localDataPath;
+})();
+
+const EMULATOR_COMPONENTS_PATH = emulatorComponentsPath;
 
 // Ensure the directory exists to prevent ENOENT crashes
 if (!fs.existsSync(EMULATOR_COMPONENTS_PATH)) {

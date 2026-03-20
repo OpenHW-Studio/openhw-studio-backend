@@ -12,6 +12,25 @@ import authRoutes from './routes/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const backendRoot = path.resolve(__dirname, '..');
+
+const resolveConfiguredPath = (rawPath, fallbackCandidates = []) => {
+  const candidates = rawPath ? [rawPath] : fallbackCandidates;
+
+  for (const candidate of candidates) {
+    const resolvedCandidate = path.isAbsolute(candidate)
+      ? candidate
+      : path.resolve(backendRoot, candidate);
+
+    if (fs.existsSync(resolvedCandidate)) {
+      return resolvedCandidate;
+    }
+  }
+
+  return path.isAbsolute(fallbackCandidates[0] || '')
+    ? (fallbackCandidates[0] || backendRoot)
+    : path.resolve(backendRoot, fallbackCandidates[0] || '.');
+};
 
 // Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
@@ -51,9 +70,10 @@ app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
-const examplesDir = process.env.EXAMPLES_PATH 
-  ? path.resolve(process.env.EXAMPLES_PATH)
-  : path.resolve(__dirname, '../../openhw-studio-examples/examples');
+const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
+  '../openhw-studio-examples-danish/examples',
+  '../openhw-studio-examples/examples',
+]);
 app.use('/examples', express.static(examplesDir));
 
 const PORT = process.env.PORT || 5000;
