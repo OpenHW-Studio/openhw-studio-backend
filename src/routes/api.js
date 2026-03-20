@@ -5,6 +5,7 @@ import { searchLibrary, installLibrary, listLibraries, uninstallLibrary } from '
 import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
+import progressRouter from './progress.js'
 
 // Library Management
 router.get('/lib-search', searchLibrary);
@@ -25,5 +26,6 @@ router.get('/admin/components/backup', backupInstalledComponents);
 router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
+router.use('/progress', progressRouter)
 
 export default router;
