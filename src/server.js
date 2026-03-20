@@ -1,3 +1,4 @@
+import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
 import connectDB from './db/connections.js';
@@ -12,6 +13,7 @@ import authRoutes from './routes/auth.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
 const dataDir = path.join(__dirname, '../data/components');
 const indexFile = path.join(dataDir, 'index.ts');

@@ -1,6 +1,7 @@
 import express from 'express';
 import passport from 'passport';
 import jwt from 'jsonwebtoken';
+import { protectRoute } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
 
@@ -29,5 +30,11 @@ router.get(
         res.redirect(`${frontendUrl}?token=${token}`);
     }
 );
+
+// 3. Get current authenticated user
+// Frontend hits this with "Authorization: Bearer <token>" to get profile
+router.get('/me', protectRoute, (req, res) => {
+    res.json({ success: true, user: req.user });
+});
 
 export default router;
