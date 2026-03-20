@@ -175,10 +175,12 @@ The `nodemon.json` explicitly ignores the `temp/` directory. Without this, file 
 
 - **Node.js 18+**
 - **npm 9+**
-- **MongoDB** running locally (or a MongoDB Atlas connection string)
+- **MongoDB** running locally (or a MongoDB Atlas connection string) for authentication and classroom features
 - **arduino-cli** installed and on your system PATH (or placed in the project root)
   - Download: https://arduino.github.io/arduino-cli/latest/installation/
   - After installing, run: `arduino-cli core install arduino:avr`
+
+> If MongoDB is unavailable, the backend now starts in degraded mode so compile, library, examples, and component endpoints can still be used.
 
 ### Installation
 

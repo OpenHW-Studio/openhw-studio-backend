@@ -6,9 +6,12 @@ const connectDB = async () => {
     await mongoose.connect(process.env.MONGO_URI);
     console.log("MongoDB Connected");
   } catch (err) {
+    console.error("MongoDB connection failed. Continuing without database-backed features.");
     console.error(err);
-    process.exit(1);
+    return false;
   }
+
+  return true;
 };
 
 export default connectDB;
