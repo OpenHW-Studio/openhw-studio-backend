@@ -8,8 +8,8 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find arduino-cli globally via system PATH
-const ARDUINO_CLI_PATH = 'arduino-cli';
+// Find arduino-cli locally in the bin directory
+const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 
 function sanitizeSketchName(name) {
