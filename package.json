@@ -4,7 +4,7 @@
   "description": "Backend for OpenHW-Studio - Electronics Simulation Platform",
   "main": "src/server.js",
   "type": "module",
-"scripts": {
+  "scripts": {
     "start": "node --env-file=.env src/server.js",
     "dev": "nodemon --env-file=.env src/server.js"
   },
@@ -24,6 +24,7 @@
     "google-auth-library": "^10.6.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.3",
+    "multer": "^2.1.1",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0"
   },
