@@ -141,3 +141,13 @@ test_comp.js
 
 .env
 env
+PORT=5000
+
+JWT_SECRET=mysecret123
+
+EMAIL_USER=yourgmail@gmail.com
+EMAIL_PASS=abcdefghijklmnop
+
+FRONTEND_URL=http://localhost:5000
+
+MONGO_URI=mongodb://127.0.0.1:27017/openhw

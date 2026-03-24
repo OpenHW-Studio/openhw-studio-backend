@@ -2,6 +2,7 @@ import express from 'express';
 import passport from 'passport';
 import jwt from 'jsonwebtoken';
 import { protectRoute } from '../middleware/authMiddleware.js';
+import { forgotPassword, resetPassword } from "../controllers/authController.js";
 
 const router = express.Router();
 
@@ -38,3 +39,8 @@ router.get('/me', protectRoute, (req, res) => {
 });
 
 export default router;
+// Forgot Password
+router.post("/forgot-password", forgotPassword);
+
+// Reset Password
+router.post("/reset-password/:token", resetPassword);
