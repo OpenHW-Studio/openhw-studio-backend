@@ -10,6 +10,22 @@ const isNonEmptyString = (value) =>
 const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 
+const serializeUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  college: user.college,
+  branch: user.branch,
+  semester: user.semester,
+  bio: user.bio,
+  image: user.image,
+  points: user.points,
+  coins: user.coins,
+  level: user.level,
+  badges: user.badges,
+});
+
 const signinUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -35,17 +51,7 @@ const signinUser = async (req, res) => {
     res.status(200).json({
       message: "Login successful",
       token,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-        image: user.image,
-      },
+      user: serializeUser(user),
     });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
@@ -118,20 +124,7 @@ const signupUser = async (req, res) => {
 
     return res.status(201).json({
       message: "User registered successfully.",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-        image: user.image,
-        points: user.points,
-        coins: user.coins,
-        level: user.level,
-      },
+      user: serializeUser(user),
       token,
     });
   } catch (error) {
@@ -158,7 +151,7 @@ const logoutController = async (req, res) => {
 const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
-    const updatableFields = ["name", "role", "college", "branch", "semester", "bio", "image"];
+    const updatableFields = ["name", "email", "role", "college", "branch", "semester", "bio", "image"];
     const updates = {};
 
     for (const field of updatableFields) {
@@ -168,10 +161,30 @@ const updateUserProfile = async (req, res) => {
     }
 
     if (typeof updates.name === "string") updates.name = updates.name.trim();
+    if (typeof updates.email === "string") updates.email = normalizeEmail(updates.email);
     if (typeof updates.college === "string") updates.college = updates.college.trim();
     if (typeof updates.branch === "string") updates.branch = updates.branch.trim();
     if (typeof updates.bio === "string") updates.bio = updates.bio.trim();
     if (typeof updates.image === "string") updates.image = updates.image.trim();
+
+    if (Object.prototype.hasOwnProperty.call(updates, "name") && !updates.name) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, "email")) {
+      if (!updates.email || !isValidEmailFormat(updates.email)) {
+        return res.status(400).json({ message: "A valid email is required" });
+      }
+
+      const existingUser = await User.findOne({
+        email: updates.email,
+        _id: { $ne: req.user._id },
+      }).select("_id");
+
+      if (existingUser) {
+        return res.status(409).json({ message: "An account with this email already exists." });
+      }
+    }
 
     if (updates.role && !allowedRoles.includes(updates.role)) {
       return res.status(400).json({ message: "Invalid role" });
@@ -198,7 +211,7 @@ const updateUserProfile = async (req, res) => {
 
     return res.status(200).json({
       message: "Profile updated successfully",
-      user: updatedUser,
+      user: serializeUser(updatedUser),
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to update profile", error: error.message });
@@ -254,16 +267,7 @@ const googleLogin = async (req, res) => {
     return res.status(200).json({
       message: "Google login successful.",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-      },
+      user: serializeUser(user),
     });
 
   } catch (error) {

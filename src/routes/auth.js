@@ -34,7 +34,24 @@ router.get(
 // 3. Get current authenticated user
 // Frontend hits this with "Authorization: Bearer <token>" to get profile
 router.get('/me', protectRoute, (req, res) => {
-    res.json({ success: true, user: req.user });
+    res.json({
+        success: true,
+        user: {
+            id: req.user._id,
+            name: req.user.name,
+            email: req.user.email,
+            role: req.user.role,
+            college: req.user.college,
+            branch: req.user.branch,
+            semester: req.user.semester,
+            bio: req.user.bio,
+            image: req.user.image,
+            points: req.user.points,
+            coins: req.user.coins,
+            level: req.user.level,
+            badges: req.user.badges,
+        }
+    });
 });
 
 export default router;
