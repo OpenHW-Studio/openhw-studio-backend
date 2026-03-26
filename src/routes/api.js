@@ -6,6 +6,7 @@ import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
+import breadboardRoutes from './breadboard.js';
 
 // Library Management
 router.get('/lib-search', searchLibrary);
@@ -27,5 +28,6 @@ router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
 router.use('/progress', progressRouter)
+router.use('/breadboard', breadboardRoutes);
 
 export default router;
