@@ -149,6 +149,26 @@ const logoutController = async (req, res) => {
   }
 };
 
+const getUserProfile = async (req, res) => {
+  try {
+    // make sure to exclude sensitive fields and populate classes
+    const user = await User.findById(req.user._id)
+      .select("-password -resetPasswordToken -resetPasswordExpires")
+      .populate("classes");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    return res.status(200).json({
+      message: "User profile fetched successfully",
+      user,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch user profile", error: error.message });
+  }
+};
+
 const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
@@ -364,4 +384,13 @@ const resetPassword = async (req, res) => {
   }
 };
 
-export { signinUser, signupUser, logoutController, updateUserProfile, googleLogin, forgotPassword, resetPassword }
+export {
+  signinUser,
+  signupUser,
+  logoutController,
+  getUserProfile,
+  updateUserProfile,
+  googleLogin,
+  forgotPassword,
+  resetPassword,
+}

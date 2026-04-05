@@ -3,6 +3,7 @@ import {
 	signupUser,
 	signinUser,
 	logoutController,
+	getUserProfile,
 	updateUserProfile,
 	googleLogin,
 	forgotPassword,
@@ -19,6 +20,7 @@ router.post('/google', googleLogin);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password/:token', resetPassword);
 router.post('/logout', protectRoute, logoutController);
+router.get('/profile', protectRoute, getUserProfile);
 router.put('/profile', protectRoute, updateUserProfile);
 
 
