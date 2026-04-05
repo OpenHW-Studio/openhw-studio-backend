@@ -151,6 +151,7 @@ const logoutController = async (req, res) => {
 
 const getUserProfile = async (req, res) => {
   try {
+    // make sure to exclude sensitive fields and populate classes
     const user = await User.findById(req.user._id)
       .select("-password -resetPasswordToken -resetPasswordExpires")
       .populate("classes");
