@@ -5,7 +5,8 @@ import Notice from "../models/Notice.js";
 import Comment from "../models/Comment.js";
 import Submission from "../models/Submission.js";
 import User from "../models/User.js";
-
+import { getClassroomAssetPublicPath } from "../middleware/classroomUpload.js";
+//enhanced
 const { ObjectId } = mongoose.Types;
 
 const isTeacher = (user) => user?.role === "teacher";
@@ -1109,6 +1110,148 @@ export const createComment = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to add comment.", error: error.message });
+  }
+};
+
+export const uploadClassroomAssets = async (req, res) => {
+  try {
+    if (!req.user?._id) {
+      return res.status(401).json({ message: "Unauthorized upload request." });
+    }
+
+    const files = Array.isArray(req.files) ? req.files : [];
+
+    if (!files.length) {
+      return res.status(400).json({ message: "At least one file is required." });
+    }
+
+    return res.status(201).json({
+      message: "Files uploaded successfully.",
+      files: files.map((file) => ({
+        name: file.originalname,
+        url: getClassroomAssetPublicPath(file.path),
+        mimeType: file.mimetype,
+        size: file.size,
+      })),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to upload classroom files.",
+      error: error.message,
+    });
+  }
+};
+
+export const getMyAssignmentSubmission = async (req, res) => {
+  try {
+    const { classId, assignmentId } = req.params;
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res.status(403).json({ message: "You are not part of this class." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
+      "_id title dueDate createdAt",
+    );
+
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    const submission = await Submission.findOne({
+      assignmentId,
+      studentId: req.user._id,
+    })
+      .populate("projectId", "_id board updatedAt createdAt");
+
+    return res.status(200).json({
+      assignment,
+      submission,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to fetch submission.",
+      error: error.message,
+    });
+  }
+};
+
+export const upsertAssignmentSubmission = async (req, res) => {
+  try {
+    const { classId, assignmentId } = req.params;
+    const { projectId, notes, attachments, files } = req.body || {};
+
+    if (req.user?.role !== "student") {
+      return res.status(403).json({ message: "Only students can submit assignments." });
+    }
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res.status(403).json({ message: "You are not part of this class." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select("_id dueDate");
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    if (assignment.dueDate && new Date(assignment.dueDate) < new Date()) {
+      return res.status(400).json({
+        message: "This assignment is closed. Submissions are no longer accepted.",
+      });
+    }
+
+    const rawAttachments = Array.isArray(attachments) ? attachments : files;
+    const sanitizedAttachments = Array.isArray(rawAttachments)
+      ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
+      : [];
+
+    const updatePayload = {
+      classId,
+      assignmentId,
+      studentId: req.user._id,
+      projectId: isValidObjectId(projectId) ? projectId : undefined,
+      notes: typeof notes === "string" ? notes.trim() : "",
+      attachments: sanitizedAttachments,
+    };
+
+    const submission = await Submission.findOneAndUpdate(
+      { assignmentId, studentId: req.user._id },
+      updatePayload,
+      {
+        new: true,
+        upsert: true,
+        setDefaultsOnInsert: true,
+        runValidators: true,
+      },
+    ).populate("projectId", "_id board updatedAt createdAt");
+
+    return res.status(200).json({
+      message: "Assignment submitted successfully.",
+      submission,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to submit assignment.",
+      error: error.message,
+    });
   }
 };
 

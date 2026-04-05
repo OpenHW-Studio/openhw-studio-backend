@@ -15,7 +15,9 @@ const userSchema = new mongoose.Schema({
   points: { type: Number, default: 0 },
   coins: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
-  badges: [String]
+  badges: [String],
+  resetPasswordToken: { type: String },
+  resetPasswordExpires: { type: Date }
 }, { timestamps: true });
 
 export default mongoose.model("User", userSchema);
