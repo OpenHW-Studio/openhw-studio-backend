@@ -12,6 +12,8 @@ const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const pickFirstNonEmptyString = (...values) =>
   values.find((value) => isNonEmptyString(value));
+const isStrongPassword = (password = "") =>
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@#$!%*?&]).{8,}$/.test(password);
 
 const serializeUser = (user) => ({
   id: user._id,
@@ -82,12 +84,12 @@ const signupUser = async (req, res) => {
         error: "Name, email, and password must be non-empty strings.",
       });
     }
-
-    if (password.length < 8) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 8 characters long." });
-    }
+if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
 
     const sanitizedEmail =
       typeof email === "string" ? normalizeEmail(email) : "";
@@ -378,9 +380,12 @@ const resetPassword = async (req, res) => {
 
     // Set new password
     const { password } = req.body;
-    if (!password || password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
-    }
+    if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
 
     user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;
