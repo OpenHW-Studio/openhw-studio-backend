@@ -54,8 +54,8 @@ if (googleClientId && googleClientSecret &&
                         role,
                         image: picture,
                         // Optional fields from state (student-specific)
-                        ...(state.college && { college: state.college }),
-                        ...(state.semester && { semester: state.semester }),
+                        ...(state.school && { school: state.school }),
+                        ...(state.classStandard && { classStandard: state.classStandard }),
                     });
 
                     return done(null, user);
