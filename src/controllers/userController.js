@@ -2,6 +2,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import User from "../models/User.js";
 import generateToken from "../utils/helper/token.js";
+import sendEmail from "../utils/sendEmail.js";
 
 
 const normalizeEmail = (rawEmail = "") => rawEmail.trim().toLowerCase();
@@ -9,6 +10,25 @@ const isNonEmptyString = (value) =>
   typeof value === "string" && value.trim().length > 0;
 const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const pickFirstNonEmptyString = (...values) =>
+  values.find((value) => isNonEmptyString(value));
+const isStrongPassword = (password = "") =>
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@#$!%*?&]).{8,}$/.test(password);
+
+const serializeUser = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  school: user.school,
+  classStandard: user.classStandard,
+  bio: user.bio,
+  image: user.image,
+  points: user.points,
+  coins: user.coins,
+  level: user.level,
+  badges: user.badges,
+});
 
 const signinUser = async (req, res) => {
   try {
@@ -39,17 +59,7 @@ const signinUser = async (req, res) => {
     res.status(200).json({
       message: "Login successful",
       token,
-      user: {
-        id: user._id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-        image: user.image,
-      },
+      user: serializeUser(user),
     });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
@@ -58,7 +68,16 @@ const signinUser = async (req, res) => {
 
 const signupUser = async (req, res) => {
   try {
-    const { name, email, password, role, college, branch, semester, bio, image } = req.body || {};
+    const {
+      name,
+      email,
+      password,
+      role,
+      school,
+      classStandard,
+      bio,
+      image,
+    } = req.body || {};
 
     const hasValidName = isNonEmptyString(name);
     const hasValidEmail = isNonEmptyString(email);
@@ -69,12 +88,12 @@ const signupUser = async (req, res) => {
         error: "Name, email, and password must be non-empty strings.",
       });
     }
-
-    if (password.length < 8) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 8 characters long." });
-    }
+if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
 
     const sanitizedEmail =
       typeof email === "string" ? normalizeEmail(email) : "";
@@ -100,15 +119,16 @@ const signupUser = async (req, res) => {
 
     const allowedRoles = ["student", "teacher", "user"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
+    const resolvedSchool = pickFirstNonEmptyString(school);
+    const resolvedStandard = pickFirstNonEmptyString(classStandard);
 
     const user = await User.create({
       name: name.trim(),
       email: sanitizedEmail,
       password: hashedPassword,
       role: selectedRole,
-      college: isNonEmptyString(college) ? college.trim() : undefined,
-      branch: isNonEmptyString(branch) ? branch.trim() : undefined,
-      semester: Number.isInteger(semester) ? semester : undefined,
+      school: resolvedSchool ? resolvedSchool.trim() : undefined,
+      classStandard: resolvedStandard ? resolvedStandard.trim() : undefined,
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
@@ -122,20 +142,7 @@ const signupUser = async (req, res) => {
 
     return res.status(201).json({
       message: "User registered successfully.",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-        image: user.image,
-        points: user.points,
-        coins: user.coins,
-        level: user.level,
-      },
+      user: serializeUser(user),
       token,
     });
   } catch (error) {
@@ -159,10 +166,33 @@ const logoutController = async (req, res) => {
   }
 };
 
+const getUserProfile = async (req, res) => {
+  try {
+    // make sure to exclude sensitive fields and populate classes
+    const user = await User.findById(req.user._id)
+      .select("-password -resetPasswordToken -resetPasswordExpires")
+      .populate("classes");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const profile = user.toObject();
+    delete profile.email;
+
+    return res.status(200).json({
+      message: "User profile fetched successfully",
+      user: profile,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch user profile", error: error.message });
+  }
+};
+
 const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
-    const updatableFields = ["name", "role", "college", "branch", "semester", "bio", "image"];
+    const updatableFields = ["name", "email", "role", "school", "classStandard", "bio", "image"];
     const updates = {};
 
     for (const field of updatableFields) {
@@ -171,11 +201,39 @@ const updateUserProfile = async (req, res) => {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(req.body, "school")) {
+      updates.school = req.body.school;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "classStandard")) {
+      updates.classStandard = req.body.classStandard;
+    }
+
     if (typeof updates.name === "string") updates.name = updates.name.trim();
-    if (typeof updates.college === "string") updates.college = updates.college.trim();
-    if (typeof updates.branch === "string") updates.branch = updates.branch.trim();
+    if (typeof updates.email === "string") updates.email = normalizeEmail(updates.email);
+    if (typeof updates.school === "string") updates.school = updates.school.trim();
+    if (typeof updates.classStandard === "string") updates.classStandard = updates.classStandard.trim();
     if (typeof updates.bio === "string") updates.bio = updates.bio.trim();
     if (typeof updates.image === "string") updates.image = updates.image.trim();
+
+    if (Object.prototype.hasOwnProperty.call(updates, "name") && !updates.name) {
+      return res.status(400).json({ message: "Name is required" });
+    }
+
+    if (Object.prototype.hasOwnProperty.call(updates, "email")) {
+      if (!updates.email || !isValidEmailFormat(updates.email)) {
+        return res.status(400).json({ message: "A valid email is required" });
+      }
+
+      const existingUser = await User.findOne({
+        email: updates.email,
+        _id: { $ne: req.user._id },
+      }).select("_id");
+
+      if (existingUser) {
+        return res.status(409).json({ message: "An account with this email already exists." });
+      }
+    }
 
     if (updates.role && !allowedRoles.includes(updates.role)) {
       return res.status(400).json({ message: "Invalid role" });
@@ -186,15 +244,6 @@ const updateUserProfile = async (req, res) => {
       return res.status(403).json({ message: "Not authorised to assign admin role" });
     }
 
-    if (
-      Object.prototype.hasOwnProperty.call(updates, "semester") &&
-      updates.semester !== undefined &&
-      updates.semester !== null &&
-      !Number.isInteger(updates.semester)
-    ) {
-      return res.status(400).json({ message: "Semester must be an integer" });
-    }
-
     const updatedUser = await User.findByIdAndUpdate(req.user._id, updates, {
       new: true,
       runValidators: true,
@@ -202,7 +251,7 @@ const updateUserProfile = async (req, res) => {
 
     return res.status(200).json({
       message: "Profile updated successfully",
-      user: updatedUser,
+      user: serializeUser(updatedUser),
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to update profile", error: error.message });
@@ -262,16 +311,7 @@ const googleLogin = async (req, res) => {
     return res.status(200).json({
       message: "Google login successful.",
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        college: user.college,
-        branch: user.branch,
-        semester: user.semester,
-        bio: user.bio,
-      },
+      user: serializeUser(user),
     });
 
   } catch (error) {
@@ -280,4 +320,103 @@ const googleLogin = async (req, res) => {
   }
 };
 
-export { signinUser, signupUser, logoutController, updateUserProfile, googleLogin }
+const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email: normalizeEmail(email) });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    // Create reset token
+    const resetToken = crypto.randomBytes(20).toString('hex');
+
+    // Hash token and set to resetPasswordToken field
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+
+    // Set expires
+    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+    await user.save();
+
+    const resetUrl = `${process.env.FRONTEND_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
+
+    const message = `You are receiving this email because you (or someone else) has requested the reset of a password. Please make a POST request to: \n\n ${resetUrl}`;
+
+    try {
+      await sendEmail({
+        email: user.email,
+        subject: 'Password reset token',
+        message,
+      });
+
+      res.status(200).json({ success: true, data: 'Email sent' });
+    } catch (err) {
+      console.error(err);
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpires = undefined;
+
+      await user.save();
+
+      res.status(500).json({ message: 'Email could not be sent' });
+    }
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const resetPassword = async (req, res) => {
+  try {
+    // Get hashed token
+    const resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(req.params.token)
+      .digest('hex');
+
+    const user = await User.findOne({
+      resetPasswordToken,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid token' });
+    }
+
+    // Set new password
+    const { password } = req.body;
+    if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
+
+    user.password = await bcrypt.hash(password, 10);
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
+
+    await user.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successful',
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+export {
+  signinUser,
+  signupUser,
+  logoutController,
+  getUserProfile,
+  updateUserProfile,
+  googleLogin,
+  forgotPassword,
+  resetPassword,
+}

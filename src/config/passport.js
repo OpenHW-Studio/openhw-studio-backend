@@ -12,37 +12,55 @@ if (googleClientId && googleClientSecret &&
             {
                 clientID: googleClientId,
                 clientSecret: googleClientSecret,
-                callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5000/auth/google/callback',
+                callbackURL: process.env.GOOGLE_CALLBACK_URL || 'http://localhost:5001/auth/google/callback',
+                // Pass the request object to the verify callback so we can read oauthState
+                passReqToCallback: true,
             },
-            async (accessToken, refreshToken, profile, done) => {
+            async (req, accessToken, refreshToken, profile, done) => {
                 try {
-                    // Find existing user by Google ID or by the email they registered with previously
+                    const email = profile.emails[0].value;
+
+                    // Find existing user by Google ID or by email
                     let user = await User.findOne({
                         $or: [
                             { googleId: profile.id },
-                            { email: profile.emails[0].value }
+                            { email },
                         ]
                     });
 
                     if (user) {
-                        // If user exists but doesn't have a googleId (they registered manually first)
+                        // Existing user — link their Google ID if not already linked
                         if (!user.googleId) {
                             user.googleId = profile.id;
                             await user.save();
                         }
+                        // Never overwrite an existing user's role on login
                         return done(null, user);
                     }
 
-                    // If not found, create a new user
+                    // ── New user ──────────────────────────────────────────────
+                    // Read the state that was attached in the callback route
+                    const state = req.oauthState || {};
+                    const allowedRoles = ['student', 'teacher'];
+                    const role = allowedRoles.includes(state.role) ? state.role : 'student';
+
+                    // Google provides name, email, and picture — use picture as default image
+                    const picture = profile.photos?.[0]?.value || '';
+
                     user = await User.create({
                         googleId: profile.id,
                         name: profile.displayName,
-                        email: profile.emails[0].value,
+                        email,
+                        role,
+                        image: picture,
+                        // Optional fields from state (student-specific)
+                        ...(state.school && { school: state.school }),
+                        ...(state.classStandard && { classStandard: state.classStandard }),
                     });
 
-                    done(null, user);
+                    return done(null, user);
                 } catch (err) {
-                    done(err, null);
+                    return done(err, null);
                 }
             }
         )
@@ -50,7 +68,7 @@ if (googleClientId && googleClientSecret &&
     console.log('✅ Google OAuth strategy registered');
 } else {
     console.warn('⚠️  Google OAuth credentials not configured — /auth/google routes will be unavailable');
-    console.warn('   Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your .env file');
+    console.warn('   Add GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET to your env file');
 }
 
 passport.serializeUser((user, done) => {

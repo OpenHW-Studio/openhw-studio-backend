@@ -129,6 +129,7 @@ openhw-studio-backend-danish/
 | `POST` | `/api/user/signup` | Register a new user |
 | `POST` | `/api/user/signin` | Authenticate and receive JWT |
 | `POST` | `/api/user/logout` | Invalidate session |
+| `GET` | `/api/user/profile` | Get current user profile details |
 | `PUT` | `/api/user/profile` | Update user profile |
 
 ---
