@@ -81,6 +81,7 @@ openhw-studio-backend-danish/
 | Method | Endpoint | Description |
 |---|---|---|
 | `POST` | `/api/compile` | Compile Arduino C++ code → returns `.hex` |
+| `GET` | `/api/compile/pico/micropython-uf2` | Fetch cached default Pico MicroPython UF2 payload (CORS-safe via backend) |
 
 **Request body:**
 ```json
@@ -178,7 +179,13 @@ The `nodemon.json` explicitly ignores the `temp/` directory. Without this, file 
 - **MongoDB** running locally (or a MongoDB Atlas connection string) for authentication and classroom features
 - **arduino-cli** installed and on your system PATH (or placed in the project root)
   - Download: https://arduino.github.io/arduino-cli/latest/installation/
-  - After installing, run: `arduino-cli core install arduino:avr`
+  - After installing, run:
+    ```bash
+    arduino-cli config add board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json
+    arduino-cli core update-index
+    arduino-cli core install arduino:avr
+    arduino-cli core install rp2040:rp2040
+    ```
 
 > If MongoDB is unavailable, the backend now starts in degraded mode so compile, library, examples, and component endpoints can still be used.
 
@@ -233,10 +240,14 @@ The backend uses a `.env` (or `env`) file for configuration. Create one in the r
 | `EXAMPLES_PATH` | Path to the examples directory served at `/examples` (absolute or relative to the backend root) | `../openhw-studio-examples-danish/examples` |
 | `EMULATOR_PATH` | Path to the emulator repo root; the backend uses `src/components` inside it | `../openhw-studio-emulator-danish` |
 | `EMULATOR_COMPONENTS_PATH` | Optional direct path to the emulator component directory | — |
+| `PICO_MICROPYTHON_UART0_UF2_URL` | Preferred source (URL or local file path) for UART0-enabled Pico MicroPython UF2 | — |
+| `PICO_MICROPYTHON_UF2_URL` | Backward-compatible alias for Pico MicroPython UF2 source (URL or local path) | — |
+| `PICO_MICROPYTHON_CACHE_TTL_MS` | Cache lifetime (milliseconds) for backend-fetched Pico UF2 asset | `21600000` |
 
 Notes:
 - Paths may be absolute or relative to the backend repository root.
 - Use `EMULATOR_COMPONENTS_PATH` if your emulator layout differs from the standard `src/components` structure.
+- For rp2040js MicroPython simulation, configure a UART0 REPL UF2 build. The official `micropython.org` Pico UF2 uses USB CDC REPL and is intentionally rejected.
 
 ### Sample `.env` Setup:
 

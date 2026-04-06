@@ -12,12 +12,16 @@ const isValidEmailFormat = (value = "") =>
 
 const signinUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
 
     const sanitizedEmail = normalizeEmail(email || "");
     const user = await User.findOne({ email: sanitizedEmail });
     if (!user) {
       return res.status(400).json({ message: "User not found" });
+    }
+
+    if (role && role !== "user" && user.role !== role) {
+      return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -94,7 +98,7 @@ const signupUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const allowedRoles = ["student", "teacher"];
+    const allowedRoles = ["student", "teacher", "user"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
 
     const user = await User.create({
@@ -231,8 +235,8 @@ const googleLogin = async (req, res) => {
 
     if (!user) {
       // If user doesn't exist, create them
-      const allowedRoles = ["student", "teacher"];
-      const selectedRole = allowedRoles.includes(role) ? role : "student";
+      const allowedRoles = ["student", "teacher", "user"];
+      const selectedRole = allowedRoles.includes(role) ? role : "user";
 
       user = await User.create({
         name,
@@ -241,6 +245,10 @@ const googleLogin = async (req, res) => {
         password: crypto.randomBytes(32).toString("hex"), // Secure dummy password — Google users authenticate via OAuth
         // Optional: save picture if your schema supports it
       });
+    } else {
+      if (role && role !== "user" && user.role !== role) {
+        return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
+      }
     }
 
     // Generate JWT

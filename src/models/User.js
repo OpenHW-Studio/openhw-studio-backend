@@ -5,7 +5,7 @@ const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   googleId: { type: String },
   password: { type: String }, // Optional for Google Auth users
-  role: { type: String, enum: ["student", "teacher", "admin"], default: "student" },
+  role: { type: String, enum: ["student", "teacher", "admin", "user"], default: "student" },
   college: { type: String, trim: true },
   branch: { type: String, trim: true },
   semester: { type: Number, min: 1, max: 12 },
