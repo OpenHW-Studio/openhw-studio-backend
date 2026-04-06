@@ -48,14 +48,13 @@ router.get(
  *      GET /auth/google/signup?role=teacher      (teacher sign-up)
  *
  *    Optional for students (include in query params to pre-fill):
- *      &college=IIT+Bombay
- *      &semester=3
+ *      &school=Springfield+High+School
  *
  *    The role (and optional fields) are encoded in the OAuth `state`
  *    parameter so Google passes them back unchanged in the callback.
  */
 router.get('/google/signup', (req, res, next) => {
-    const { role, college, semester } = req.query;
+    const { role, school, classStandard } = req.query;
 
     if (!ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({
@@ -67,8 +66,10 @@ router.get('/google/signup', (req, res, next) => {
         intent: 'signup',
         role,
         // Optional fields — only attached if provided
-        ...(college && { college }),
-        ...(semester && !isNaN(Number(semester)) && { semester: Number(semester) }),
+        ...(school && { school }),
+        ...((classStandard) && {
+            classStandard: classStandard
+        }),
     };
 
     passport.authenticate('google', {
@@ -112,11 +113,9 @@ router.get('/me', protectRoute, (req, res) => {
         user: {
             id: req.user._id,
             name: req.user.name,
-            email: req.user.email,
             role: req.user.role,
-            college: req.user.college,
-            branch: req.user.branch,
-            semester: req.user.semester,
+            school: req.user.school,
+            classStandard: req.user.classStandard,
             bio: req.user.bio,
             image: req.user.image,
             points: req.user.points,

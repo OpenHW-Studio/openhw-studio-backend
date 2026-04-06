@@ -10,15 +10,16 @@ const isNonEmptyString = (value) =>
   typeof value === "string" && value.trim().length > 0;
 const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+const pickFirstNonEmptyString = (...values) =>
+  values.find((value) => isNonEmptyString(value));
 
 const serializeUser = (user) => ({
   id: user._id,
   name: user.name,
   email: user.email,
   role: user.role,
-  college: user.college,
-  branch: user.branch,
-  semester: user.semester,
+  school: user.school,
+  classStandard: user.classStandard,
   bio: user.bio,
   image: user.image,
   points: user.points,
@@ -61,7 +62,16 @@ const signinUser = async (req, res) => {
 
 const signupUser = async (req, res) => {
   try {
-    const { name, email, password, role, college, branch, semester, bio, image } = req.body || {};
+    const {
+      name,
+      email,
+      password,
+      role,
+      school,
+      classStandard,
+      bio,
+      image,
+    } = req.body || {};
 
     const hasValidName = isNonEmptyString(name);
     const hasValidEmail = isNonEmptyString(email);
@@ -103,15 +113,16 @@ const signupUser = async (req, res) => {
 
     const allowedRoles = ["student", "teacher"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
+    const resolvedSchool = pickFirstNonEmptyString(school);
+    const resolvedStandard = pickFirstNonEmptyString(classStandard);
 
     const user = await User.create({
       name: name.trim(),
       email: sanitizedEmail,
       password: hashedPassword,
       role: selectedRole,
-      college: isNonEmptyString(college) ? college.trim() : undefined,
-      branch: isNonEmptyString(branch) ? branch.trim() : undefined,
-      semester: Number.isInteger(semester) ? semester : undefined,
+      school: resolvedSchool ? resolvedSchool.trim() : undefined,
+      classStandard: resolvedStandard ? resolvedStandard.trim() : undefined,
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
@@ -160,9 +171,12 @@ const getUserProfile = async (req, res) => {
       return res.status(404).json({ message: "User not found" });
     }
 
+    const profile = user.toObject();
+    delete profile.email;
+
     return res.status(200).json({
       message: "User profile fetched successfully",
-      user,
+      user: profile,
     });
   } catch (error) {
     return res.status(500).json({ message: "Failed to fetch user profile", error: error.message });
@@ -172,7 +186,7 @@ const getUserProfile = async (req, res) => {
 const updateUserProfile = async (req, res) => {
   try {
     const allowedRoles = ["student", "teacher", "admin"];
-    const updatableFields = ["name", "email", "role", "college", "branch", "semester", "bio", "image"];
+    const updatableFields = ["name", "email", "role", "school", "classStandard", "bio", "image"];
     const updates = {};
 
     for (const field of updatableFields) {
@@ -181,10 +195,18 @@ const updateUserProfile = async (req, res) => {
       }
     }
 
+    if (Object.prototype.hasOwnProperty.call(req.body, "school")) {
+      updates.school = req.body.school;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "classStandard")) {
+      updates.classStandard = req.body.classStandard;
+    }
+
     if (typeof updates.name === "string") updates.name = updates.name.trim();
     if (typeof updates.email === "string") updates.email = normalizeEmail(updates.email);
-    if (typeof updates.college === "string") updates.college = updates.college.trim();
-    if (typeof updates.branch === "string") updates.branch = updates.branch.trim();
+    if (typeof updates.school === "string") updates.school = updates.school.trim();
+    if (typeof updates.classStandard === "string") updates.classStandard = updates.classStandard.trim();
     if (typeof updates.bio === "string") updates.bio = updates.bio.trim();
     if (typeof updates.image === "string") updates.image = updates.image.trim();
 
@@ -214,15 +236,6 @@ const updateUserProfile = async (req, res) => {
     // Prevent privilege escalation — only an admin can grant admin role
     if (updates.role === "admin" && req.user.role !== "admin") {
       return res.status(403).json({ message: "Not authorised to assign admin role" });
-    }
-
-    if (
-      Object.prototype.hasOwnProperty.call(updates, "semester") &&
-      updates.semester !== undefined &&
-      updates.semester !== null &&
-      !Number.isInteger(updates.semester)
-    ) {
-      return res.status(400).json({ message: "Semester must be an integer" });
     }
 
     const updatedUser = await User.findByIdAndUpdate(req.user._id, updates, {
