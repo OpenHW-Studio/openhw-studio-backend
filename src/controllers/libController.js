@@ -5,9 +5,9 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-//const ARDUINO_CLI_PATH = 'arduino-cli';
+const ARDUINO_CLI_PATH = 'arduino-cli';
 // Find arduino-cli locally in the bin directory
-const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
+// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
 
 export const searchLibrary = (req, res) => {
     const query = req.query.q;
