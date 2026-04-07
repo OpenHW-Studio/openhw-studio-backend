@@ -436,25 +436,38 @@ function resolveCompileArtifact(buildDir, targetFqbn) {
         : ['.hex', '.uf2'];
 
     for (const ext of preferredExts) {
-        const outputName = outFiles.find((name) => name.toLowerCase().endsWith(ext));
-        if (!outputName) continue;
+        const matchingArtifacts = outFiles
+            .filter((name) => name.toLowerCase().endsWith(ext))
+            .map((name) => {
+                const artifactPath = path.join(buildDir, name);
+                let mtimeMs = 0;
+                try {
+                    mtimeMs = fs.statSync(artifactPath).mtimeMs;
+                } catch {
+                    mtimeMs = 0;
+                }
+                return { name, artifactPath, mtimeMs };
+            })
+            .sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.name.localeCompare(b.name));
 
-        const artifactPath = path.join(buildDir, outputName);
+        const selected = matchingArtifacts[0];
+        if (!selected) continue;
+
         if (ext === '.hex') {
-            const text = fs.readFileSync(artifactPath, 'utf8');
+            const text = fs.readFileSync(selected.artifactPath, 'utf8');
             return {
                 payload: text,
                 artifactType: 'hex',
-                artifactName: outputName,
+                artifactName: selected.name,
                 outputFiles: outFiles,
             };
         }
 
-        const raw = fs.readFileSync(artifactPath);
+        const raw = fs.readFileSync(selected.artifactPath);
         return {
             payload: `${UF2_PAYLOAD_PREFIX}${raw.toString('base64')}`,
             artifactType: 'uf2',
-            artifactName: outputName,
+            artifactName: selected.name,
             outputFiles: outFiles,
         };
     }
@@ -469,16 +482,29 @@ function resolveCompileArtifact(buildDir, targetFqbn) {
 
 function resolveElfArtifact(buildDir) {
     const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
-    const elfName = outFiles.find((name) => name.toLowerCase().endsWith('.elf'));
-    if (!elfName) {
+    const matchingElfs = outFiles
+        .filter((name) => name.toLowerCase().endsWith('.elf'))
+        .map((name) => {
+            const elfPath = path.join(buildDir, name);
+            let mtimeMs = 0;
+            try {
+                mtimeMs = fs.statSync(elfPath).mtimeMs;
+            } catch {
+                mtimeMs = 0;
+            }
+            return { name, elfPath, mtimeMs };
+        })
+        .sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.name.localeCompare(b.name));
+
+    const selectedElf = matchingElfs[0];
+    if (!selectedElf) {
         return {
             elfPayload: '',
             elfName: null,
         };
     }
 
-    const elfPath = path.join(buildDir, elfName);
-    const raw = fs.readFileSync(elfPath);
+    const raw = fs.readFileSync(selectedElf.elfPath);
     return {
         elfPayload: `ELFBASE64:${raw.toString('base64')}`,
         elfName,
@@ -1034,12 +1060,19 @@ pico_add_extra_outputs(firmware)
 `;
         fs.writeFileSync(cmakelists, cmaketemplated);
 
+        const cmakePathEntries = [
+            toolchain.bin,
+            ...(path.isAbsolute(ninjaExe) ? [path.dirname(ninjaExe)] : []),
+            ...(picotoolExe && path.isAbsolute(picotoolExe) ? [path.dirname(picotoolExe)] : []),
+            process.env.PATH || '',
+        ];
+
         const cmakeEnv = {
             ...process.env,
             PICO_SDK_PATH: picoSdkPath,
             PICO_TOOLCHAIN_PATH: toolchain.root,
             ...(picotoolExe ? { PICO_PICOTOOL_EXE: picotoolExe.replace(/\\/g, '/') } : {}),
-            PATH: `${toolchain.bin}${path.delimiter}${path.dirname(ninjaExe)}${picotoolExe ? `${path.delimiter}${path.dirname(picotoolExe)}` : ''}${path.delimiter}${process.env.PATH || ''}`,
+            PATH: cmakePathEntries.join(path.delimiter),
         };
 
         const configureArgs = [
@@ -1200,9 +1233,14 @@ pico_add_extra_outputs(firmware)
         }
 
         const responsePayload = {
-            hex: compiledArtifact.payload,
+            hex: compiledArtifact.payload, // Backward compatibility
             artifactType: compiledArtifact.artifactType,
+            artifactPayload: compiledArtifact.payload,
+            uf2: compiledArtifact.artifactType === 'uf2' ? compiledArtifact.payload : '',
+            intelHex: compiledArtifact.artifactType === 'hex' ? compiledArtifact.payload : '',
             artifactName: compiledArtifact.artifactName,
+            outputFiles: compiledArtifact.outputFiles,
+            success: true,
             elf: elfArtifact.elfPayload,
             elfName: elfArtifact.elfName,
             gdb: resolveGdbMeta(targetFqbn),

@@ -50,7 +50,11 @@ if (!fs.existsSync(indexFile)) {
 }
 
 console.log("Attempting to connect to MongoDB...");
-connectDB();
+const isDbConnected = await connectDB();
+
+if (!isDbConnected) {
+  console.warn("⚠️  Running in DEGRADED MODE: Database-backed features (Auth, Profiles) will be unavailable.");
+}
 
 const app = express();
 
