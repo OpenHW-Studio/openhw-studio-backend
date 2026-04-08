@@ -12,6 +12,8 @@ const isValidEmailFormat = (value = "") =>
   /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 const pickFirstNonEmptyString = (...values) =>
   values.find((value) => isNonEmptyString(value));
+const isStrongPassword = (password = "") =>
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@#$!%*?&]).{8,}$/.test(password);
 
 const serializeUser = (user) => ({
   id: user._id,
@@ -30,12 +32,16 @@ const serializeUser = (user) => ({
 
 const signinUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
 
     const sanitizedEmail = normalizeEmail(email || "");
     const user = await User.findOne({ email: sanitizedEmail });
     if (!user) {
       return res.status(400).json({ message: "User not found" });
+    }
+
+    if (role && role !== "user" && user.role !== role) {
+      return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
@@ -82,12 +88,12 @@ const signupUser = async (req, res) => {
         error: "Name, email, and password must be non-empty strings.",
       });
     }
-
-    if (password.length < 8) {
-      return res
-        .status(400)
-        .json({ error: "Password must be at least 8 characters long." });
-    }
+if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
 
     const sanitizedEmail =
       typeof email === "string" ? normalizeEmail(email) : "";
@@ -111,7 +117,7 @@ const signupUser = async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const allowedRoles = ["student", "teacher"];
+    const allowedRoles = ["student", "teacher", "user"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
     const resolvedSchool = pickFirstNonEmptyString(school);
     const resolvedStandard = pickFirstNonEmptyString(classStandard);
@@ -278,8 +284,8 @@ const googleLogin = async (req, res) => {
 
     if (!user) {
       // If user doesn't exist, create them
-      const allowedRoles = ["student", "teacher"];
-      const selectedRole = allowedRoles.includes(role) ? role : "student";
+      const allowedRoles = ["student", "teacher", "user"];
+      const selectedRole = allowedRoles.includes(role) ? role : "user";
 
       user = await User.create({
         name,
@@ -288,6 +294,10 @@ const googleLogin = async (req, res) => {
         password: crypto.randomBytes(32).toString("hex"), // Secure dummy password — Google users authenticate via OAuth
         // Optional: save picture if your schema supports it
       });
+    } else {
+      if (role && role !== "user" && user.role !== role) {
+        return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
+      }
     }
 
     // Generate JWT
@@ -378,9 +388,12 @@ const resetPassword = async (req, res) => {
 
     // Set new password
     const { password } = req.body;
-    if (!password || password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
-    }
+    if (!isStrongPassword(password)) {
+  return res.status(400).json({
+    error:
+      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+  });
+}
 
     user.password = await bcrypt.hash(password, 10);
     user.resetPasswordToken = undefined;

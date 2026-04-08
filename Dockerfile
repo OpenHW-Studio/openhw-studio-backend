@@ -4,16 +4,31 @@ FROM node:20
 # Install dependencies for arduino-cli
 RUN apt-get update && apt-get install -y \
     curl \
+    python3 \
+    git \
+    make \
+    cmake \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Install arduino-cli
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 ENV PATH=$PATH:/root/bin
 
-# Initialize arduino-cli and install AVR core
-# We need to update the index first
-RUN arduino-cli core update-index
-RUN arduino-cli core install arduino:avr
+# Initialize arduino-cli and install cores
+RUN arduino-cli config init && \
+    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
+    arduino-cli core update-index && \
+    arduino-cli core install arduino:avr && \
+    arduino-cli core install rp2040:rp2040
+
+# Install Raspberry Pi Pico SDK
+ENV PICO_SDK_PATH=/opt/pico-sdk
+RUN git clone -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
+    cd $PICO_SDK_PATH && \
+    git submodule update --init
 
 # Pre-install common libraries for the simulator
 RUN arduino-cli lib install "Adafruit NeoPixel"
