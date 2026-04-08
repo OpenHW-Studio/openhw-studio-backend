@@ -1,5 +1,18 @@
 import mongoose from "mongoose";
 
+const sharedProjectSchema = new mongoose.Schema({
+  shareId: { type: String, required: true },
+  name: { type: String, default: "Untitled" },
+  isPublic: { type: Boolean, default: true },
+  board: { type: String, default: "arduino_uno" },
+  components: { type: Array, default: [] },
+  connections: { type: Array, default: [] },
+  code: { type: String, default: "" },
+  projectFiles: { type: Array, default: [] },
+  openCodeTabs: { type: Array, default: [] },
+  activeCodeFileId: { type: String, default: "" },
+}, { _id: false, timestamps: true });
+
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
@@ -15,6 +28,7 @@ const userSchema = new mongoose.Schema({
   coins: { type: Number, default: 0 },
   level: { type: Number, default: 1 },
   badges: [String],
+  projects: { type: [sharedProjectSchema], default: [] },
   resetPasswordToken: { type: String },
   resetPasswordExpires: { type: Date }
 }, { timestamps: true });

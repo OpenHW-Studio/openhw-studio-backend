@@ -6,6 +6,7 @@ const submissionSchema = new mongoose.Schema({
   classId: { type: mongoose.Schema.Types.ObjectId, ref: "Class", required: true },
   projectId: { type: mongoose.Schema.Types.ObjectId, ref: "Project" },
   notes: { type: String, trim: true },
+  links: [{ type: String, trim: true }],
   attachments: [{ type: String, trim: true }],
   files: [{ type: String, trim: true }],
   score: { type: Number },
