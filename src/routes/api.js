@@ -2,10 +2,12 @@ import express from 'express';
 const router = express.Router();
 import { compileArduinoCode } from '../controllers/compileController.js';
 import { searchLibrary, installLibrary, listLibraries, uninstallLibrary } from '../controllers/libController.js';
+import { protectRoute } from '../middleware/authMiddleware.js';
 import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
+import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
 
 // Library Management
 router.get('/lib-search', searchLibrary);
@@ -21,6 +23,8 @@ router.delete('/admin/components/reject/:submissionId', rejectComponent);
 router.get('/admin/components/installed', getInstalledComponents);
 router.delete('/admin/components/installed/:id', deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
+router.post('/simulations/share', protectRoute, createSharedSimulation);
+router.get('/simulations/share/:shareId', getSharedSimulation);
 
 // User routes for authentication and management
 router.use('/user', userRoutes);
