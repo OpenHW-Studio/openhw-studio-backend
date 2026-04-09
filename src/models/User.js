@@ -15,7 +15,15 @@ const sharedProjectSchema = new mongoose.Schema({
 
 const userSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  email: { type: String, required: true, unique: true },
+  email: { type: String, unique: true, sparse: true },
+  username: { type: String, unique: true, sparse: true },
+  unique_id: { type: String },
+  dob_day: { type: String },
+  dob_month: { type: String },
+  dob_year: { type: String },
+  is_first_login: { type: Boolean, default: true },
+  failed_attempts: { type: Number, default: 0 },
+  account_locked_until: { type: Date },
   googleId: { type: String },
   password: { type: String }, // Optional for Google Auth users
   role: { type: String, enum: ["student", "teacher", "admin", "user"], default: "student" },
