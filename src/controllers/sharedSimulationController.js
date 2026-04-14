@@ -1,6 +1,9 @@
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
+import mongoose from "mongoose";
 import User from "../models/User.js";
+import Assignment from "../models/Assignment.js";
+import Class from "../models/Class.js";
 
 function normalizeSharedProject(body = {}) {
   return {
@@ -45,7 +48,34 @@ async function resolveRequestUser(req) {
 
 export async function createSharedSimulation(req, res) {
   try {
+    if (req.user?.role === "student") {
+      const { classId, assignmentId } = req.body || {};
+
+      if (!mongoose.isValidObjectId(classId) || !mongoose.isValidObjectId(assignmentId)) {
+        return res.status(400).json({ message: "Invalid classId or assignmentId." });
+      }
+
+      const classroom = await Class.findById(classId).select("students");
+      const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select("_id dueDate");
+      const isClassStudent = classroom?.students?.some(
+        (studentId) => String(studentId) === String(req.user._id)
+      );
+
+      if (!classroom || !assignment || !isClassStudent) {
+        return res.status(403).json({ message: "Students can only share assignment submissions for their classes." });
+      }
+
+      if (assignment.dueDate && new Date(assignment.dueDate) < new Date()) {
+        return res.status(400).json({ message: "This assignment is closed. Submissions are no longer accepted." });
+      }
+    } else if (!["teacher", "user"].includes(req.user?.role)) {
+      return res.status(403).json({ message: "Only teachers and users can share simulator templates." });
+    }
+
     const nextProject = normalizeSharedProject(req.body);
+    if (req.user?.role === "student") {
+      nextProject.isPublic = true;
+    }
 
     await User.updateOne(
       { _id: req.user._id },
