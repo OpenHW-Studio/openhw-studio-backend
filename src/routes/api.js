@@ -8,6 +8,7 @@ import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
+import { createLiveSimulation, getLiveSimulation } from '../controllers/liveSimulationController.js';
 
 // Library Management
 router.get('/lib-search', searchLibrary);
@@ -25,6 +26,8 @@ router.delete('/admin/components/installed/:id', deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);
+router.post('/live-simulations', protectRoute, createLiveSimulation);
+router.get('/live-simulations/:sessionCode', protectRoute, getLiveSimulation);
 
 // User routes for authentication and management
 router.use('/user', userRoutes);
