@@ -1,7 +1,6 @@
-import bcrypt from "bcryptjs";
+import argon2 from "argon2";
 import crypto from "crypto";
 import User from "../models/User.js";
-import generateToken from "../utils/helper/token.js";
 import sendEmail from "../utils/sendEmail.js";
 
 
@@ -32,34 +31,50 @@ const serializeUser = (user) => ({
 
 const signinUser = async (req, res) => {
   try {
-    const { email, password, role } = req.body;
+    const { email, username, password, role } = req.body;
 
-    const sanitizedEmail = normalizeEmail(email || "");
-    const user = await User.findOne({ email: sanitizedEmail });
+    const query = {};
+    if (email) {
+      query.email = normalizeEmail(email || "");
+    } else if (username) {
+      query.username = username;
+    } else {
+      return res.status(400).json({ message: "Username or email is required" });
+    }
+
+    const user = await User.findOne(query);
     if (!user) {
       return res.status(400).json({ message: "User not found" });
+    }
+
+    if (user.account_locked_until && user.account_locked_until > Date.now()) {
+      return res.status(403).json({ message: "Account locked due to multiple failed login attempts. Please try again later." });
     }
 
     if (role && role !== "user" && user.role !== role) {
       return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await argon2.verify(user.password, password);
     if (!isMatch) {
+      user.failed_attempts = (user.failed_attempts || 0) + 1;
+      if (user.failed_attempts >= 5) {
+         user.account_locked_until = Date.now() + 15 * 60 * 1000; // 15 mins lock
+      }
+      await user.save();
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    const token = generateToken(user);
-    res.cookie("jwt", token, {
-      httpOnly: true,
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000,
-    });
+    user.failed_attempts = 0;
+    user.account_locked_until = undefined;
+    await user.save();
+
+    req.session.userId = user._id;
 
     res.status(200).json({
       message: "Login successful",
-      token,
       user: serializeUser(user),
+      is_first_login: user.is_first_login
     });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
@@ -115,7 +130,7 @@ if (!isStrongPassword(password)) {
         .json({ error: "An account with this email already exists." });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedPassword = await argon2.hash(password);
 
     const allowedRoles = ["student", "teacher", "user"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
@@ -133,17 +148,11 @@ if (!isStrongPassword(password)) {
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
 
-    const token = generateToken(user);
-    res.cookie("jwt", token, {
-      httpOnly: true,
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000,
-    });
+    req.session.userId = user._id;
 
     return res.status(201).json({
       message: "User registered successfully.",
-      user: serializeUser(user),
-      token,
+      user: serializeUser(user)
     });
   } catch (error) {
     if (error && (error.code === 11000 || error.code === 11001)) {
@@ -158,7 +167,8 @@ if (!isStrongPassword(password)) {
 
 const logoutController = async (req, res) => {
   try {
-    res.cookie("jwt", "", { httpOnly: true, sameSite: "strict", maxAge: 1 });
+    req.session.destroy();
+    res.clearCookie('connect.sid');
     res.status(200).json({ message: "User logged out successfully" });
   } catch (error) {
     console.log("Error in logoutController: ", error);
@@ -301,16 +311,10 @@ const googleLogin = async (req, res) => {
     }
 
     // Generate JWT
-    const token = generateToken(user);
-    res.cookie("jwt", token, {
-      httpOnly: true,
-      sameSite: "strict",
-      maxAge: 24 * 60 * 60 * 1000,
-    });
+    req.session.userId = user._id;
 
     return res.status(200).json({
       message: "Google login successful.",
-      token,
       user: serializeUser(user),
     });
 
@@ -395,7 +399,7 @@ const resetPassword = async (req, res) => {
   });
 }
 
-    user.password = await bcrypt.hash(password, 10);
+    user.password = await argon2.hash(password);
     user.resetPasswordToken = undefined;
     user.resetPasswordExpires = undefined;
 
@@ -410,6 +414,161 @@ const resetPassword = async (req, res) => {
   }
 };
 
+
+const registerStudent = async (req, res) => {
+  try {
+    // Only teachers/admins should access this
+    if (req.user.role !== "teacher" && req.user.role !== "admin") {
+      return res.status(403).json({ message: "Not authorized to register students" });
+    }
+
+    const { name, dob } = req.body; // dob expected as DD/MM/YYYY
+    if (!name || !dob) {
+      return res.status(400).json({ message: "Name and dob (DD/MM/YYYY) are required" });
+    }
+
+    const [day, month, year] = dob.split("/");
+    if (!day || !month || !year || year.length !== 4) {
+      return res.status(400).json({ message: "Invalid date format. Use DD/MM/YYYY" });
+    }
+
+    // Generate random username (e.g., student_ + random string) and temp password
+    const username = `student_${crypto.randomBytes(4).toString("hex")}`;
+    const tempPassword = crypto.randomBytes(6).toString("hex");
+    const unique_id = crypto.randomBytes(2).toString("hex").toUpperCase(); // 4 chars
+
+    const hashedPassword = await argon2.hash(tempPassword);
+
+    const user = await User.create({
+      name,
+      username,
+      password: hashedPassword,
+      unique_id,
+      dob_day: day,
+      dob_month: month,
+      dob_year: year,
+      role: "student",
+      is_first_login: true,
+    });
+
+    res.status(201).json({
+      message: "Student registered successfully",
+      student: {
+        username,
+        tempPassword,
+        unique_id,
+        name: user.name
+      }
+    });
+
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+const setNewPassword = async (req, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ message: "Password is required" });
+    }
+    if (!isStrongPassword(password)) {
+      return res.status(400).json({
+        error: "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+      });
+    }
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    user.password = await argon2.hash(password);
+    user.is_first_login = false;
+    await user.save();
+
+    res.status(200).json({ message: "Password updated successfully. You can now use your new password." });
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+const forgotPasswordInit = async (req, res) => {
+  try {
+    const { username } = req.body;
+    if (!username) return res.status(400).json({ message: "Username is required" });
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const formats = ["DDMMYYYY", "DDYYYYMM", "MMDDYYYY", "MMYYYYDD", "YYYYDDMM", "YYYYMMDD"];
+    const selectedFormat = formats[Math.floor(Math.random() * formats.length)];
+
+    res.status(200).json({
+      message: "Please enter your Secret Credential",
+      format: selectedFormat,
+      instruction: `Enter your Secret Credential in the format: [UNIQUE_ID] + [${selectedFormat}] (No hyphens)`
+    });
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+const forgotPasswordVerify = async (req, res) => {
+  try {
+    const { username, secretCredential, format } = req.body;
+    if (!username || !secretCredential || !format) {
+      return res.status(400).json({ message: "Username, secretCredential, and format are required" });
+    }
+
+    const user = await User.findOne({ username });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const unique_id_input = secretCredential.substring(0, 4);
+    const date_input = secretCredential.substring(4);
+
+    if (unique_id_input !== user.unique_id) {
+      return res.status(400).json({ message: "Invalid credentials" });
+    }
+
+    const day = user.dob_day.padStart(2, '0');
+    const month = user.dob_month.padStart(2, '0');
+    const year = user.dob_year;
+
+    let expectedDate = "";
+    if (format === "DDMMYYYY") expectedDate = day + month + year;
+    else if (format === "DDYYYYMM") expectedDate = day + year + month;
+    else if (format === "MMDDYYYY") expectedDate = month + day + year;
+    else if (format === "MMYYYYDD") expectedDate = month + year + day;
+    else if (format === "YYYYDDMM") expectedDate = year + day + month;
+    else if (format === "YYYYMMDD") expectedDate = year + month + day;
+    else return res.status(400).json({ message: "Invalid format provided" });
+
+    if (date_input !== expectedDate) {
+      return res.status(400).json({ message: "Invalid secret credential" });
+    }
+
+    // Generate a temporary reset token similar to the standard email reset
+    const resetToken = crypto.randomBytes(20).toString('hex');
+    user.resetPasswordToken = crypto.createHash('sha256').update(resetToken).digest('hex');
+    user.resetPasswordExpires = Date.now() + 10 * 60 * 1000; // 10 mins
+    await user.save();
+
+    res.status(200).json({
+      message: "Secret credential verified successfully",
+      resetToken // Note: In a pure API, we give the token back here to be used in the final reset request.
+    });
+
+  } catch (error) {
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
 export {
   signinUser,
   signupUser,
@@ -419,4 +578,8 @@ export {
   googleLogin,
   forgotPassword,
   resetPassword,
+  registerStudent,
+  setNewPassword,
+  forgotPasswordInit,
+  forgotPasswordVerify
 }
