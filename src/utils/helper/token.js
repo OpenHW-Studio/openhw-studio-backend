@@ -2,7 +2,9 @@ import jwt from "jsonwebtoken";
 
 const generateToken = (user) => {
   if (!process.env.JWT_SECRET) {
-    throw new Error("JWT_SECRET is not configured.");
+    throw new Error(
+      "JWT_SECRET environment variable is not configured. Please set it in your .env file."
+    );
   }
 
   if (!user) {
@@ -20,4 +22,5 @@ const generateToken = (user) => {
   return token;
 };
 
+export { generateToken };
 export default generateToken;
