@@ -21,17 +21,13 @@ const verifyPassword = async (storedHash, plainPassword) => {
     return { ok: false, needsRehash: false };
   }
 
-  try {
-    const ok = await argon2.verify(storedHash, plainPassword);
-    return { ok, needsRehash: false };
-  } catch (error) {
-    if (!isBcryptHash(storedHash)) {
-      return { ok: false, needsRehash: false };
-    }
+  if (isBcryptHash(storedHash)) {
+    const ok = await bcrypt.compare(plainPassword, storedHash);
+    return { ok, needsRehash: ok };
   }
 
-  const ok = await bcrypt.compare(plainPassword, storedHash);
-  return { ok, needsRehash: ok };
+  const ok = await argon2.verify(storedHash, plainPassword);
+  return { ok, needsRehash: false };
 };
 
 const serializeUser = (user) => ({
