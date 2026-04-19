@@ -1,7 +1,6 @@
 import './loadEnv.js';
 import express from 'express';
 import cors from 'cors';
-import http from 'http';
 import connectDB from './db/connections.js';
 import apiRoutes from './routes/api.js';
 import fs from 'fs';
@@ -10,7 +9,6 @@ import { fileURLToPath } from 'url';
 import session from 'express-session';
 import passport from './config/passport.js';
 import authRoutes from './routes/auth.js';
-import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -84,8 +82,6 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
 app.use('/examples', express.static(examplesDir));
 
 const PORT = process.env.PORT || 5000;
-const server = http.createServer(app);
-await registerLiveSimulationWebSocket(server);
-server.listen(PORT, () => {
+app.listen(PORT, () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
 });
