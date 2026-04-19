@@ -1,4 +1,5 @@
 import argon2 from "argon2";
+import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import User from "../models/User.js";
 import sendEmail from "../utils/sendEmail.js";
@@ -13,6 +14,21 @@ const pickFirstNonEmptyString = (...values) =>
   values.find((value) => isNonEmptyString(value));
 const isStrongPassword = (password = "") =>
   /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@#$!%*?&]).{8,}$/.test(password);
+const isBcryptHash = (hash = "") =>
+  typeof hash === "string" && /^\$2[aby]\$/.test(hash);
+const verifyPassword = async (storedHash, plainPassword) => {
+  if (typeof storedHash !== "string" || !storedHash) {
+    return { ok: false, needsRehash: false };
+  }
+
+  if (isBcryptHash(storedHash)) {
+    const ok = await bcrypt.compare(plainPassword, storedHash);
+    return { ok, needsRehash: ok };
+  }
+
+  const ok = await argon2.verify(storedHash, plainPassword);
+  return { ok, needsRehash: false };
+};
 
 const serializeUser = (user) => ({
   id: user._id,
@@ -55,7 +71,7 @@ const signinUser = async (req, res) => {
       return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
-    const isMatch = await argon2.verify(user.password, password);
+    const { ok: isMatch, needsRehash } = await verifyPassword(user.password, password);
     if (!isMatch) {
       user.failed_attempts = (user.failed_attempts || 0) + 1;
       if (user.failed_attempts >= 5) {
@@ -67,6 +83,9 @@ const signinUser = async (req, res) => {
 
     user.failed_attempts = 0;
     user.account_locked_until = undefined;
+    if (needsRehash) {
+      user.password = await argon2.hash(password);
+    }
     await user.save();
 
     req.session.userId = user._id;
