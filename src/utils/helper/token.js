@@ -5,8 +5,12 @@ const generateToken = (user) => {
     throw new Error("JWT_SECRET is not configured.");
   }
 
-  if (!user?._id) {
-    throw new Error("Valid user with _id is required.");
+  if (!user) {
+    throw new Error("User object is required.");
+  }
+
+  if (!user._id) {
+    throw new Error("User must have an _id property.");
   }
 
   const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
