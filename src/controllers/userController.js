@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import User from "../models/User.js";
 import sendEmail from "../utils/sendEmail.js";
+import generateToken from "../utils/helper/token.js"
 
 
 const normalizeEmail = (rawEmail = "") => rawEmail.trim().toLowerCase();
@@ -47,58 +48,38 @@ const serializeUser = (user) => ({
 
 const signinUser = async (req, res) => {
   try {
-    const { email, username, password, role } = req.body;
+    const { email, password, role } = req.body;
+    const sanitizedEmail = normalizeEmail(email || "");
+    const user = await User.findOne({ email: sanitizedEmail });
 
-    const query = {};
-    if (email) {
-      query.email = normalizeEmail(email || "");
-    } else if (username) {
-      query.username = username;
-    } else {
-      return res.status(400).json({ message: "Username or email is required" });
-    }
-
-    const user = await User.findOne(query);
     if (!user) {
       return res.status(400).json({ message: "User not found" });
     }
-
-    if (user.account_locked_until && user.account_locked_until > Date.now()) {
-      return res.status(403).json({ message: "Account locked due to multiple failed login attempts. Please try again later." });
-    }
-
-    if (role && role !== "user" && user.role !== role) {
+     if (role && role !== "user" && user.role !== role) {
       return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
-    const { ok: isMatch, needsRehash } = await verifyPassword(user.password, password);
+    const isMatch = await argon2.compare(password, user.password);
     if (!isMatch) {
-      user.failed_attempts = (user.failed_attempts || 0) + 1;
-      if (user.failed_attempts >= 5) {
-         user.account_locked_until = Date.now() + 15 * 60 * 1000; // 15 mins lock
-      }
-      await user.save();
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    user.failed_attempts = 0;
-    user.account_locked_until = undefined;
-    if (needsRehash) {
-      user.password = await argon2.hash(password);
-    }
-    await user.save();
-
-    req.session.userId = user._id;
+    const token = generateToken(user);
+    res.cookie("jwt", token, {
+      httpOnly: true,
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000,
+    });
 
     res.status(200).json({
       message: "Login successful",
+      token,
       user: serializeUser(user),
-      is_first_login: user.is_first_login
-    });
+      });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
-};
+}; 
 
 const signupUser = async (req, res) => {
   try {
@@ -149,7 +130,7 @@ if (!isStrongPassword(password)) {
         .json({ error: "An account with this email already exists." });
     }
 
-    const hashedPassword = await argon2.hash(password);
+    const hashedPassword = await bcrypt.hash(password,10);
 
     const allowedRoles = ["student", "teacher", "user"];
     const selectedRole = allowedRoles.includes(role) ? role : "student";
@@ -166,12 +147,17 @@ if (!isStrongPassword(password)) {
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
-
-    req.session.userId = user._id;
+const token = generateToken(user);
+    res.cookie("jwt", token, {
+      httpOnly: true,
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000,
+    });
 
     return res.status(201).json({
       message: "User registered successfully.",
-      user: serializeUser(user)
+      user: serializeUser(user),
+       token,
     });
   } catch (error) {
     if (error && (error.code === 11000 || error.code === 11001)) {
@@ -186,8 +172,7 @@ if (!isStrongPassword(password)) {
 
 const logoutController = async (req, res) => {
   try {
-    req.session.destroy();
-    res.clearCookie('connect.sid');
+    res.cookie("jwt", "", { httpOnly: true, sameSite: "strict", maxAge: 1 });
     res.status(200).json({ message: "User logged out successfully" });
   } catch (error) {
     console.log("Error in logoutController: ", error);
