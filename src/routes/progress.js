@@ -8,17 +8,17 @@ import {
   resetProgress,
   getLeaderboard,
 } from '../controllers/progressController.js'
+import { protectRoute } from '../middleware/authMiddleware.js'
 
 
 const router = express.Router()
 
 // ── Progress CRUD ─────────────────────────────────────────────────────────────
-router.get('/',                getProgress)       
-router.post('/quiz',           recordQuiz)        
-router.post('/unlock',         unlockComponent)  
-router.post('/complete',       completeProject)   
-router.post('/badge',          awardBadge)        
-router.get('/leaderboard',     getLeaderboard)    
-router.put('/reset',           resetProgress)     
+router.get('/',                protectRoute, getProgress)
+router.post('/quiz',           protectRoute, recordQuiz)
+router.post('/unlock',         protectRoute, unlockComponent)
+router.post('/complete',       protectRoute, completeProject)
+router.post('/badge',          protectRoute, awardBadge)
+router.get('/leaderboard',     protectRoute, getLeaderboard)
+router.put('/reset',           protectRoute, resetProgress)
 export default router
-

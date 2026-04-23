@@ -350,8 +350,17 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
         };
     }
 
+    if (lower.includes('no firmware artifact was produced')
+        || (lowerFqbn.includes('rp2040') && lower.includes('no .uf2 file found'))
+        || lower.includes('expected .hex or .uf2 in build output')) {
+        return {
+            category: 'artifact-missing',
+            hint: 'Build completed without UF2/HEX output. Verify board selection and build output directory.',
+        };
+    }
+
     if (lower.includes('was not declared in this scope')
-        || lower.includes('expected')
+        || lower.includes('error: expected')
         || lower.includes('stray')
         || lower.includes('invalid conversion')) {
         return {
@@ -364,13 +373,6 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
         return {
             category: 'permission-error',
             hint: 'Check filesystem/port permissions and close other tools that may lock build/upload files.',
-        };
-    }
-
-    if (lowerFqbn.includes('rp2040') && lower.includes('no .uf2 file found')) {
-        return {
-            category: 'artifact-missing',
-            hint: 'Build completed without UF2/HEX output. Verify board selection and build output directory.',
         };
     }
 
@@ -507,7 +509,7 @@ function resolveElfArtifact(buildDir) {
     const raw = fs.readFileSync(selectedElf.elfPath);
     return {
         elfPayload: `ELFBASE64:${raw.toString('base64')}`,
-        elfName,
+        elfName: selectedElf.name,
     };
 }
 
@@ -1194,7 +1196,8 @@ pico_add_extra_outputs(firmware)
         try {
             compiledArtifact = resolveCompileArtifact(buildDir, targetFqbn);
             elfArtifact = resolveElfArtifact(buildDir);
-        } catch {
+        } catch (err) {
+            console.error('Error resolving compilation artifacts:', err);
             compiledArtifact = {
                 payload: '',
                 artifactType: null,

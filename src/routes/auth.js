@@ -101,7 +101,7 @@ router.get(
         );
 
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        res.redirect(`${frontendUrl}?token=${token}`);
+        res.redirect(`${frontendUrl}#token=${encodeURIComponent(token)}`);
     }
 );
 
