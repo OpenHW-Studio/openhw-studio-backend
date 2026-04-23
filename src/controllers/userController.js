@@ -59,10 +59,10 @@ const signinUser = async (req, res) => {
       return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
-    const isMatch = await argon2.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" });
-    }
+     const isMatch = await verifyPassword(user.password, password);
+     if (!isMatch.ok) {
+       return res.status(400).json({ message: "Invalid credentials" });
+     }
 
     const token = generateToken(user);
     res.cookie("jwt", token, {
