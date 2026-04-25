@@ -73,14 +73,14 @@ app.use(cors());
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
-// Serve demo/guide files from openhw-studio-examples repo
-const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
-  '../openhw-studio-examples-danish/examples',
-  '../openhw-studio-examples/examples',
-]);
+
+const defaultExamplesPath = path.resolve(__dirname, '../../openhw-studio-examples/examples');
+const examplesDir = process.env.EXAMPLES_DIR || defaultExamplesPath;
 app.use('/examples', express.static(examplesDir));
 
 const PORT = process.env.PORT || 5000;

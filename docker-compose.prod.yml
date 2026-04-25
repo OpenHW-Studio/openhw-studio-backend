@@ -1,0 +1,51 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: openhw-backend
+    restart: unless-stopped
+    env_file: ./env
+    environment:
+      FRONTEND_URL: https://openhw-studio.fossee.in
+      GOOGLE_CALLBACK_URL: https://openhw-studio.fossee.in/auth/google/callback
+      EXAMPLES_DIR: /app/openhw-studio-examples/examples
+    networks:
+      - openhw-net
+    volumes:
+      - backend-temp:/app/temp
+      - backend-data:/app/data
+      - ./openhw-studio-examples:/app/openhw-studio-examples:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./OpenHW-studio-frontend/Dockerfile
+      args:
+        VITE_API_BASE_URL: https://openhw-studio.fossee.in/api
+        VITE_EXAMPLES_BASE_URL: https://openhw-studio.fossee.in/examples
+        VITE_GOOGLE_CLIENT_ID: "330028772877-csjlu9u6nam4bq6i1ergcrs4oetkhnqv.apps.googleusercontent.com"
+        VITE_ADMIN_EMAILS: ""
+    container_name: openhw-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - openhw-net
+
+volumes:
+  backend-temp:
+  backend-data:
+
+networks:
+  openhw-net:
+    driver: bridge

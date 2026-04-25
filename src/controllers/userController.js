@@ -59,6 +59,10 @@ const signinUser = async (req, res) => {
       return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
     }
 
+    if (!user.password) {
+      return res.status(400).json({ message: "This account uses Google Sign-In. Please sign in with Google." });
+    }
+
     const isMatch = await argon2.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });

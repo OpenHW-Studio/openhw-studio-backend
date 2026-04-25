@@ -8,8 +8,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
 const ARDUINO_CLI_PATH = 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';

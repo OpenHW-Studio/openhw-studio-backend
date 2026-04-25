@@ -1,0 +1,15 @@
+node_modules
+.git
+*.log
+env
+.env
+.env.*
+!.env.example
+temp/
+dist/
+openhw-studio-docs/
+*.txt
+
+OpenHW-studio-frontend/node_modules/
+openhw-studio-emulator/node_modules/
+openhw-studio-examples/node_modules/
