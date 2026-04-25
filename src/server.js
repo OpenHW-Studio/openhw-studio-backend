@@ -61,9 +61,9 @@ if (!isDbConnected) {
 const app = express();
 
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'supersecretcatsession',
-    resave: false,
-    saveUninitialized: true,
+  secret: process.env.SESSION_SECRET || 'supersecretcatsession',
+  resave: false,
+  saveUninitialized: true,
 }));
 
 app.use(passport.initialize());
@@ -83,7 +83,7 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
 ]);
 app.use('/examples', express.static(examplesDir));
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
 server.listen(PORT, () => {

@@ -52,10 +52,10 @@ RUN mkdir -p temp
 RUN mkdir -p data/components
 
 # Expose the port
-EXPOSE 5000
+EXPOSE 5001
 
 # Set environment variables (these should also be set in Render dashboard)
-ENV PORT=5000
+ENV PORT=5001
 
 # Start the application
 CMD ["npm", "start"]
