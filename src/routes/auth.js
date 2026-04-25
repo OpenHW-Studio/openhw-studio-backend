@@ -1,6 +1,7 @@
 import express from 'express';
 import passport from 'passport';
 import jwt from 'jsonwebtoken';
+
 import { protectRoute } from '../middleware/authMiddleware.js';
 
 const router = express.Router();
@@ -93,13 +94,11 @@ router.get(
         session: false,
     }),
     (req, res) => {
-        // Generate a JWT for our application
         const token = jwt.sign(
             { id: req.user._id, role: req.user.role },
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
-
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
         res.redirect(`${frontendUrl}#token=${encodeURIComponent(token)}`);
     }

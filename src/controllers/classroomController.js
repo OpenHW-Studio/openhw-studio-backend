@@ -486,7 +486,7 @@ export const createAssignment = async (req, res) => {
     }
 
     const { classId } = req.params;
-    const { title, description, templateProjectId, dueDate, attachments, files } = req.body || {};
+    const { title, description, templateProjectId, templateShareId, templateUrl, dueDate, attachments, files, links } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -515,6 +515,13 @@ export const createAssignment = async (req, res) => {
     const sanitizedAttachments = Array.isArray(rawAttachments)
       ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
       : [];
+    const sanitizedLinks = Array.isArray(links)
+      ? links.filter((link) => typeof link === "string" && link.trim()).map((link) => link.trim())
+      : [];
+    const sanitizedTemplateUrl = typeof templateUrl === "string" ? templateUrl.trim() : "";
+    const sanitizedTemplateShareId = typeof templateShareId === "string" && templateShareId.trim()
+      ? templateShareId.trim()
+      : (sanitizedTemplateUrl.match(/\/simulator\/share\/([^/?#]+)/)?.[1] || "");
 
     const assignment = await Assignment.create({
       classId,
@@ -524,7 +531,10 @@ export const createAssignment = async (req, res) => {
       templateProjectId: isValidObjectId(templateProjectId)
         ? templateProjectId
         : undefined,
+      templateShareId: sanitizedTemplateShareId || undefined,
+      templateUrl: sanitizedTemplateUrl || undefined,
       dueDate: dueDate ? new Date(dueDate) : undefined,
+      links: sanitizedLinks,
       attachments: sanitizedAttachments,
       createdBy: req.user._id,
     });
@@ -916,7 +926,7 @@ export const updateAssignment = async (req, res) => {
     }
 
     const { classId, assignmentId } = req.params;
-    const { title, description, dueDate, attachments, files } = req.body || {};
+    const { title, description, dueDate, attachments, files, links, templateShareId, templateUrl } = req.body || {};
 
     if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
       return res.status(400).json({ message: "Invalid classId or assignmentId." });
@@ -959,6 +969,18 @@ export const updateAssignment = async (req, res) => {
       updates.attachments = Array.isArray(rawAttachments)
         ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
         : [];
+    }
+    if (links !== undefined) {
+      updates.links = Array.isArray(links)
+        ? links.filter((link) => typeof link === "string" && link.trim()).map((link) => link.trim())
+        : [];
+    }
+    if (templateUrl !== undefined || templateShareId !== undefined) {
+      const nextTemplateUrl = typeof templateUrl === "string" ? templateUrl.trim() : "";
+      updates.templateUrl = nextTemplateUrl;
+      updates.templateShareId = typeof templateShareId === "string" && templateShareId.trim()
+        ? templateShareId.trim()
+        : (nextTemplateUrl.match(/\/simulator\/share\/([^/?#]+)/)?.[1] || "");
     }
 
     const updatedAssignment = await Assignment.findByIdAndUpdate(
@@ -1160,7 +1182,7 @@ export const getMyAssignmentSubmission = async (req, res) => {
     }
 
     const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
-      "_id title dueDate createdAt",
+      "_id title description dueDate createdAt links attachments files templateShareId templateUrl",
     );
 
     if (!assignment) {
@@ -1188,7 +1210,7 @@ export const getMyAssignmentSubmission = async (req, res) => {
 export const upsertAssignmentSubmission = async (req, res) => {
   try {
     const { classId, assignmentId } = req.params;
-    const { projectId, notes, attachments, files } = req.body || {};
+    const { projectId, notes, attachments, files, links, simulationShareId, simulationUrl } = req.body || {};
 
     if (req.user?.role !== "student") {
       return res.status(403).json({ message: "Only students can submit assignments." });
@@ -1222,13 +1244,23 @@ export const upsertAssignmentSubmission = async (req, res) => {
     const sanitizedAttachments = Array.isArray(rawAttachments)
       ? rawAttachments.filter((f) => typeof f === "string" && f.trim()).map((f) => f.trim())
       : [];
+    const sanitizedLinks = Array.isArray(links)
+      ? links.filter((link) => typeof link === "string" && link.trim()).map((link) => link.trim())
+      : [];
+    const sanitizedSimulationUrl = typeof simulationUrl === "string" ? simulationUrl.trim() : "";
+    const sanitizedSimulationShareId = typeof simulationShareId === "string" && simulationShareId.trim()
+      ? simulationShareId.trim()
+      : (sanitizedSimulationUrl.match(/\/simulator\/share\/([^/?#]+)/)?.[1] || "");
 
     const updatePayload = {
       classId,
       assignmentId,
       studentId: req.user._id,
       projectId: isValidObjectId(projectId) ? projectId : undefined,
+      simulationShareId: sanitizedSimulationShareId || undefined,
+      simulationUrl: sanitizedSimulationUrl || undefined,
       notes: typeof notes === "string" ? notes.trim() : "",
+      links: sanitizedLinks,
       attachments: sanitizedAttachments,
     };
 
