@@ -1,0 +1,14 @@
+src/
+node_modules/
+.git/
+temp/
+data/
+env
+.env
+.env.*
+!.env.example
+
+openhw-studio-docs/
+openhw-studio-examples/
+
+.github/

@@ -6,8 +6,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ARDUINO_CLI_PATH = 'arduino-cli';
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
 
 export const searchLibrary = (req, res) => {
     const query = req.query.q;
@@ -15,8 +13,7 @@ export const searchLibrary = (req, res) => {
         return res.status(400).json({ error: 'Search query "q" is required.' });
     }
 
-    // Run: arduino-cli lib search "query" --format json
-    // Use a large maxBuffer (50MB) because the Arduino library index is massive
+    // big buffer needed — the arduino lib index is massive
     execFile(ARDUINO_CLI_PATH, ['lib', 'search', query, '--format', 'json'], { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
         if (error) {
             console.error('Library search error:', stderr || stdout);

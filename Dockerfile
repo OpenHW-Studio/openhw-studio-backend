@@ -1,61 +1,48 @@
-# Use Node.js as the base image
-FROM node:20
+FROM node:20-slim
 
-# Install dependencies for arduino-cli
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    python3 \
-    git \
-    make \
-    cmake \
-    gcc-arm-none-eabi \
-    libnewlib-arm-none-eabi \
-    build-essential \
+    bash \
+    unzip \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install arduino-cli
-RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-ENV PATH=$PATH:/root/bin
+RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=/usr/local/bin sh
 
-# Initialize arduino-cli and install cores
-RUN arduino-cli config init && \
-    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
+ENV ARDUINO_DATA_DIR=/arduino/data
+ENV ARDUINO_USER_DIR=/arduino/user
+
+RUN mkdir -p /arduino/user/libraries && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
-    arduino-cli core install rp2040:rp2040
+    arduino-cli lib update-index && \
+    arduino-cli lib install "Adafruit NeoPixel" && \
+    arduino-cli lib install "Stepper" && \
+    arduino-cli lib install "Servo"
 
-# Install Raspberry Pi Pico SDK
-ENV PICO_SDK_PATH=/opt/pico-sdk
-RUN git clone -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
-    cd $PICO_SDK_PATH && \
-    git submodule update --init
+RUN chmod -R 755 /arduino
 
-# Pre-install common libraries for the simulator
-RUN arduino-cli lib install "Adafruit NeoPixel"
-RUN arduino-cli lib install "Stepper"
-RUN arduino-cli lib install "Servo"
-
-# Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
 COPY package*.json ./
+RUN npm install --omit=dev
 
-# Install dependencies
-RUN npm install
-
-# Copy the rest of the application code
 COPY . .
 
-# Ensure temp and data directories exist
-RUN mkdir -p temp
-RUN mkdir -p data/components
+RUN mkdir -p temp data/components
 
-# Expose the port
-EXPOSE 5000
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# Set environment variables (these should also be set in Render dashboard)
-ENV PORT=5000
+RUN groupadd -r appgroup && useradd -r -g appgroup -m appuser && \
+    chown -R appuser:appgroup /app && \
+    chown -R appuser:appgroup /arduino
+USER appuser
 
-# Start the application
-CMD ["npm", "start"]
+EXPOSE 5001
+
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl -sf http://localhost:5001/health || exit 1
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["node", "src/server.js"]
