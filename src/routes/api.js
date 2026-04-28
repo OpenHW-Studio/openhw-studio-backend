@@ -7,22 +7,24 @@ import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
+
+import { requireAdmin } from '../middleware/authorization.js';
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
 import { createLiveSimulation, getLiveSimulation } from '../controllers/liveSimulationController.js';
 
 // Library Management
-router.get('/lib-search', searchLibrary);
-router.post('/lib-install', installLibrary);
-router.post('/lib-uninstall', uninstallLibrary);
+router.get('/lib-search', protectRoute, searchLibrary);
+router.post('/lib-install', protectRoute, requireAdmin, installLibrary);
+router.post('/lib-uninstall', protectRoute, requireAdmin, uninstallLibrary);
 router.get('/lib-list', listLibraries);
 
 import { approveComponent, getPendingComponents, submitComponent, rejectComponent, getInstalledComponents, deleteInstalledComponent, backupInstalledComponents } from '../controllers/componentController.js';
-router.post('/components/submit', submitComponent);
-router.get('/admin/components/pending', getPendingComponents);
-router.post('/admin/components/approve', approveComponent);
-router.delete('/admin/components/reject/:submissionId', rejectComponent);
-router.get('/admin/components/installed', getInstalledComponents);
-router.delete('/admin/components/installed/:id', deleteInstalledComponent);
+router.post('/components/submit', protectRoute, submitComponent);
+router.get('/admin/components/pending', protectRoute, requireAdmin, getPendingComponents);
+router.post('/admin/components/approve', protectRoute, requireAdmin, approveComponent);
+router.delete('/admin/components/reject/:submissionId', protectRoute, requireAdmin, rejectComponent);
+router.get('/admin/components/installed', protectRoute, requireAdmin, getInstalledComponents);
+router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);

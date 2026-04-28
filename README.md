@@ -115,7 +115,7 @@ openhw-studio-backend-danish/
 | `POST` | `/api/components/submit` | Users upload a custom component (ZIP content) for review |
 | `GET` | `/api/admin/components/pending` | List all submissions waiting for admin approval |
 | `POST` | `/api/admin/components/approve` | Permanently merge a submission into the emulator library |
-| `DELETE` | `/api/admin/components/reject/:subId` | Reject a specific submission by its unique ID |
+| `DELETE` | `/api/admin/components/reject/:submissionId` | Reject a specific submission by its unique ID |
 | `GET` | `/api/admin/components/installed` | List all manually installed custom components |
 | `DELETE` | `/api/admin/components/installed/:id` | Remove an installed component from the emulator |
 | `GET` | `/api/admin/components/backup` | Full export of all installed components with source files |
@@ -199,14 +199,16 @@ npm install
 
 ### Configure Environment
 
-Create a file named `env` in the project root (this file is gitignored):
+Create a file named `.env` in the project root (this file is gitignored):
 
 ```env
 PORT=5001
 MONGO_URI=mongodb://localhost:27017/openhw-studio
 JWT_SECRET=your_secret_key_here
+SESSION_SECRET=your_session_secret_here
 EXAMPLES_PATH=../path-to-openhw-studio-examples/examples
 EMULATOR_PATH=../path-to-openhw-studio-emulator
+FRONTEND_URL=http://localhost:5173
 ```
 
 ### Start the Server
@@ -233,11 +235,12 @@ The backend uses a `.env` (or `env`) file for configuration. Create one in the r
 | `MONGO_URI` | MongoDB connection string (local or Atlas) | — |
 | `JWT_SECRET` | Secret key for signing JSON Web Tokens | — |
 | `JWT_EXPIRES_IN` | JWT expiration time (e.g., `7d`) | `7d` |
-| `SESSION_SECRET` | Secret key for Passport/express-session | — |
+| `SESSION_SECRET` | Secret key for Passport/express-session (**required**) | — |
 | `GOOGLE_CLIENT_ID` | Google OAuth 2.0 Client ID | — |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth 2.0 Client Secret | — |
 | `GOOGLE_CALLBACK_URL` | Authorised redirect URI for Google Login | `http://localhost:5001/auth/google/callback` |
 | `FRONTEND_URL` | Frontend URL for CORS configuration | `http://localhost:5173` |
+| `FRONTEND_URLS` | Comma-separated frontend origins for CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173` |
 | `EXAMPLES_PATH` | Path to the examples directory served at `/examples` (absolute or relative to the backend root) | `../openhw-studio-examples-danish/examples` |
 | `EMULATOR_PATH` | Path to the emulator repo root; the backend uses `src/components` inside it | `../openhw-studio-emulator-danish` |
 | `EMULATOR_COMPONENTS_PATH` | Optional direct path to the emulator component directory | — |

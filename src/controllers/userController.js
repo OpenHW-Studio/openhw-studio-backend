@@ -315,10 +315,16 @@ const googleLogin = async (req, res) => {
     }
 
     // Generate JWT
-    req.session.userId = user._id;
+    const token = generateToken(user);
+    res.cookie("jwt", token, {
+      httpOnly: true,
+      sameSite: "strict",
+      maxAge: 24 * 60 * 60 * 1000,
+    });
 
     return res.status(200).json({
       message: "Google login successful.",
+      token,
       user: serializeUser(user),
     });
 
