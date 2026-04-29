@@ -26,6 +26,12 @@ router.delete('/admin/components/reject/:submissionId', protectRoute, requireAdm
 router.get('/admin/components/installed', protectRoute, requireAdmin, getInstalledComponents);
 router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
+
+import { getPendingDeployments, approveDeployment, rollbackDeployment } from '../controllers/deploymentController.js';
+router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
+router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
+router.post('/admin/deployments/rollback', protectRoute, requireAdmin, rollbackDeployment);
+
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);
 router.post('/live-simulations', protectRoute, createLiveSimulation);
