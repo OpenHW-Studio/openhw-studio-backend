@@ -68,8 +68,8 @@ export async function createSharedSimulation(req, res) {
       if (assignment.dueDate && new Date(assignment.dueDate) < new Date()) {
         return res.status(400).json({ message: "This assignment is closed. Submissions are no longer accepted." });
       }
-    } else if (!["teacher", "user"].includes(req.user?.role)) {
-      return res.status(403).json({ message: "Only teachers and users can share simulator templates." });
+    } else if (!["teacher", "user", "admin"].includes(req.user?.role)) {
+      return res.status(403).json({ message: "Only teachers, users and admins can share simulator templates." });
     }
 
     const nextProject = normalizeSharedProject(req.body);

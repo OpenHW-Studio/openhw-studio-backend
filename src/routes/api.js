@@ -13,7 +13,7 @@ import { createSharedSimulation, getSharedSimulation } from '../controllers/shar
 import { createLiveSimulation, getLiveSimulation } from '../controllers/liveSimulationController.js';
 
 // Library Management
-router.get('/lib-search', protectRoute, searchLibrary);
+router.get('/lib-search', searchLibrary);
 router.post('/lib-install', protectRoute, requireAdmin, installLibrary);
 router.post('/lib-uninstall', protectRoute, requireAdmin, uninstallLibrary);
 router.get('/lib-list', listLibraries);

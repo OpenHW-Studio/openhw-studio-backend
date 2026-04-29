@@ -55,11 +55,32 @@ const signinUser = async (req, res) => {
     if (!user) {
       return res.status(400).json({ message: "User not found" });
     }
-     if (role && role !== "user" && user.role !== role) {
-      return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
+    if (role && ['teacher', 'student', 'admin'].includes(role)) {
+      // 1. Admin Superpower Bypass
+      if (user.role === 'admin') {
+        // Admin allowed everywhere
+      } 
+      // 2. The Strict Wall: Teacher vs Student
+      else if ((user.role === 'teacher' && role === 'student') || 
+               (user.role === 'student' && role === 'teacher')) {
+        return res.status(403).json({ 
+          message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.` 
+        });
+      }
+      // 3. General User Upgrade Path
+      else if (user.role === 'user' && (role === 'teacher' || role === 'student')) {
+        user.role = role;
+        await user.save();
+      }
+      // 4. Fallback for any other unauthorized cross-portal attempts
+      else if (user.role !== role) {
+         return res.status(403).json({ 
+          message: `Access Denied: This portal is for ${role}s only.` 
+        });
+      }
     }
 
-    const isMatch = await argon2.compare(password, user.password);
+    const { ok: isMatch } = await verifyPassword(user.password, password);
     if (!isMatch) {
       return res.status(400).json({ message: "Invalid credentials" });
     }
@@ -130,10 +151,10 @@ if (!isStrongPassword(password)) {
         .json({ error: "An account with this email already exists." });
     }
 
-    const hashedPassword = await bcrypt.hash(password,10);
+    const hashedPassword = await argon2.hash(password);
 
     const allowedRoles = ["student", "teacher", "user"];
-    const selectedRole = allowedRoles.includes(role) ? role : "student";
+    const selectedRole = allowedRoles.includes(role) ? role : "user";
     const resolvedSchool = pickFirstNonEmptyString(school);
     const resolvedStandard = pickFirstNonEmptyString(classStandard);
 
@@ -309,8 +330,29 @@ const googleLogin = async (req, res) => {
         // Optional: save picture if your schema supports it
       });
     } else {
-      if (role && role !== "user" && user.role !== role) {
-        return res.status(400).json({ message: `Account is registered as a ${user.role}. Please select the ${user.role} role.` });
+      if (role && ['teacher', 'student', 'admin'].includes(role)) {
+        // 1. Admin Superpower Bypass
+        if (user.role === 'admin') {
+          // Admin allowed everywhere
+        } 
+        // 2. The Strict Wall: Teacher vs Student
+        else if ((user.role === 'teacher' && role === 'student') || 
+                 (user.role === 'student' && role === 'teacher')) {
+          return res.status(403).json({ 
+            message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.` 
+          });
+        }
+        // 3. General User Upgrade Path
+        else if (user.role === 'user' && (role === 'teacher' || role === 'student')) {
+          user.role = role;
+          await user.save();
+        }
+        // 4. Fallback for any other unauthorized cross-portal attempts
+        else if (user.role !== role) {
+           return res.status(403).json({ 
+            message: `Access Denied: This portal is for ${role}s only.` 
+          });
+        }
       }
     }
 

@@ -22,7 +22,8 @@ RUN arduino-cli config init && \
     arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
-    arduino-cli core install rp2040:rp2040
+    arduino-cli core install rp2040:rp2040 && \
+    rm -rf /root/.arduino15/staging/*
 
 # Install Raspberry Pi Pico SDK
 ENV PICO_SDK_PATH=/opt/pico-sdk

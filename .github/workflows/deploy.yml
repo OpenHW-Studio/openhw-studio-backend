@@ -47,4 +47,5 @@ jobs:
           key: ${{ secrets.SERVER_SSH_KEY }}
           script: |
             cd /path/to/your/simulator # Replace with actual server path
+            git pull origin main
             ./deploy.sh main

@@ -3,8 +3,8 @@ import 'dotenv/config';
 // GitHub API configuration
 const GITHUB_TOKEN = process.env.GITHUB_ADMIN_TOKEN;
 const GITHUB_OWNER = process.env.GITHUB_OWNER || 'your-github-username'; // Needs to be configured by user
-const GITHUB_REPO_FRONTEND = process.env.GITHUB_REPO_FRONTEND || 'OpenHW-studio-frontend-danish';
-const GITHUB_REPO_BACKEND = process.env.GITHUB_REPO_BACKEND || 'openhw-studio-backend-danish';
+const GITHUB_REPO_FRONTEND = process.env.GITHUB_REPO_FRONTEND || 'OpenHW-studio-frontend';
+const GITHUB_REPO_BACKEND = process.env.GITHUB_REPO_BACKEND || 'openhw-studio-backend';
 
 const headers = {
     'Accept': 'application/vnd.github.v3+json',
