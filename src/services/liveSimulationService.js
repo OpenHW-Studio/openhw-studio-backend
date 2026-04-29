@@ -22,6 +22,56 @@ const normalizeSnapshot = (payload = {}) => ({
 
 const toUserId = (user) => String(user?._id || user?.id || "").trim();
 
+const toEntityId = (value) => String(value?._id || value || "").trim();
+
+const setsHaveSameValues = (left = new Set(), right = new Set()) => {
+  if (left.size !== right.size) return false;
+  return Array.from(left).every((entry) => right.has(entry));
+};
+
+const syncSessionMembershipFromClassroom = async (session, classroom) => {
+  if (!session || !classroom) return;
+
+  const classStudentIds = new Set(
+    (classroom.students || [])
+      .map((student) => toEntityId(student))
+      .filter(Boolean),
+  );
+  const classStudentRoster = new Map(
+    (classroom.students || [])
+      .map((student) => [
+        toEntityId(student),
+        student?.name || session.studentRoster?.get?.(toEntityId(student)) || "Student",
+      ])
+      .filter(([userId]) => Boolean(userId)),
+  );
+  const classTeacherId = toEntityId(classroom.teacher);
+  const className = classroom.name || session.className;
+
+  const membershipChanged =
+    !setsHaveSameValues(session.studentIds || new Set(), classStudentIds) ||
+    String(session.teacherId || "") !== classTeacherId ||
+    session.className !== className;
+
+  if (!membershipChanged) return;
+
+  session.studentIds = classStudentIds;
+  session.studentRoster = classStudentRoster;
+  session.editorStudentIds = new Set(
+    Array.from(session.editorStudentIds || []).filter((userId) => classStudentIds.has(userId)),
+  );
+  session.pendingEditRequests = new Map(
+    Array.from(session.pendingEditRequests?.entries?.() || []).filter(([userId]) =>
+      classStudentIds.has(userId),
+    ),
+  );
+  session.teacherId = classTeacherId || session.teacherId;
+  session.className = className;
+  session.updatedAt = new Date();
+
+  await persistLiveSimulationSession(session);
+};
+
 const hydrateSession = (record) => {
   if (!record) return null;
 
@@ -225,8 +275,28 @@ export const assertLiveSessionAccess = async (
   }
 
   const currentUserId = toUserId(user);
-  const isTeacher = String(session.teacherId) === currentUserId;
-  const isStudent = session.studentIds.has(currentUserId);
+  const classroom = session.classId
+    ? await Class.findById(session.classId)
+        .select("name teacher students")
+        .populate("students", "_id name")
+        .lean()
+    : null;
+
+  if (classroom) {
+    await syncSessionMembershipFromClassroom(session, classroom);
+  }
+
+  const classStudentIds = classroom
+    ? new Set((classroom.students || []).map((student) => toEntityId(student)).filter(Boolean))
+    : null;
+  const classTeacherId = classroom ? toEntityId(classroom.teacher) : "";
+  const isTeacher = classroom
+    ? classTeacherId === currentUserId
+    : String(session.teacherId) === currentUserId;
+  const isStudent = classroom
+    ? classStudentIds.has(currentUserId)
+    : session.studentIds.has(currentUserId);
+
   if (!isTeacher && !isStudent) {
     const error = new Error("You do not have access to this live simulation.");
     error.status = 403;
