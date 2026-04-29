@@ -62,7 +62,7 @@ const app = express();
 app.disable('x-powered-by');
 const SESSION_SECRET = process.env.SESSION_SECRET;
 if (!SESSION_SECRET) {
-  console.error('Missing required SESSION_SECRET. Set SESSION_SECRET in openhw-studio-backend-danish/.env or your runtime environment.');
+  console.error('Missing required SESSION_SECRET. Set SESSION_SECRET in openhw-studio-backend/.env or your runtime environment.');
   process.exit(1);
 }
 
@@ -161,7 +161,7 @@ app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
-  '../openhw-studio-examples-danish/examples',
+  '../openhw-studio-examples/examples',
   '../openhw-studio-examples/examples',
 ]);
 app.use('/examples', express.static(examplesDir));

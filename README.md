@@ -52,7 +52,7 @@ The server runs on **http://localhost:5001**.
 ## Project Structure
 
 ```
-openhw-studio-backend-danish/
+openhw-studio-backend/
 ├── src/
 │   ├── server.js                   # Entry point — Express app setup & startup
 │   ├── controllers/
@@ -193,7 +193,7 @@ The `nodemon.json` explicitly ignores the `temp/` directory. Without this, file 
 ### Installation
 
 ```bash
-cd openhw-studio-backend-danish
+cd openhw-studio-backend
 npm install
 ```
 
@@ -241,8 +241,8 @@ The backend uses a `.env` (or `env`) file for configuration. Create one in the r
 | `GOOGLE_CALLBACK_URL` | Authorised redirect URI for Google Login | `http://localhost:5001/auth/google/callback` |
 | `FRONTEND_URL` | Frontend URL for CORS configuration | `http://localhost:5173` |
 | `FRONTEND_URLS` | Comma-separated frontend origins for CORS allow-list | `http://localhost:5173,http://127.0.0.1:5173` |
-| `EXAMPLES_PATH` | Path to the examples directory served at `/examples` (absolute or relative to the backend root) | `../openhw-studio-examples-danish/examples` |
-| `EMULATOR_PATH` | Path to the emulator repo root; the backend uses `src/components` inside it | `../openhw-studio-emulator-danish` |
+| `EXAMPLES_PATH` | Path to the examples directory served at `/examples` (absolute or relative to the backend root) | `../openhw-studio-examples/examples` |
+| `EMULATOR_PATH` | Path to the emulator repo root; the backend uses `src/components` inside it | `../openhw-studio-emulator` |
 | `EMULATOR_COMPONENTS_PATH` | Optional direct path to the emulator component directory | — |
 | `PICO_MICROPYTHON_UART0_UF2_URL` | Preferred source (URL or local file path) for UART0-enabled Pico MicroPython UF2 | — |
 | `PICO_MICROPYTHON_UF2_URL` | Backward-compatible alias for Pico MicroPython UF2 source (URL or local path) | — |
