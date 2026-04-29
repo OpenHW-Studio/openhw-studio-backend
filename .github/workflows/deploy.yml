@@ -1,8 +1,5 @@
 name: Backend CI/CD Pipeline
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 on:
   push:
     branches:
