@@ -31,22 +31,36 @@ RUN git clone -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PA
     cd $PICO_SDK_PATH && \
     git submodule update --init
 
-# Pre-install common libraries for the simulator
-RUN arduino-cli lib install "Adafruit NeoPixel"
-RUN arduino-cli lib install "Stepper"
-RUN arduino-cli lib install "Servo"
+# Pre-install common libraries for the simulator (Pico/AVR compatible)
+RUN arduino-cli lib install \
+    "Adafruit NeoPixel" \
+    "Stepper" \
+    "Servo" \
+    "Adafruit GFX Library" \
+    "Adafruit SSD1306" \
+    "Adafruit ILI9341" \
+    "LiquidCrystal I2C" \
+    "PubSubClient" \
+    "ArduinoJson" \
+    "Adafruit BME280" \
+    "Adafruit MPU6050" \
+    "Adafruit BusIO" \
+    "Adafruit Unified Sensor" \
+    "Ticker" \
+    && rm -rf /root/.arduino15/staging/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy package.json and package-lock.json
-COPY package*.json ./
+COPY openhw-studio-backend/package*.json ./
 
 # Install dependencies
 RUN npm install
 
-# Copy the rest of the application code
-COPY . .
+# Copy the application code and required sibling repos from the build context
+COPY openhw-studio-backend/ .
+COPY openhw-studio-examples/ ./openhw-studio-examples/
+COPY openhw-studio-emulator/ ./openhw-studio-emulator/
 
 # Ensure temp and data directories exist
 RUN mkdir -p temp

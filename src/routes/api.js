@@ -27,10 +27,15 @@ router.get('/admin/components/installed', protectRoute, requireAdmin, getInstall
 router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
 
-import { getPendingDeployments, approveDeployment, rollbackDeployment } from '../controllers/deploymentController.js';
+import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild } from '../controllers/deploymentController.js';
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
 router.post('/admin/deployments/rollback', protectRoute, requireAdmin, rollbackDeployment);
+
+// Sub-repo webhooks and notifications
+router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
+router.get('/admin/deploy/notifications', protectRoute, requireAdmin, getNotifications);
+router.post('/admin/deploy/trigger-build', protectRoute, requireAdmin, triggerBuild);
 
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);

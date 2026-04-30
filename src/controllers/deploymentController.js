@@ -120,22 +120,91 @@ export const approveDeployment = async (req, res) => {
     }
 };
 
+let deploymentNotifications = [];
+
 /**
- * Trigger a manual rollback (re-run a specific older workflow)
+ * Webhook endpoint for sub-repos to notify the backend of changes
+ */
+export const notifyChange = (req, res) => {
+    const { repo, prTitle, prDescription, filesChanged } = req.body;
+    
+    if (!repo) {
+        return res.status(400).json({ error: 'Repo name is required.' });
+    }
+
+    const newNotification = {
+        id: Date.now().toString(),
+        repo,
+        prTitle: prTitle || 'Update detected',
+        prDescription: prDescription || '',
+        filesChanged: filesChanged || [],
+        timestamp: new Date().toISOString()
+    };
+
+    deploymentNotifications.push(newNotification);
+    res.json({ success: true, message: 'Notification received.' });
+};
+
+/**
+ * Get pending sub-repo change notifications
+ */
+export const getNotifications = (req, res) => {
+    res.json({ success: true, notifications: deploymentNotifications });
+};
+
+/**
+ * Trigger a rebuild of the main repos from the dashboard
+ */
+export const triggerBuild = async (req, res) => {
+    const { target_repo, notification_id } = req.body;
+
+    if (!target_repo) {
+        return res.status(400).json({ error: 'target_repo is required.' });
+    }
+
+    try {
+        const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${target_repo}/actions/workflows/deploy.yml/dispatches`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ref: 'develop' })
+        });
+
+        if (!response.ok) {
+            const err = await response.text();
+            return res.status(500).json({ error: 'Failed to trigger build.', details: err });
+        }
+
+        // Clear notification if provided
+        if (notification_id) {
+            deploymentNotifications = deploymentNotifications.filter(n => n.id !== notification_id);
+        }
+
+        res.json({ success: true, message: `Build triggered for ${target_repo}. It will appear in pending deployments once tests pass.` });
+    } catch (error) {
+         console.error('Error triggering build:', error);
+         res.status(500).json({ error: 'Internal server error.' });
+    }
+};
+
+/**
+ * Trigger a manual rollback to a specific Docker image tag
  */
 export const rollbackDeployment = async (req, res) => {
-    const { repo, branch = 'develop' } = req.body;
+    const { repo, image_tag } = req.body;
     
-    // In a real scenario, you'd trigger a workflow_dispatch with a specific commit sha.
-    // For simplicity, we'll trigger a workflow_dispatch on the branch, which assumes
-    // the admin has manually reverted the commit in GitHub or pushed a fix.
+    if (!repo || !image_tag) {
+        return res.status(400).json({ error: 'repo and image_tag are required.' });
+    }
     
     try {
-        const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/workflows/deploy.yml/dispatches`, {
+        const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/workflows/rollback.yml/dispatches`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                ref: branch
+                ref: 'develop',
+                inputs: {
+                    image_tag: image_tag
+                }
             })
         });
 
@@ -144,7 +213,7 @@ export const rollbackDeployment = async (req, res) => {
             return res.status(500).json({ error: 'Failed to trigger rollback dispatch.', details: err });
         }
 
-        res.json({ success: true, message: `Rollback triggered for ${repo} on branch ${branch}.` });
+        res.json({ success: true, message: `Rollback triggered for ${repo} to tag ${image_tag}.` });
     } catch (error) {
          console.error('Error rolling back:', error);
          res.status(500).json({ error: 'Internal server error during rollback.' });
