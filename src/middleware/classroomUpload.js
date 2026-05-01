@@ -6,10 +6,10 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const classroomAssetsRoot = path.resolve(
-  __dirname,
-  "../../../OpenHW-studio-frontend/public/assets/classroom",
-);
+const backendRoot = path.resolve(__dirname, '../../');
+const classroomAssetsRoot = process.env.CLASSROOM_UPLOADS_DIR
+  ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
+  : path.resolve(backendRoot, 'data/classroom');
 
 const ensureDir = (dirPath) => {
   if (!fs.existsSync(dirPath)) {
@@ -71,7 +71,7 @@ export const classroomUpload = multer({
 
 export const getClassroomAssetPublicPath = (filePath) => {
   const relativePath = path.relative(classroomAssetsRoot, filePath).replace(/\\/g, "/");
-  return `/assets/classroom/${relativePath}`;
+  return `/api/assets/classroom/${relativePath}`;
 };
 
 export const getClassroomAssetsRoot = () => classroomAssetsRoot;

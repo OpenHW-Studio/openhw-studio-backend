@@ -27,6 +27,9 @@ router.get('/admin/components/installed', protectRoute, requireAdmin, getInstall
 router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
 
+// Public route for the frontend to fetch and inject custom components at runtime
+router.get('/components/public-installed', backupInstalledComponents);
+
 import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild } from '../controllers/deploymentController.js';
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);

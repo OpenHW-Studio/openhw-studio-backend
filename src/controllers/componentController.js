@@ -31,10 +31,11 @@ const emulatorComponentsPath = (() => {
     }
 
     const resolvedRoot = resolveFirstExisting([
-        './openhw-studio-emulator',
         '../openhw-studio-emulator',
     ]);
 
+    // In Docker, we WANT this to fail so it falls back to localDataPath (the persistent volume)
+    // Local development will still find the repository.
     if (resolvedRoot) {
         return path.join(resolvedRoot, 'src/components');
     }
