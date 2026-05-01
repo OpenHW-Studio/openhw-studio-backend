@@ -166,6 +166,11 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.en
 ]);
 app.use('/examples', express.static(examplesDir));
 
+// Serve classroom uploads from persistent volume
+const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
+  ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
+  : path.resolve(backendRoot, 'data/classroom');
+app.use('/api/assets/classroom', express.static(classroomAssetsDir));
 const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
