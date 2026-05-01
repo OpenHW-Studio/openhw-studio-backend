@@ -42,7 +42,6 @@ RUN arduino-cli lib install \
     "LiquidCrystal I2C" \
     "PubSubClient" \
     "ArduinoJson" \
-    "Adafruit BME280" \
     "Adafruit MPU6050" \
     "Adafruit BusIO" \
     "Adafruit Unified Sensor" \
