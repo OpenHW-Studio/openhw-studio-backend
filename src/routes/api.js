@@ -18,7 +18,7 @@ router.post('/lib-install', protectRoute, requireAdmin, installLibrary);
 router.post('/lib-uninstall', protectRoute, requireAdmin, uninstallLibrary);
 router.get('/lib-list', listLibraries);
 
-import { approveComponent, getPendingComponents, submitComponent, rejectComponent, getInstalledComponents, deleteInstalledComponent, backupInstalledComponents } from '../controllers/componentController.js';
+import { approveComponent, getPendingComponents, submitComponent, rejectComponent, getInstalledComponents, deleteInstalledComponent, backupInstalledComponents, getComponentsVersion } from '../controllers/componentController.js';
 router.post('/components/submit', protectRoute, submitComponent);
 router.get('/admin/components/pending', protectRoute, requireAdmin, getPendingComponents);
 router.post('/admin/components/approve', protectRoute, requireAdmin, approveComponent);
@@ -27,8 +27,10 @@ router.get('/admin/components/installed', protectRoute, requireAdmin, getInstall
 router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
 router.get('/admin/components/backup', backupInstalledComponents);
 
-// Public route for the frontend to fetch and inject custom components at runtime
+// Public routes for the frontend to check/fetch custom components at runtime
+router.get('/components/version', getComponentsVersion);        // tiny hash — no auth needed
 router.get('/components/public-installed', backupInstalledComponents);
+
 
 import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild } from '../controllers/deploymentController.js';
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
