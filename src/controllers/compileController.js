@@ -318,7 +318,7 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
     if (lowerBuilder === 'pico-sdk' && lower.includes('pico_sdk_path')) {
         return {
             category: 'sdk-config',
-            hint: 'Configure PICO_SDK_PATH or ensure openhw-studio-backend-danish/external/pico-sdk exists.',
+            hint: 'Configure PICO_SDK_PATH or ensure openhw-studio-backend/external/pico-sdk exists.',
         };
     }
 
@@ -544,7 +544,7 @@ function resolvePicoSdkPath() {
         envPath,
         path.resolve(__dirname, '../../external/pico-sdk'),
         path.resolve(process.cwd(), 'external/pico-sdk'),
-        path.resolve(process.cwd(), 'openhw-studio-backend-danish/external/pico-sdk'),
+        path.resolve(process.cwd(), 'openhw-studio-backend/external/pico-sdk'),
     ].filter(Boolean);
 
     for (const candidate of candidates) {
@@ -988,7 +988,7 @@ export const compileArduinoCode = (req, res) => {
                 400,
                 {
                     error: 'Pico SDK build failed',
-                    details: 'PICO_SDK_PATH is not configured and no local SDK was found at openhw-studio-backend-danish/external/pico-sdk.',
+                    details: 'PICO_SDK_PATH is not configured and no local SDK was found at openhw-studio-backend/external/pico-sdk.',
                 },
                 { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
             );

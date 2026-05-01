@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log
+.git
+.gitignore
+temp/
+data/
+build_error.txt
+build_output.txt
+**/*.log

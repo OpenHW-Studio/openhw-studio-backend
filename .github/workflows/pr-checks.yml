@@ -1,0 +1,39 @@
+name: Backend PR Checks
+
+on:
+  pull_request:
+    branches:
+      - develop
+      - main
+
+jobs:
+  verify_pr:
+    name: Dry-Run Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Checkout examples code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-examples
+          path: openhw-studio-examples
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout emulator code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-emulator
+          path: openhw-studio-emulator
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Dry-run Docker Deployment Build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./openhw-studio-backend/Dockerfile
+          push: false # We only build to verify it works, we don't push it yet!
+          tags: test-backend:pr

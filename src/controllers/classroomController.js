@@ -9,7 +9,8 @@ import { getClassroomAssetPublicPath } from "../middleware/classroomUpload.js";
 //enhanced
 const { ObjectId } = mongoose.Types;
 
-const isTeacher = (user) => user?.role === "teacher";
+const isTeacher = (user) => user?.role === "teacher" || user?.role === "admin";
+const isStudent = (user) => user?.role === "student" || user?.role === "admin";
 const isValidObjectId = (id) => ObjectId.isValid(id);
 
 const extractId = (value) => {
@@ -103,10 +104,10 @@ export const inviteStudents = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can invite students." });
+        .json({ message: "Only the class teacher or an admin can invite students." });
     }
 
     const normalizedStudentIds = Array.isArray(studentIds)
@@ -171,9 +172,9 @@ export const getMyClassrooms = async (req, res) => {
   try {
     let query = {};
 
-    if (req.user.role === "teacher") {
+    if (isTeacher(req.user)) {
       query = { teacher: req.user._id };
-    } else if (req.user.role === "student") {
+    } else if (isStudent(req.user)) {
       query = { students: req.user._id };
     }
 
@@ -272,10 +273,10 @@ export const removeClassroomStudent = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can remove students." });
+        .json({ message: "Only the class teacher or an admin can remove students." });
     }
 
     const alreadyInClass = classroom.students.some(
@@ -320,10 +321,10 @@ export const getAssignmentSubmissions = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can view submissions." });
+        .json({ message: "Only the class teacher or an admin can view submissions." });
     }
 
     const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
@@ -372,10 +373,10 @@ export const updateClassroom = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can update this class." });
+        .json({ message: "Only the class teacher or an admin can update this class." });
     }
 
     const updates = {};
@@ -421,10 +422,10 @@ export const updateClassroom = async (req, res) => {
 
 export const joinClassroomByCode = async (req, res) => {
   try {
-    if (req.user.role !== "student") {
+    if (!isStudent(req.user)) {
       return res
         .status(403)
-        .json({ message: "Only students can join classes using code." });
+        .json({ message: "Only students or admins can join classes using code." });
     }
 
     const { joinCode } = req.body || {};
@@ -501,10 +502,10 @@ export const createAssignment = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can create assignments." });
+        .json({ message: "Only the class teacher or an admin can create assignments." });
     }
 
     if (dueDate && Number.isNaN(new Date(dueDate).getTime())) {
@@ -626,7 +627,7 @@ export const getAssignments = async (req, res) => {
       });
     }
 
-    if (req.user.role === "teacher") {
+    if (isTeacher(req.user)) {
       const query = { ...filters, createdBy: req.user._id };
       const total = await Assignment.countDocuments(query);
       const assignments = await Assignment.find(query)
@@ -646,7 +647,7 @@ export const getAssignments = async (req, res) => {
       });
     }
 
-    if (req.user.role === "student") {
+    if (isStudent(req.user)) {
       const classrooms = await Class.find({ students: req.user._id }).select(
         "_id",
       );
@@ -717,10 +718,10 @@ export const createNotice = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString()) {
+    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
       return res
         .status(403)
-        .json({ message: "Only the class teacher can create notices." });
+        .json({ message: "Only the class teacher or an admin can create notices." });
     }
 
     const rawAttachments = Array.isArray(attachments) ? attachments : files;
