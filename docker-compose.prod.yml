@@ -31,6 +31,7 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
+      - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
     volumes:
       - backend-temp:/app/temp
