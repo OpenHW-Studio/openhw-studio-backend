@@ -72,6 +72,7 @@ if (process.env.NODE_ENV === 'production') {
 
 const allowedOrigins = new Set(
   [
+    ...(process.env.ALLOWED_ORIGINS || '').split(','),
     ...(process.env.FRONTEND_URLS || '').split(','),
     process.env.FRONTEND_URL || 'http://localhost:5173',
     'http://127.0.0.1:5173',
