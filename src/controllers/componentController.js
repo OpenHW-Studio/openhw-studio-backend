@@ -31,7 +31,7 @@ const emulatorComponentsPath = (() => {
     }
 
     const resolvedRoot = resolveFirstExisting([
-        '../openhw-studio-emulator',
+        './openhw-studio-emulator',
         '../openhw-studio-emulator',
     ]);
 
