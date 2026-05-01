@@ -319,8 +319,14 @@ const googleLogin = async (req, res) => {
 
     if (!user) {
       // If user doesn't exist, create them
-      const allowedRoles = ["student", "teacher", "user"];
-      const selectedRole = allowedRoles.includes(role) ? role : "user";
+      const allowedRoles = ["student", "teacher", "user", "admin"];
+      let selectedRole = allowedRoles.includes(role) ? role : "user";
+      
+      // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
+      const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+      if (adminEmails.includes(email.toLowerCase())) {
+        selectedRole = "admin";
+      }
 
       user = await User.create({
         name,
@@ -330,6 +336,13 @@ const googleLogin = async (req, res) => {
         // Optional: save picture if your schema supports it
       });
     } else {
+      // Auto-upgrade existing user to admin if email is in VITE_ADMIN_EMAILS
+      const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+      if (adminEmails.includes(user.email.toLowerCase()) && user.role !== "admin") {
+        user.role = "admin";
+        await user.save();
+      }
+
       if (role && ['teacher', 'student', 'admin'].includes(role)) {
         // 1. Admin Superpower Bypass
         if (user.role === 'admin') {
