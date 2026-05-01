@@ -160,8 +160,8 @@ app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
 // Serve demo/guide files from openhw-studio-examples repo
-const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_PATH, [
-  '../openhw-studio-examples/examples',
+const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
+  './openhw-studio-examples/examples',
   '../openhw-studio-examples/examples',
 ]);
 app.use('/examples', express.static(examplesDir));
