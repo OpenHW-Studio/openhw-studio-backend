@@ -316,7 +316,7 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
     if (lowerBuilder === 'pico-sdk' && lower.includes('pico_sdk_path')) {
         return {
             category: 'sdk-config',
-            hint: 'Configure PICO_SDK_PATH or ensure openhw-studio-backend-danish/external/pico-sdk exists.',
+            hint: 'Configure PICO_SDK_PATH or ensure openhw-studio-backend/external/pico-sdk exists.',
         };
     }
 
@@ -348,8 +348,17 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
         };
     }
 
+    if (lower.includes('no firmware artifact was produced')
+        || (lowerFqbn.includes('rp2040') && lower.includes('no .uf2 file found'))
+        || lower.includes('expected .hex or .uf2 in build output')) {
+        return {
+            category: 'artifact-missing',
+            hint: 'Build completed without UF2/HEX output. Verify board selection and build output directory.',
+        };
+    }
+
     if (lower.includes('was not declared in this scope')
-        || lower.includes('expected')
+        || lower.includes('error: expected')
         || lower.includes('stray')
         || lower.includes('invalid conversion')) {
         return {
@@ -362,13 +371,6 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
         return {
             category: 'permission-error',
             hint: 'Check filesystem/port permissions and close other tools that may lock build/upload files.',
-        };
-    }
-
-    if (lowerFqbn.includes('rp2040') && lower.includes('no .uf2 file found')) {
-        return {
-            category: 'artifact-missing',
-            hint: 'Build completed without UF2/HEX output. Verify board selection and build output directory.',
         };
     }
 
@@ -505,7 +507,7 @@ function resolveElfArtifact(buildDir) {
     const raw = fs.readFileSync(selectedElf.elfPath);
     return {
         elfPayload: `ELFBASE64:${raw.toString('base64')}`,
-        elfName,
+        elfName: selectedElf.name,
     };
 }
 
@@ -540,7 +542,7 @@ function resolvePicoSdkPath() {
         envPath,
         path.resolve(__dirname, '../../external/pico-sdk'),
         path.resolve(process.cwd(), 'external/pico-sdk'),
-        path.resolve(process.cwd(), 'openhw-studio-backend-danish/external/pico-sdk'),
+        path.resolve(process.cwd(), 'openhw-studio-backend/external/pico-sdk'),
     ].filter(Boolean);
 
     for (const candidate of candidates) {
@@ -984,7 +986,7 @@ export const compileArduinoCode = (req, res) => {
                 400,
                 {
                     error: 'Pico SDK build failed',
-                    details: 'PICO_SDK_PATH is not configured and no local SDK was found at openhw-studio-backend-danish/external/pico-sdk.',
+                    details: 'PICO_SDK_PATH is not configured and no local SDK was found at openhw-studio-backend/external/pico-sdk.',
                 },
                 { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
             );
@@ -1192,7 +1194,8 @@ pico_add_extra_outputs(firmware)
         try {
             compiledArtifact = resolveCompileArtifact(buildDir, targetFqbn);
             elfArtifact = resolveElfArtifact(buildDir);
-        } catch {
+        } catch (err) {
+            console.error('Error resolving compilation artifacts:', err);
             compiledArtifact = {
                 payload: '',
                 artifactType: null,

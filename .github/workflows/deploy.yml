@@ -1,75 +1,82 @@
-name: Backend CI/CD
+name: Backend CI/CD Pipeline
 
 on:
   push:
-    branches: [develop]
-  pull_request:
-    branches: [develop]
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: openhw-studio/openhw-studio-backend
+    branches:
+      - develop
+  workflow_dispatch:
 
 jobs:
-  ci:
-    name: Lint & Validate
+  test_and_build:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - name: Checkout backend code
+        uses: actions/checkout@v4
         with:
-          node-version: 20
-          cache: npm
+          path: openhw-studio-backend
 
-      - name: Install dependencies
-        run: npm ci
+      - name: Checkout examples code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-examples
+          path: openhw-studio-examples
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Lint
-        run: npm run lint --if-present
+      - name: Checkout emulator code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-emulator
+          path: openhw-studio-emulator
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-  deploy:
-    name: Build & Deploy
-    needs: ci
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/develop' && github.event_name == 'push'
+      # Add testing steps here if tests are added to the backend in the future.
+      # - name: Run Backend Tests
+      #   run: npm test
 
-    permissions:
-      contents: read
-      packages: write
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push image
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
+          file: ./openhw-studio-backend/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ env.IMAGE_NAME }}:latest
-            ghcr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            ${{ secrets.DOCKER_USERNAME }}/openhw-backend:develop
+            ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
 
-      - name: Deploy to VPS via SSH
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          script: |
-            cd /var/www/openhw
-            docker pull ghcr.io/openhw-studio/openhw-studio-backend:latest
-            docker compose up -d --no-deps --force-recreate backend
-            docker image prune -f
+  deploy:
+    name: Deploy to Production
+    needs: test_and_build
+    runs-on: self-hosted
+    environment:
+      name: production # This environment requires manual approval in GitHub
+      url: https://openhw-studio.fossee.in
+    steps:
+      - name: Pull and Restart Container Locally
+        run: |
+          cd /opt/openhw/backend
+          
+          # Pull latest orchestration files from GitHub
+          git pull origin develop
+          
+          # Update the local .env file with the new backend tag for persistence
+          sed -i '/^BACKEND_TAG=/d' .env || true
+          echo "BACKEND_TAG=${{ github.sha }}" >> .env
+          
+          # Ensure Docker Hub credentials are available
+          export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+          
+          # Log in to Docker Hub
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+          docker compose -f docker-compose.prod.yml pull backend
+          docker compose -f docker-compose.prod.yml up -d backend
+          
+          # Clean up old images to save disk space
+          docker image prune -af

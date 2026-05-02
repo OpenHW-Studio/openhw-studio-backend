@@ -18,8 +18,8 @@ const normalizeSnapshotPayload = (body = {}) => ({
 
 export async function createLiveSimulation(req, res) {
   try {
-    if (req.user?.role !== "teacher") {
-      return res.status(403).json({ message: "Only teachers can start a live simulation." });
+    if (req.user?.role !== "teacher" && req.user?.role !== "admin") {
+      return res.status(403).json({ message: "Only teachers or admins can start a live simulation." });
     }
 
     const { classId } = req.body || {};

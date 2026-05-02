@@ -22,6 +22,56 @@ const normalizeSnapshot = (payload = {}) => ({
 
 const toUserId = (user) => String(user?._id || user?.id || "").trim();
 
+const toEntityId = (value) => String(value?._id || value || "").trim();
+
+const setsHaveSameValues = (left = new Set(), right = new Set()) => {
+  if (left.size !== right.size) return false;
+  return Array.from(left).every((entry) => right.has(entry));
+};
+
+const syncSessionMembershipFromClassroom = async (session, classroom) => {
+  if (!session || !classroom) return;
+
+  const classStudentIds = new Set(
+    (classroom.students || [])
+      .map((student) => toEntityId(student))
+      .filter(Boolean),
+  );
+  const classStudentRoster = new Map(
+    (classroom.students || [])
+      .map((student) => [
+        toEntityId(student),
+        student?.name || session.studentRoster?.get?.(toEntityId(student)) || "Student",
+      ])
+      .filter(([userId]) => Boolean(userId)),
+  );
+  const classTeacherId = toEntityId(classroom.teacher);
+  const className = classroom.name || session.className;
+
+  const membershipChanged =
+    !setsHaveSameValues(session.studentIds || new Set(), classStudentIds) ||
+    String(session.teacherId || "") !== classTeacherId ||
+    session.className !== className;
+
+  if (!membershipChanged) return;
+
+  session.studentIds = classStudentIds;
+  session.studentRoster = classStudentRoster;
+  session.editorStudentIds = new Set(
+    Array.from(session.editorStudentIds || []).filter((userId) => classStudentIds.has(userId)),
+  );
+  session.pendingEditRequests = new Map(
+    Array.from(session.pendingEditRequests?.entries?.() || []).filter(([userId]) =>
+      classStudentIds.has(userId),
+    ),
+  );
+  session.teacherId = classTeacherId || session.teacherId;
+  session.className = className;
+  session.updatedAt = new Date();
+
+  await persistLiveSimulationSession(session);
+};
+
 const hydrateSession = (record) => {
   if (!record) return null;
 
@@ -63,6 +113,33 @@ const serializePermissionState = (session) => {
     })),
     pendingEditRequests: Array.from(session.pendingEditRequests?.values?.() || []),
   };
+};
+
+const saveQueue = new Set();
+let isSaving = false;
+
+const processSaveQueue = async () => {
+  if (isSaving || saveQueue.size === 0) return;
+  isSaving = true;
+  const sessionCode = saveQueue.values().next().value;
+  saveQueue.delete(sessionCode);
+
+  try {
+    const session = sessionsByCode.get(sessionCode);
+    if (session) {
+      await persistLiveSimulationSession(session);
+    }
+  } catch (error) {
+    console.error("[liveSimulation] Background save failed:", error);
+  } finally {
+    isSaving = false;
+    if (saveQueue.size > 0) setTimeout(processSaveQueue, 100);
+  }
+};
+
+const queueSessionSave = (sessionCode) => {
+  saveQueue.add(sessionCode);
+  processSaveQueue();
 };
 
 const persistLiveSimulationSession = async (session) => {
@@ -159,7 +236,7 @@ const canSocketEditSession = (socket, session) => {
   const role = socket?.liveMeta?.role || "";
   const userId = String(socket?.liveMeta?.userId || "").trim();
 
-  if (role === "teacher") return true;
+  if (role === "teacher" || role === "admin") return true;
   if (role !== "student" || !userId) return false;
 
   return session?.editorStudentIds?.has?.(userId) || false;
@@ -225,8 +302,28 @@ export const assertLiveSessionAccess = async (
   }
 
   const currentUserId = toUserId(user);
-  const isTeacher = String(session.teacherId) === currentUserId;
-  const isStudent = session.studentIds.has(currentUserId);
+  const classroom = session.classId
+    ? await Class.findById(session.classId)
+        .select("name teacher students")
+        .populate("students", "_id name")
+        .lean()
+    : null;
+
+  if (classroom) {
+    await syncSessionMembershipFromClassroom(session, classroom);
+  }
+
+  const classStudentIds = classroom
+    ? new Set((classroom.students || []).map((student) => toEntityId(student)).filter(Boolean))
+    : null;
+  const classTeacherId = classroom ? toEntityId(classroom.teacher) : "";
+  const isTeacher = classroom
+    ? (classTeacherId === currentUserId || user.role === "admin")
+    : (String(session.teacherId) === currentUserId || user.role === "admin");
+  const isStudent = classroom
+    ? classStudentIds.has(currentUserId)
+    : session.studentIds.has(currentUserId);
+
   if (!isTeacher && !isStudent) {
     const error = new Error("You do not have access to this live simulation.");
     error.status = 403;
@@ -243,8 +340,8 @@ export const assertLiveSessionAccess = async (
 };
 
 export const createLiveSimulationSession = async ({ classId, teacher, snapshot }) => {
-  if (!teacher?._id || teacher.role !== "teacher") {
-    const error = new Error("Only teachers can start a live simulation.");
+  if (!teacher?._id || (teacher.role !== "teacher" && teacher.role !== "admin")) {
+    const error = new Error("Only teachers or admins can start a live simulation.");
     error.status = 403;
     throw error;
   }
@@ -260,8 +357,8 @@ export const createLiveSimulationSession = async ({ classId, teacher, snapshot }
     throw error;
   }
 
-  if (String(classroom.teacher?._id || classroom.teacher) !== String(teacher._id)) {
-    const error = new Error("Only the class teacher can start a live simulation.");
+  if (String(classroom.teacher?._id || classroom.teacher) !== String(teacher._id) && teacher.role !== "admin") {
+    const error = new Error("Only the class teacher or an admin can start a live simulation.");
     error.status = 403;
     throw error;
   }
@@ -342,7 +439,7 @@ export async function registerLiveSimulationWebSocket(httpServer) {
           ws.liveMeta = {
             sessionCode,
             role:
-              requestedRole === "teacher"
+              requestedRole === "teacher" || user.role === "admin"
                 ? "teacher"
                 : user.role === "student"
                   ? "student"
@@ -390,7 +487,7 @@ export async function registerLiveSimulationWebSocket(httpServer) {
 
             existingSession.snapshot = normalizeSnapshot(payload.snapshot);
             existingSession.updatedAt = new Date();
-            await persistLiveSimulationSession(existingSession);
+            queueSessionSave(sessionCode);
 
             broadcastSessionUpdate(
               sessionCode,

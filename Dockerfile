@@ -15,19 +15,45 @@ ENV ARDUINO_USER_DIR=/arduino/user
 RUN mkdir -p /arduino/user/libraries && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
-    arduino-cli lib update-index && \
-    arduino-cli lib install "Adafruit NeoPixel" && \
-    arduino-cli lib install "Stepper" && \
-    arduino-cli lib install "Servo"
+    arduino-cli core install rp2040:rp2040 && \
+    rm -rf /root/.arduino15/staging/*
+
+# Install Raspberry Pi Pico SDK
+ENV PICO_SDK_PATH=/opt/pico-sdk
+RUN git clone -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
+    cd $PICO_SDK_PATH && \
+    git submodule update --init
+
+# Pre-install common libraries for the simulator (Pico/AVR compatible)
+RUN arduino-cli lib install \
+    "Adafruit NeoPixel" \
+    "Stepper" \
+    "Servo" \
+    "Adafruit GFX Library" \
+    "Adafruit SSD1306" \
+    "Adafruit ILI9341" \
+    "LiquidCrystal I2C" \
+    "PubSubClient" \
+    "ArduinoJson" \
+    "Adafruit MPU6050" \
+    "Adafruit BusIO" \
+    "Adafruit Unified Sensor" \
+    "Ticker" \
+    && rm -rf /root/.arduino15/staging/*
 
 RUN chmod -R 755 /arduino
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm install --omit=dev
+COPY openhw-studio-backend/package*.json ./
 
-COPY . .
+# Install dependencies
+RUN npm install
+
+# Copy the application code and required sibling repos from the build context
+COPY openhw-studio-backend/ .
+COPY openhw-studio-examples/ ./openhw-studio-examples/
+COPY openhw-studio-emulator/ ./openhw-studio-emulator/
 
 RUN mkdir -p temp data/components
 

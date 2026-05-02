@@ -9,6 +9,8 @@ import {
 	getDefaultPicoCircuitPythonUf2,
 } from '../controllers/compileController.js';
 import { searchLibrary, installLibrary, listLibraries } from '../controllers/libController.js';
+import { protectRoute } from '../middleware/authMiddleware.js';
+import { requireAdmin } from '../middleware/authorization.js';
 
 const router = Router();
 
@@ -23,7 +25,7 @@ router.get('/pico/circuitpython-uf2', getDefaultPicoCircuitPythonUf2);
 
 // Library Management
 router.get('/lib-search', searchLibrary);
-router.post('/lib-install', installLibrary);
+router.post('/lib-install', protectRoute, requireAdmin, installLibrary);
 router.get('/lib-list', listLibraries);
 
 export default router;

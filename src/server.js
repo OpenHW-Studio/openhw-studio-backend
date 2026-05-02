@@ -59,19 +59,100 @@ if (!isDbConnected) {
 }
 
 const app = express();
+app.disable('x-powered-by');
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (!SESSION_SECRET) {
+  console.error('Missing required SESSION_SECRET. Set SESSION_SECRET in openhw-studio-backend/.env or your runtime environment.');
+  process.exit(1);
+}
+
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
+const allowedOrigins = new Set(
+  [
+    ...(process.env.ALLOWED_ORIGINS || '').split(','),
+    ...(process.env.FRONTEND_URLS || '').split(','),
+    process.env.FRONTEND_URL || 'http://localhost:5173',
+    'http://127.0.0.1:5173',
+  ]
+    .map(origin => origin.trim())
+    .filter(Boolean)
+);
 
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'supersecretcatsession',
+    secret: SESSION_SECRET,
     resave: false,
-    saveUninitialized: true,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    },
 }));
 
 app.use(passport.initialize());
 app.use(passport.session());
 
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
+}));
+app.use((req, res, next) => {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  next();
+});
+
+const createInMemoryRateLimiter = ({ windowMs, limit, keyResolver }) => {
+  const buckets = new Map();
+  const cleanupIntervalMs = Math.max(1000, Math.floor(windowMs));
+  let lastCleanupAt = Date.now();
+
+  return (req, res, next) => {
+    const now = Date.now();
+    if ((now - lastCleanupAt) >= cleanupIntervalMs) {
+      for (const [bucketKey, bucketValue] of buckets.entries()) {
+        if ((now - bucketValue.windowStart) >= windowMs) {
+          buckets.delete(bucketKey);
+        }
+      }
+      lastCleanupAt = now;
+    }
+
+    const key = String((keyResolver?.(req) || req.ip || 'unknown')).trim() || 'unknown';
+    const existing = buckets.get(key);
+
+    if (!existing || (now - existing.windowStart) >= windowMs) {
+      buckets.set(key, { windowStart: now, count: 1 });
+      return next();
+    }
+
+    if (existing.count >= limit) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((windowMs - (now - existing.windowStart)) / 1000));
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
+    existing.count += 1;
+    return next();
+  };
+};
+
+app.use(createInMemoryRateLimiter({
+  windowMs: 60 * 1000,
+  limit: 120,
+  keyResolver: (req) => `${req.ip}:${req.path}`,
 }));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
@@ -81,12 +162,19 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
-
-const defaultExamplesPath = path.resolve(__dirname, '../../openhw-studio-examples/examples');
-const examplesDir = process.env.EXAMPLES_DIR || defaultExamplesPath;
+// Serve demo/guide files from openhw-studio-examples repo
+const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
+  './openhw-studio-examples/examples',
+  '../openhw-studio-examples/examples',
+]);
 app.use('/examples', express.static(examplesDir));
 
-const PORT = process.env.PORT || 5000;
+// Serve classroom uploads from persistent volume
+const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
+  ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
+  : path.resolve(backendRoot, 'data/classroom');
+app.use('/api/assets/classroom', express.static(classroomAssetsDir));
+const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
 server.listen(PORT, () => {

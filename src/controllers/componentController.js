@@ -31,10 +31,11 @@ const emulatorComponentsPath = (() => {
     }
 
     const resolvedRoot = resolveFirstExisting([
-        '../openhw-studio-emulator-danish',
         '../openhw-studio-emulator',
     ]);
 
+    // In Docker, we WANT this to fail so it falls back to localDataPath (the persistent volume)
+    // Local development will still find the repository.
     if (resolvedRoot) {
         return path.join(resolvedRoot, 'src/components');
     }
@@ -43,6 +44,37 @@ const emulatorComponentsPath = (() => {
 })();
 
 const EMULATOR_COMPONENTS_PATH = emulatorComponentsPath;
+const NORMALIZED_COMPONENTS_ROOT = path.resolve(EMULATOR_COMPONENTS_PATH);
+const COMPONENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+const sanitizeComponentId = (id) => {
+    if (typeof id !== 'string') return null;
+    const normalizedId = id.trim();
+    if (!normalizedId || !COMPONENT_ID_PATTERN.test(normalizedId)) return null;
+    if (path.basename(normalizedId) !== normalizedId) return null;
+    return normalizedId;
+};
+
+const isValidComponentId = (id) => Boolean(sanitizeComponentId(id));
+
+const resolveSafeComponentDir = (id) => {
+    const safeId = sanitizeComponentId(id);
+    if (!safeId) {
+        const err = new Error('Invalid component id. Use 1-64 characters, start with a letter/number, and only use letters, numbers, hyphens, or underscores.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    const componentDir = path.normalize(path.join(NORMALIZED_COMPONENTS_ROOT, safeId));
+    const withinRoot = componentDir === NORMALIZED_COMPONENTS_ROOT || componentDir.startsWith(`${NORMALIZED_COMPONENTS_ROOT}${path.sep}`);
+    if (!withinRoot) {
+        const err = new Error('Invalid component id path characters.');
+        err.statusCode = 400;
+        throw err;
+    }
+
+    return { safeId, componentDir };
+};
 
 // Ensure the directory exists to prevent ENOENT crashes
 if (!fs.existsSync(EMULATOR_COMPONENTS_PATH)) {
@@ -58,6 +90,7 @@ export const submitComponent = (req, res) => {
     try {
         const { id, manifest, ui, logic, validation, index } = req.body;
         if (!id || !manifest) return res.status(400).json({ error: 'Invalid component submission.' });
+        if (!isValidComponentId(id)) return res.status(400).json({ error: 'Invalid component id. Use 1-64 characters, start with a letter/number, and only use letters, numbers, hyphens, or underscores.' });
 
         // submissionId is unique per upload so rejecting one copy never drops other submissions
         const submissionId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -97,13 +130,13 @@ export const rejectComponent = (req, res) => {
 
 export const approveComponent = async (req, res) => {
     try {
-        const { id, manifest, ui, logic, validation, index } = req.body;
+        const { submissionId, id, manifest, ui, logic, validation, index } = req.body;
 
-        if (!id || !manifest || !ui || !logic || !index) {
-            return res.status(400).json({ error: 'Missing required component files. Ensure id, manifest, ui, logic, and index are provided.' });
+        if (!submissionId || !id || !manifest || !ui || !logic || !index) {
+            return res.status(400).json({ error: 'Missing required component files. Ensure submissionId, id, manifest, ui, logic, and index are provided.' });
         }
 
-        const componentDir = path.join(EMULATOR_COMPONENTS_PATH, id);
+        const { safeId, componentDir } = resolveSafeComponentDir(id);
 
         // 1. Create directory if not exists
         if (!fs.existsSync(componentDir)) {
@@ -131,20 +164,21 @@ export const approveComponent = async (req, res) => {
         }
 
         // Clean ID for valid ES6 export identifier
-        const safeExportName = (manifest.exportName || id).replace(/-([a-z0-9])/g, (g) => g[1].toUpperCase()).replace(/[^a-zA-Z0-9]/g, '');
-        const exportLine = `export { default as ${safeExportName} } from './${id}';`;
-        if (!indexContent.includes(`./${id}'`) && !indexContent.includes(`./${id}"`)) {
+        const safeExportName = (manifest.exportName || safeId).replace(/-([a-z0-9])/g, (g) => g[1].toUpperCase()).replace(/[^a-zA-Z0-9]/g, '');
+        const exportLine = `export { default as ${safeExportName} } from './${safeId}';`;
+        if (!indexContent.includes(`./${safeId}'`) && !indexContent.includes(`./${safeId}"`)) {
             indexContent += `\n${exportLine}\n`;
             fs.writeFileSync(mainIndexFile, indexContent);
         }
 
         // 4. Remove from pending store
-        pendingComponentsStore = pendingComponentsStore.filter(c => c.id !== id);
+        pendingComponentsStore = pendingComponentsStore.filter(c => c.submissionId !== submissionId);
 
-        return res.json({ success: true, message: `Successfully installed component ${id} to backend.` });
+        return res.json({ success: true, message: `Successfully installed component ${safeId} to backend.` });
     } catch (error) {
         console.error('CRITICAL: Component approval error:', error);
-        return res.status(500).json({
+        const statusCode = error.statusCode || 500;
+        return res.status(statusCode).json({
             error: 'Failed to approve component.',
             details: error.message,
             path: EMULATOR_COMPONENTS_PATH
@@ -180,7 +214,7 @@ export const getInstalledComponents = (req, res) => {
 export const deleteInstalledComponent = (req, res) => {
     try {
         const { id } = req.params;
-        const componentDir = path.join(EMULATOR_COMPONENTS_PATH, id);
+        const { safeId, componentDir } = resolveSafeComponentDir(id);
         if (fs.existsSync(componentDir)) {
             fs.rmSync(componentDir, { recursive: true, force: true });
         }
@@ -188,17 +222,55 @@ export const deleteInstalledComponent = (req, res) => {
         const mainIndexFile = path.join(EMULATOR_COMPONENTS_PATH, 'index.ts');
         if (fs.existsSync(mainIndexFile)) {
             let indexContent = fs.readFileSync(mainIndexFile, 'utf8');
-            const lines = indexContent.split('\n').filter(line => !line.includes(`'./${id}'`) && !line.includes(`"./${id}"`));
+            const lines = indexContent.split('\n').filter(line => !line.includes(`'./${safeId}'`) && !line.includes(`"./${safeId}"`));
             fs.writeFileSync(mainIndexFile, lines.join('\n'));
         }
 
-        return res.json({ success: true, message: `Component ${id} deleted successfully.` });
+        return res.json({ success: true, message: `Component ${safeId} deleted successfully.` });
     } catch (error) {
         console.error('CRITICAL: Delete component error:', error);
-        return res.status(500).json({
+        const statusCode = error.statusCode || 500;
+        return res.status(statusCode).json({
             error: 'Failed to delete component.',
             details: error.message
         });
+    }
+};
+
+/**
+ * Lightweight version hash for the installed custom components.
+ * Computed from: sorted component IDs + manifest mtime.
+ * Only reads file stats (no content) — very fast, no performance impact.
+ * Used by the frontend to decide whether its IndexedDB cache is still valid.
+ */
+export const getComponentsVersion = (req, res) => {
+    try {
+        let hashInput = '';
+        let count = 0;
+
+        const items = fs.readdirSync(EMULATOR_COMPONENTS_PATH).sort();
+        for (const item of items) {
+            const itemPath = path.join(EMULATOR_COMPONENTS_PATH, item);
+            if (!fs.statSync(itemPath).isDirectory()) continue;
+            const manifestPath = path.join(itemPath, 'manifest.json');
+            if (!fs.existsSync(manifestPath)) continue;
+            const mtime = fs.statSync(manifestPath).mtimeMs;
+            hashInput += `${item}:${mtime}|`;
+            count++;
+        }
+
+        // FNV-1a 32-bit hash (same algorithm used on the frontend)
+        let hash = 0x811c9dc5;
+        for (let i = 0; i < hashInput.length; i++) {
+            hash ^= hashInput.charCodeAt(i);
+            hash = Math.imul(hash, 0x01000193) >>> 0;
+        }
+        const version = hash.toString(16).padStart(8, '0');
+
+        return res.json({ version, count });
+    } catch (error) {
+        console.error('Failed to compute component version:', error);
+        return res.status(500).json({ error: 'Failed to compute component version.' });
     }
 };
 
