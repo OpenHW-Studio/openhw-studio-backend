@@ -47,6 +47,9 @@ router.get('/simulations/share/:shareId', getSharedSimulation);
 router.post('/live-simulations', protectRoute, createLiveSimulation);
 router.get('/live-simulations/:sessionCode', protectRoute, getLiveSimulation);
 
+import { runAutofixController } from '../controllers/autofixController.js';
+router.post('/autofix', protectRoute, runAutofixController);
+
 // User routes for authentication and management
 router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
