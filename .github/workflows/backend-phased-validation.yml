@@ -183,12 +183,12 @@ jobs:
         run: |
           mkdir -p test-results/backend .tmp/uno .tmp/pico
 
-          cat > .tmp/uno/uno_smoke.ino <<'EOF'
+          cat > .tmp/uno/uno.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF
 
-          cat > .tmp/pico/pico_smoke.ino <<'EOF'
+          cat > .tmp/pico/pico.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF

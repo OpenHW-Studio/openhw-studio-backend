@@ -29,6 +29,20 @@ jobs:
           path: openhw-studio-emulator
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout CLI code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-cli
+          path: openhw-studio-cli
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout examples code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-examples
+          path: openhw-studio-examples
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -37,6 +51,7 @@ jobs:
           cache-dependency-path: |
             openhw-studio-backend/package-lock.json
             openhw-studio-emulator/package-lock.json
+            openhw-studio-cli/package-lock.json
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -49,6 +64,10 @@ jobs:
 
       - name: Install emulator dependencies
         working-directory: openhw-studio-emulator
+        run: npm ci --no-audit --no-fund
+
+      - name: Install CLI dependencies
+        working-directory: openhw-studio-cli
         run: npm ci --no-audit --no-fund
 
       - name: Cache Arduino Toolchain
@@ -112,11 +131,11 @@ jobs:
           NODE
 
           mkdir -p .tmp/uno .tmp/pico .tmp/python
-          cat > .tmp/uno/uno_smoke.ino <<'EOF'
+          cat > .tmp/uno/uno.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF
-          cat > .tmp/pico/pico_smoke.ino <<'EOF'
+          cat > .tmp/pico/pico.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF
