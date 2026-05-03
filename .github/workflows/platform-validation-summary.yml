@@ -1,7 +1,7 @@
 name: Platform Validation Summary
 
 permissions:
-  issues: write
+  pull-requests: write
 
 on:
   pull_request:
