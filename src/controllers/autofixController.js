@@ -1,33 +1,28 @@
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export async function runAutofixController(req, res) {
   try {
-    const project = req.body.project;
+    const project = req.body?.project;
     const issue = req.body.issue || { message: 'missing_ground_connection', compIds: [] };
+
+    if (!project || typeof project !== 'object') {
+      return res.status(400).json({ error: 'Invalid request: project is required' });
+    }
 
     const indexPath = path.resolve(__dirname, '..', '..', '..', 'openhw-studio-emulator', 'src', 'circuit-validation', 'index.js');
     const mod = await import(pathToFileURL(indexPath).href);
-    const applyCircuitFix = mod.applyCircuitFix;
-    if (!applyCircuitFix) {
-      return res.status(500).json({ error: 'Autofix engine not available' });
+    const runAutoFix = mod.runAutoFix;
+    if (!runAutoFix) {
+      return res.status(500).json({ error: 'runAutoFix not available from autofix engine' });
     }
 
-    const engineConnections = (project.connections || []).map(wire => ({
-      from: String(wire.from || '').replace(':', '.'),
-      to:   String(wire.to || '').replace(':', '.'),
-    }));
-
-    const projectData = { components: project.components || [], connections: engineConnections };
-
-    const result = applyCircuitFix(projectData, issue, { appliedBy: 'mcp' });
+    const result = runAutoFix(project, issue, { appliedBy: 'mcp', quiet: true });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ error: String(err) });
+    return res.status(500).json({ error: err?.message || String(err) });
   }
 }
-
-function pathToFileURL(p) { return new URL('file://' + p); }
