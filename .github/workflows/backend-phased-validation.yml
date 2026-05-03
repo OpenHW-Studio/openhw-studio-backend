@@ -427,21 +427,36 @@ jobs:
             cliLines.push(`- ${r.phase}: ${r.passed ? 'PASS' : 'FAIL'} (${r.severity})`);
           }
           const cliText = cliLines.join('\n');
+          const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
 
           fs.writeFileSync(path.join(outDir, 'phase4-summary.json'), JSON.stringify(merged, null, 2));
           fs.writeFileSync(path.join(outDir, 'phase4-cli.txt'), cliText + '\n');
-          fs.writeFileSync(path.join(outDir, 'comment.md'),
-            [
-              '## Backend Validation (Phased)',
-              '',
-              '```text',
-              cliText,
-              '```',
-              '',
-              `Critical: ${critical ? 'YES' : 'NO'}`,
-              `Overall: ${merged.passed ? 'PASS' : 'FAIL'}`
-            ].join('\n')
-          );
+          
+          const md = [
+            '## 🧪 Backend Validation (Phased)',
+            '',
+            `**Overall Status:** ${merged.passed ? '✅ PASS' : '❌ FAIL'}`,
+            `**Critical Issues:** ${critical ? '⚠️ YES' : 'None'}`,
+            '',
+            '### Phase Summary',
+            '| Phase | Status | Severity |',
+            '| :--- | :--- | :--- |',
+            ...reports.map(r => `| ${r.phase} | ${r.passed ? '✅' : '❌'} | ${r.severity} |`),
+            '',
+            '### Detailed Checks',
+            '| Check | Status | Severity | Message |',
+            '| :--- | :--- | :--- | :--- |',
+            ...reports.flatMap(r => r.checks.map(c => `| ${r.phase}:${c.name} | ${c.passed ? '✅' : '❌'} | ${c.severity} | ${c.message} |`)),
+            '',
+            '---',
+            `[View Full Run Logs](${runUrl}) | [Download Raw Artifacts](${runUrl}#artifacts)`,
+            '',
+            '```text',
+            cliText,
+            '```'
+          ];
+          
+          fs.writeFileSync(path.join(outDir, 'comment.md'), md.join('\n'));
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `passed=${merged.passed}\ncritical=${critical}\n`);
           NODE

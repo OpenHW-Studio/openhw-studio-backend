@@ -166,18 +166,18 @@ jobs:
 
           const env = process.env;
           const checks = [
-            { name: 'emulator-tests', passed: env.EMU_TEST === 'pass', severity: env.EMU_TEST === 'pass' ? 'info' : 'error' },
-            { name: 'emulator-smoke', passed: env.EMU_SMOKE === 'pass', severity: env.EMU_SMOKE === 'pass' ? 'info' : 'error' },
-            { name: 'backend-routes', passed: env.BACKEND_ROUTES === 'pass', severity: env.BACKEND_ROUTES === 'pass' ? 'info' : 'error' },
-            { name: 'compile-uno', passed: env.UNO === 'pass', severity: env.UNO === 'pass' ? 'info' : 'error' },
-            { name: 'compile-pico', passed: env.PICO === 'pass', severity: env.PICO === 'pass' ? 'info' : 'error' },
-            { name: 'micropython-syntax', passed: env.MICRO === 'pass', severity: env.MICRO === 'pass' ? 'info' : 'error' },
-            { name: 'circuitpython-syntax', passed: env.CIRCUIT === 'pass', severity: env.CIRCUIT === 'pass' ? 'info' : 'error' }
+            { name: 'emulator-tests', passed: env.EMU_TEST === 'pass', severity: env.EMU_TEST === 'pass' ? 'info' : 'error', message: env.EMU_TEST === 'pass' ? 'Emulator unit/integration tests passed' : 'Emulator tests failed' },
+            { name: 'emulator-smoke', passed: env.EMU_SMOKE === 'pass', severity: env.EMU_SMOKE === 'pass' ? 'info' : 'error', message: env.EMU_SMOKE === 'pass' ? 'Emulator smoke test passed' : 'Emulator smoke test failed' },
+            { name: 'backend-routes', passed: env.BACKEND_ROUTES === 'pass', severity: env.BACKEND_ROUTES === 'pass' ? 'info' : 'critical', message: env.BACKEND_ROUTES === 'pass' ? 'Backend routes and contract verified' : 'Critical: Backend routes or server entry missing/broken' },
+            { name: 'compile-uno', passed: env.UNO === 'pass', severity: env.UNO === 'pass' ? 'info' : 'error', message: env.UNO === 'pass' ? 'Arduino UNO smoke sketch compiled' : 'Arduino UNO compilation failed' },
+            { name: 'compile-pico', passed: env.PICO === 'pass', severity: env.PICO === 'pass' ? 'info' : 'error', message: env.PICO === 'pass' ? 'Raspberry Pi Pico smoke sketch compiled' : 'Pico compilation failed' },
+            { name: 'micropython-syntax', passed: env.MICRO === 'pass', severity: env.MICRO === 'pass' ? 'info' : 'error', message: env.MICRO === 'pass' ? 'MicroPython syntax check passed' : 'MicroPython syntax error' },
+            { name: 'circuitpython-syntax', passed: env.CIRCUIT === 'pass', severity: env.CIRCUIT === 'pass' ? 'info' : 'error', message: env.CIRCUIT === 'pass' ? 'CircuitPython syntax check passed' : 'CircuitPython syntax error' }
           ];
 
           const failed = checks.filter(c => !c.passed);
           const passed = failed.length === 0;
-          const critical = failed.some(c => c.name === 'backend-routes');
+          const critical = failed.some(c => c.severity === 'critical');
 
           const outDir = path.join(process.cwd(), 'openhw-studio-backend', 'test-results', 'platform');
           fs.mkdirSync(outDir, { recursive: true });
@@ -197,18 +197,30 @@ jobs:
           for (const c of checks) cli.push(`- ${c.name}: ${c.passed ? 'PASS' : 'FAIL'} (${c.severity})`);
           const cliText = cli.join('\n');
 
-          fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
-          fs.writeFileSync(path.join(outDir, 'cli.txt'), cliText + '\n');
-          fs.writeFileSync(path.join(outDir, 'comment.md'), [
-            '## Platform Validation Summary',
+          const runUrl = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+          
+          const md = [
+            '## 🛡️ Platform Validation Summary',
+            '',
+            `**Overall Status:** ${passed ? '✅ PASS' : '❌ FAIL'}`,
+            `**Critical Issues:** ${critical ? '⚠️ YES' : 'None'}`,
+            '',
+            '### Detailed Checks',
+            '| Check | Status | Severity | Message |',
+            '| :--- | :--- | :--- | :--- |',
+            ...checks.map(c => `| ${c.name} | ${c.passed ? '✅' : '❌'} | ${c.severity} | ${c.message} |`),
+            '',
+            '---',
+            `[View Full Run Logs](${runUrl})`,
             '',
             '```text',
             cliText,
-            '```',
-            '',
-            `Critical: ${critical ? 'YES' : 'NO'}`,
-            `Overall: ${passed ? 'PASS' : 'FAIL'}`
-          ].join('\n'));
+            '```'
+          ];
+
+          fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+          fs.writeFileSync(path.join(outDir, 'cli.txt'), cliText + '\n');
+          fs.writeFileSync(path.join(outDir, 'comment.md'), md.join('\n'));
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `passed=${passed}\ncritical=${critical}\n`);
           NODE

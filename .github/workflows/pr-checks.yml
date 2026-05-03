@@ -54,14 +54,19 @@ jobs:
           script: |
             const marker = '<!-- backend-pr-checks -->';
             const status = '${{ job.status }}';
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = [
               marker,
-              '## Backend PR Checks',
+              '## 🏗️ Backend PR Checks',
               '',
-              `Status: ${status.toUpperCase()}`,
+              `**Status:** ${status === 'success' ? '✅ SUCCESS' : '❌ ' + status.toUpperCase()}`,
               '',
-              'This workflow ran the backend dry-run deployment build.',
-              'If it failed, inspect the Docker build logs and the platform summary link above.'
+              'This workflow performed a dry-run deployment build of the backend.',
+              '',
+              `[View Build Logs and Artifacts](${runUrl})`,
+              '',
+              '---',
+              '💡 If the build failed, check the Docker build logs at the link above for specific errors.'
             ].join('\n');
 
             const comments = await github.paginate(github.rest.issues.listComments, {
