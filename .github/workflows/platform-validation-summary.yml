@@ -1,0 +1,235 @@
+name: Platform Validation Summary
+
+permissions:
+  issues: write
+
+on:
+  pull_request:
+    branches: [main, master, develop]
+  push:
+    branches: [main, master, develop]
+  schedule:
+    - cron: '0 3 * * *'
+
+jobs:
+  platform-validation:
+    name: Validate Backend + Emulator Platform
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Checkout emulator code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-emulator
+          path: openhw-studio-emulator
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            openhw-studio-backend/package-lock.json
+            openhw-studio-emulator/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        working-directory: openhw-studio-backend
+        run: npm ci --no-audit --no-fund
+
+      - name: Install emulator dependencies
+        working-directory: openhw-studio-emulator
+        run: npm ci --no-audit --no-fund
+
+      - name: Install arduino-cli and cores
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=$HOME/bin sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+          arduino-cli config init --overwrite
+          arduino-cli config set board_manager.additional_urls "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli core install rp2040:rp2040
+
+      - name: Run emulator checks
+        continue-on-error: true
+        run: |
+          mkdir -p openhw-studio-backend/test-results/platform
+          EMU_TEST=pass
+          EMU_SMOKE=pass
+
+          (cd openhw-studio-emulator && npm run test) || EMU_TEST=fail
+          (cd openhw-studio-emulator && npm run validate:smoke) || EMU_SMOKE=fail
+
+          echo "EMU_TEST=$EMU_TEST" >> $GITHUB_ENV
+          echo "EMU_SMOKE=$EMU_SMOKE" >> $GITHUB_ENV
+
+      - name: Run backend checks
+        continue-on-error: true
+        run: |
+          BACKEND_ROUTES=pass
+          UNO=pass
+          PICO=pass
+          MICRO=pass
+          CIRCUIT=pass
+
+          node <<'NODE' || BACKEND_ROUTES=fail
+          const fs = require('fs');
+          const path = require('path');
+          const root = path.join(process.cwd(), 'openhw-studio-backend');
+          const server = path.join(root, 'src', 'server.js');
+          const routes = path.join(root, 'src', 'routes');
+          if (!fs.existsSync(server) || !fs.existsSync(routes)) process.exit(1);
+          const txt = fs.readFileSync(server, 'utf8');
+          if (!/app\.use\(['\"]\/api['\"]\s*,\s*apiRoutes\)/.test(txt)) process.exit(1);
+          NODE
+
+          mkdir -p .tmp/uno .tmp/pico .tmp/python
+          cat > .tmp/uno/uno_smoke.ino <<'EOF'
+          void setup() {}
+          void loop() {}
+          EOF
+          cat > .tmp/pico/pico_smoke.ino <<'EOF'
+          void setup() {}
+          void loop() {}
+          EOF
+          cat > .tmp/python/micropython_smoke.py <<'EOF'
+          print('micropython smoke')
+          EOF
+          cat > .tmp/python/circuitpython_smoke.py <<'EOF'
+          print('circuitpython smoke')
+          EOF
+
+          arduino-cli compile --fqbn arduino:avr:uno .tmp/uno || UNO=fail
+          arduino-cli compile --fqbn rp2040:rp2040:rpipico .tmp/pico || PICO=fail
+          python -m py_compile .tmp/python/micropython_smoke.py || MICRO=fail
+          python -m py_compile .tmp/python/circuitpython_smoke.py || CIRCUIT=fail
+
+          echo "BACKEND_ROUTES=$BACKEND_ROUTES" >> $GITHUB_ENV
+          echo "UNO=$UNO" >> $GITHUB_ENV
+          echo "PICO=$PICO" >> $GITHUB_ENV
+          echo "MICRO=$MICRO" >> $GITHUB_ENV
+          echo "CIRCUIT=$CIRCUIT" >> $GITHUB_ENV
+
+      - name: Build platform summary + CLI output
+        id: platform_summary
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const env = process.env;
+          const checks = [
+            { name: 'emulator-tests', passed: env.EMU_TEST === 'pass', severity: env.EMU_TEST === 'pass' ? 'info' : 'error' },
+            { name: 'emulator-smoke', passed: env.EMU_SMOKE === 'pass', severity: env.EMU_SMOKE === 'pass' ? 'info' : 'error' },
+            { name: 'backend-routes', passed: env.BACKEND_ROUTES === 'pass', severity: env.BACKEND_ROUTES === 'pass' ? 'info' : 'error' },
+            { name: 'compile-uno', passed: env.UNO === 'pass', severity: env.UNO === 'pass' ? 'info' : 'error' },
+            { name: 'compile-pico', passed: env.PICO === 'pass', severity: env.PICO === 'pass' ? 'info' : 'error' },
+            { name: 'micropython-syntax', passed: env.MICRO === 'pass', severity: env.MICRO === 'pass' ? 'info' : 'error' },
+            { name: 'circuitpython-syntax', passed: env.CIRCUIT === 'pass', severity: env.CIRCUIT === 'pass' ? 'info' : 'error' }
+          ];
+
+          const failed = checks.filter(c => !c.passed);
+          const passed = failed.length === 0;
+          const critical = failed.some(c => c.name === 'backend-routes');
+
+          const outDir = path.join(process.cwd(), 'openhw-studio-backend', 'test-results', 'platform');
+          fs.mkdirSync(outDir, { recursive: true });
+
+          const summary = {
+            pipeline: 'platform-validation-summary',
+            passed,
+            critical,
+            totalChecks: checks.length,
+            failedChecks: failed.length,
+            checks
+          };
+
+          const cli = [];
+          cli.push('$ openhw validate platform --backend --emulator');
+          cli.push(`Checks: ${checks.length} | Failed: ${failed.length}`);
+          for (const c of checks) cli.push(`- ${c.name}: ${c.passed ? 'PASS' : 'FAIL'} (${c.severity})`);
+          const cliText = cli.join('\n');
+
+          fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+          fs.writeFileSync(path.join(outDir, 'cli.txt'), cliText + '\n');
+          fs.writeFileSync(path.join(outDir, 'comment.md'), [
+            '## Platform Validation Summary',
+            '',
+            '```text',
+            cliText,
+            '```',
+            '',
+            `Critical: ${critical ? 'YES' : 'NO'}`,
+            `Overall: ${passed ? 'PASS' : 'FAIL'}`
+          ].join('\n'));
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `passed=${passed}\ncritical=${critical}\n`);
+          NODE
+
+      - name: Upload platform artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: platform-validation-summary
+          path: |
+            openhw-studio-backend/test-results/platform/summary.json
+            openhw-studio-backend/test-results/platform/cli.txt
+            openhw-studio-backend/test-results/platform/comment.md
+          retention-days: 30
+
+      - name: Add to workflow summary
+        if: always()
+        run: |
+          cat openhw-studio-backend/test-results/platform/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment result to PR conversation
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- platform-validation-summary -->';
+            const bodyPath = 'openhw-studio-backend/test-results/platform/comment.md';
+            if (!fs.existsSync(bodyPath)) return;
+
+            const body = marker + '\n' + fs.readFileSync(bodyPath, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+
+            const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Enforce quality gate
+        if: always()
+        run: |
+          PASSED='${{ steps.platform_summary.outputs.passed }}'
+          CRITICAL='${{ steps.platform_summary.outputs.critical }}'
+          if [ "$PASSED" != "true" ]; then
+            echo "Platform validation failed"
+            if [ "$CRITICAL" = "true" ]; then
+              echo "Critical platform issue detected"
+            fi
+            exit 1
+          fi

@@ -1,0 +1,498 @@
+name: Backend Phased Validation
+
+permissions:
+  issues: write
+
+on:
+  push:
+    branches: [main, master, develop]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/backend-phased-validation.yml'
+  pull_request:
+    branches: [main, master, develop]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/backend-phased-validation.yml'
+  schedule:
+    - cron: '30 2 * * *'
+
+jobs:
+  phase1-routes:
+    name: Phase 1 - Route and Contract Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openhw-studio-backend
+
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: openhw-studio-backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run route validation
+        run: |
+          mkdir -p test-results/backend
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const root = process.cwd();
+          const serverPath = path.join(root, 'src', 'server.js');
+          const routesDir = path.join(root, 'src', 'routes');
+          const report = {
+            phase: 'phase1-routes',
+            passed: true,
+            severity: 'info',
+            totals: { routeFiles: 0, routeDefinitions: 0 },
+            checks: []
+          };
+
+          if (!fs.existsSync(serverPath)) {
+            report.passed = false;
+            report.severity = 'critical';
+            report.checks.push({ name: 'server-file', passed: false, severity: 'critical', message: 'src/server.js missing' });
+          } else {
+            const serverText = fs.readFileSync(serverPath, 'utf8');
+            const hasApiMount = /app\.use\(['\"]\/api['\"]\s*,\s*apiRoutes\)/.test(serverText);
+            report.checks.push({
+              name: 'api-mount',
+              passed: hasApiMount,
+              severity: hasApiMount ? 'info' : 'error',
+              message: hasApiMount ? 'app.use("/api", apiRoutes) found' : 'Missing /api route mount in server.js'
+            });
+            if (!hasApiMount) {
+              report.passed = false;
+              report.severity = 'error';
+            }
+          }
+
+          if (!fs.existsSync(routesDir)) {
+            report.passed = false;
+            report.severity = 'critical';
+            report.checks.push({ name: 'routes-dir', passed: false, severity: 'critical', message: 'src/routes missing' });
+          } else {
+            const routeFiles = fs.readdirSync(routesDir).filter(f => f.endsWith('.js') || f.endsWith('.ts'));
+            report.totals.routeFiles = routeFiles.length;
+
+            let defs = 0;
+            const defRegex = /router\.(get|post|put|delete|patch|use)\(/g;
+            for (const f of routeFiles) {
+              const txt = fs.readFileSync(path.join(routesDir, f), 'utf8');
+              const found = txt.match(defRegex);
+              defs += found ? found.length : 0;
+            }
+            report.totals.routeDefinitions = defs;
+
+            report.checks.push({
+              name: 'route-definitions',
+              passed: defs > 0,
+              severity: defs > 0 ? 'info' : 'error',
+              message: defs > 0 ? `${defs} route definitions found` : 'No route definitions found in src/routes'
+            });
+
+            if (defs === 0) {
+              report.passed = false;
+              report.severity = 'error';
+            }
+          }
+
+          fs.writeFileSync(path.join(root, 'test-results', 'backend', 'phase1-routes.json'), JSON.stringify(report, null, 2));
+          NODE
+
+      - name: Upload phase 1 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-phase1-routes
+          path: openhw-studio-backend/test-results/backend/phase1-routes.json
+          retention-days: 30
+
+  phase2-toolchains:
+    name: Phase 2 - UNO/Pico and Python Toolchain Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openhw-studio-backend
+
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: openhw-studio-backend/package-lock.json
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install backend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install arduino-cli
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=$HOME/bin sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+
+      - name: Configure and install cores
+        run: |
+          arduino-cli config init --overwrite
+          arduino-cli config set board_manager.additional_urls "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
+          arduino-cli core update-index
+          arduino-cli core install arduino:avr
+          arduino-cli core install rp2040:rp2040
+
+      - name: Compile UNO and Pico smoke sketches
+        continue-on-error: true
+        run: |
+          mkdir -p test-results/backend .tmp/uno .tmp/pico
+
+          cat > .tmp/uno/uno_smoke.ino <<'EOF'
+          void setup() {}
+          void loop() {}
+          EOF
+
+          cat > .tmp/pico/pico_smoke.ino <<'EOF'
+          void setup() {}
+          void loop() {}
+          EOF
+
+          UNO_STATUS=pass
+          PICO_STATUS=pass
+
+          arduino-cli compile --fqbn arduino:avr:uno .tmp/uno || UNO_STATUS=fail
+          arduino-cli compile --fqbn rp2040:rp2040:rpipico .tmp/pico || PICO_STATUS=fail
+
+          echo "UNO_STATUS=$UNO_STATUS" >> $GITHUB_ENV
+          echo "PICO_STATUS=$PICO_STATUS" >> $GITHUB_ENV
+
+      - name: Validate MicroPython and CircuitPython syntax
+        continue-on-error: true
+        run: |
+          mkdir -p .tmp/python
+          cat > .tmp/python/micropython_smoke.py <<'EOF'
+          print('micropython smoke')
+          EOF
+          cat > .tmp/python/circuitpython_smoke.py <<'EOF'
+          print('circuitpython smoke')
+          EOF
+
+          MICRO_STATUS=pass
+          CIRCUIT_STATUS=pass
+
+          python -m py_compile .tmp/python/micropython_smoke.py || MICRO_STATUS=fail
+          python -m py_compile .tmp/python/circuitpython_smoke.py || CIRCUIT_STATUS=fail
+
+          echo "MICRO_STATUS=$MICRO_STATUS" >> $GITHUB_ENV
+          echo "CIRCUIT_STATUS=$CIRCUIT_STATUS" >> $GITHUB_ENV
+
+      - name: Generate phase 2 report
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const env = process.env;
+
+          const checks = [
+            { name: 'compile-arduino-uno', passed: env.UNO_STATUS === 'pass', severity: env.UNO_STATUS === 'pass' ? 'info' : 'error', message: env.UNO_STATUS === 'pass' ? 'UNO compile passed' : 'UNO compile failed' },
+            { name: 'compile-arduino-pico', passed: env.PICO_STATUS === 'pass', severity: env.PICO_STATUS === 'pass' ? 'info' : 'error', message: env.PICO_STATUS === 'pass' ? 'Pico compile passed' : 'Pico compile failed' },
+            { name: 'micropython-syntax', passed: env.MICRO_STATUS === 'pass', severity: env.MICRO_STATUS === 'pass' ? 'info' : 'error', message: env.MICRO_STATUS === 'pass' ? 'MicroPython syntax check passed' : 'MicroPython syntax check failed' },
+            { name: 'circuitpython-syntax', passed: env.CIRCUIT_STATUS === 'pass', severity: env.CIRCUIT_STATUS === 'pass' ? 'info' : 'error', message: env.CIRCUIT_STATUS === 'pass' ? 'CircuitPython syntax check passed' : 'CircuitPython syntax check failed' }
+          ];
+
+          const passed = checks.every(c => c.passed);
+          const report = {
+            phase: 'phase2-toolchains',
+            passed,
+            severity: passed ? 'info' : 'error',
+            checks
+          };
+
+          fs.mkdirSync('test-results/backend', { recursive: true });
+          fs.writeFileSync('test-results/backend/phase2-toolchains.json', JSON.stringify(report, null, 2));
+          NODE
+
+      - name: Upload phase 2 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-phase2-toolchains
+          path: openhw-studio-backend/test-results/backend/phase2-toolchains.json
+          retention-days: 30
+
+  phase3-runtime-and-deps:
+    name: Phase 3 - Runtime Entry and Dependency Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: openhw-studio-backend
+
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: openhw-studio-backend/package-lock.json
+
+      - name: Install backend dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Check server entry and package dependencies
+        run: |
+          mkdir -p test-results/backend
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const root = process.cwd();
+          const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
+          const deps = Object.assign({}, pkg.dependencies || {}, pkg.devDependencies || {});
+
+          const required = ['express', 'ws', 'cors'];
+          const checks = [];
+
+          const serverExists = fs.existsSync(path.join(root, 'src', 'server.js'));
+          checks.push({
+            name: 'server-entry',
+            passed: serverExists,
+            severity: serverExists ? 'info' : 'critical',
+            message: serverExists ? 'src/server.js exists' : 'src/server.js missing'
+          });
+
+          for (const d of required) {
+            const ok = !!deps[d];
+            checks.push({
+              name: `dependency:${d}`,
+              passed: ok,
+              severity: ok ? 'info' : 'error',
+              message: ok ? `${d} declared` : `${d} missing in package.json`
+            });
+          }
+
+          const compileRouteExists = fs.existsSync(path.join(root, 'src', 'routes', 'compile.js'));
+          checks.push({
+            name: 'compile-routes',
+            passed: compileRouteExists,
+            severity: compileRouteExists ? 'info' : 'error',
+            message: compileRouteExists ? 'src/routes/compile.js exists' : 'compile route file missing'
+          });
+
+          const autofixRouteSignal = (() => {
+            const apiPath = path.join(root, 'src', 'routes', 'api.js');
+            if (!fs.existsSync(apiPath)) return false;
+            const txt = fs.readFileSync(apiPath, 'utf8');
+            return /autofix/.test(txt);
+          })();
+
+          checks.push({
+            name: 'autofix-route-signal',
+            passed: autofixRouteSignal,
+            severity: autofixRouteSignal ? 'info' : 'warn',
+            message: autofixRouteSignal ? 'Autofix-related route detected in api.js' : 'No autofix signal detected (warn)'
+          });
+
+          const passed = checks.filter(c => c.severity === 'critical' || c.severity === 'error').every(c => c.passed);
+          const critical = checks.some(c => c.severity === 'critical' && !c.passed);
+
+          const report = {
+            phase: 'phase3-runtime-and-deps',
+            passed,
+            severity: critical ? 'critical' : (passed ? 'info' : 'error'),
+            checks
+          };
+
+          fs.writeFileSync(path.join(root, 'test-results', 'backend', 'phase3-runtime-and-deps.json'), JSON.stringify(report, null, 2));
+          NODE
+
+      - name: Upload phase 3 artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-phase3-runtime-and-deps
+          path: openhw-studio-backend/test-results/backend/phase3-runtime-and-deps.json
+          retention-days: 30
+
+  phase4-summary-and-pr-comment:
+    name: Phase 4 - Summary, PR Comment, and Quality Gate
+    runs-on: ubuntu-latest
+    needs:
+      - phase1-routes
+      - phase2-toolchains
+      - phase3-runtime-and-deps
+    if: always()
+    defaults:
+      run:
+        working-directory: openhw-studio-backend
+
+    steps:
+      - name: Checkout backend code
+        uses: actions/checkout@v4
+        with:
+          path: openhw-studio-backend
+
+      - name: Download phase artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: openhw-studio-backend/test-results/downloaded
+
+      - name: Build merged CLI-style summary
+        id: build_summary
+        run: |
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const root = process.cwd();
+          const dl = path.join(root, 'test-results', 'downloaded');
+          const outDir = path.join(root, 'test-results', 'backend');
+          fs.mkdirSync(outDir, { recursive: true });
+
+          const phaseFiles = [
+            path.join(dl, 'backend-phase1-routes', 'phase1-routes.json'),
+            path.join(dl, 'backend-phase2-toolchains', 'phase2-toolchains.json'),
+            path.join(dl, 'backend-phase3-runtime-and-deps', 'phase3-runtime-and-deps.json')
+          ];
+
+          const reports = [];
+          for (const p of phaseFiles) {
+            if (fs.existsSync(p)) {
+              reports.push(JSON.parse(fs.readFileSync(p, 'utf8')));
+            } else {
+              reports.push({
+                phase: path.basename(p, '.json'),
+                passed: false,
+                severity: 'critical',
+                checks: [{ name: 'artifact-missing', passed: false, severity: 'critical', message: `${p} missing` }]
+              });
+            }
+          }
+
+          const failed = reports.filter(r => !r.passed).length;
+          const critical = reports.some(r => r.severity === 'critical');
+
+          const merged = {
+            pipeline: 'backend-phased-validation',
+            passed: failed === 0,
+            critical,
+            totalPhases: reports.length,
+            failedPhases: failed,
+            phases: reports
+          };
+
+          const cliLines = [];
+          cliLines.push('$ openhw validate backend --phases all');
+          cliLines.push(`Phases: ${merged.totalPhases} | Failed: ${merged.failedPhases}`);
+          for (const r of reports) {
+            cliLines.push(`- ${r.phase}: ${r.passed ? 'PASS' : 'FAIL'} (${r.severity})`);
+          }
+          const cliText = cliLines.join('\n');
+
+          fs.writeFileSync(path.join(outDir, 'phase4-summary.json'), JSON.stringify(merged, null, 2));
+          fs.writeFileSync(path.join(outDir, 'phase4-cli.txt'), cliText + '\n');
+          fs.writeFileSync(path.join(outDir, 'comment.md'),
+            [
+              '## Backend Validation (Phased)',
+              '',
+              '```text',
+              cliText,
+              '```',
+              '',
+              `Critical: ${critical ? 'YES' : 'NO'}`,
+              `Overall: ${merged.passed ? 'PASS' : 'FAIL'}`
+            ].join('\n')
+          );
+
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `passed=${merged.passed}\ncritical=${critical}\n`);
+          NODE
+
+      - name: Upload merged summary artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-phase4-summary
+          path: |
+            openhw-studio-backend/test-results/backend/phase4-summary.json
+            openhw-studio-backend/test-results/backend/phase4-cli.txt
+            openhw-studio-backend/test-results/backend/comment.md
+          retention-days: 30
+
+      - name: Add summary to workflow run
+        if: always()
+        run: |
+          if [ -f test-results/backend/comment.md ]; then
+            cat test-results/backend/comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment result to PR conversation
+        if: github.event_name == 'pull_request' && always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- backend-phased-validation -->';
+            const bodyPath = 'openhw-studio-backend/test-results/backend/comment.md';
+            if (!fs.existsSync(bodyPath)) return;
+
+            const body = marker + '\n' + fs.readFileSync(bodyPath, 'utf8');
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100
+            });
+
+            const existing = comments.find(c => c.user?.type === 'Bot' && c.body?.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body });
+            }
+
+      - name: Link to Platform Validation Summary
+        if: github.event_name == 'pull_request'
+        run: |
+          echo "### Cross-repo Platform Validation" >> "$GITHUB_STEP_SUMMARY"
+          echo "Backend: See [platform-validation-summary.yml](platform-validation-summary.yml)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Enforce quality gate
+        if: always()
+        run: |
+          PASSED='${{ steps.build_summary.outputs.passed }}'
+          CRITICAL='${{ steps.build_summary.outputs.critical }}'
+          if [ "$PASSED" != "true" ]; then
+            echo "Backend phased validation failed"
+            if [ "$CRITICAL" = "true" ]; then
+              echo "Critical validation issues detected"
+            fi
+            exit 1
+          fi
