@@ -1,7 +1,7 @@
 name: Platform Validation Summary
 
 permissions:
-  issues: write
+  pull-requests: write
 
 on:
   pull_request:
@@ -29,6 +29,20 @@ jobs:
           path: openhw-studio-emulator
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Checkout CLI code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/OpenHW-studio--cli
+          path: openhw-studio-cli
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout examples code
+        uses: actions/checkout@v4
+        with:
+          repository: OpenHW-Studio/openhw-studio-examples
+          path: openhw-studio-examples
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -37,6 +51,7 @@ jobs:
           cache-dependency-path: |
             openhw-studio-backend/package-lock.json
             openhw-studio-emulator/package-lock.json
+            openhw-studio-cli/package-lock.json
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -51,10 +66,31 @@ jobs:
         working-directory: openhw-studio-emulator
         run: npm ci --no-audit --no-fund
 
-      - name: Install arduino-cli and cores
+      - name: Install CLI dependencies
+        working-directory: openhw-studio-cli
+        run: npm ci --no-audit --no-fund
+
+      - name: Cache Arduino Toolchain
+        id: cache-arduino
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/bin
+            ~/.arduino15
+          key: ${{ runner.os }}-arduino-${{ hashFiles('openhw-studio-backend/.github/workflows/platform-validation-summary.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-
+
+      - name: Install arduino-cli
+        if: steps.cache-arduino.outputs.cache-hit != 'true'
         run: |
+          mkdir -p $HOME/bin
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=$HOME/bin sh
+
+      - name: Configure and install cores
+        run: |
           echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH=$PATH:$HOME/bin
           arduino-cli config init --overwrite
           arduino-cli config set board_manager.additional_urls "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
           arduino-cli core update-index
@@ -95,11 +131,11 @@ jobs:
           NODE
 
           mkdir -p .tmp/uno .tmp/pico .tmp/python
-          cat > .tmp/uno/uno_smoke.ino <<'EOF'
+          cat > .tmp/uno/uno.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF
-          cat > .tmp/pico/pico_smoke.ino <<'EOF'
+          cat > .tmp/pico/pico.ino <<'EOF'
           void setup() {}
           void loop() {}
           EOF
@@ -130,18 +166,18 @@ jobs:
 
           const env = process.env;
           const checks = [
-            { name: 'emulator-tests', passed: env.EMU_TEST === 'pass', severity: env.EMU_TEST === 'pass' ? 'info' : 'error' },
-            { name: 'emulator-smoke', passed: env.EMU_SMOKE === 'pass', severity: env.EMU_SMOKE === 'pass' ? 'info' : 'error' },
-            { name: 'backend-routes', passed: env.BACKEND_ROUTES === 'pass', severity: env.BACKEND_ROUTES === 'pass' ? 'info' : 'error' },
-            { name: 'compile-uno', passed: env.UNO === 'pass', severity: env.UNO === 'pass' ? 'info' : 'error' },
-            { name: 'compile-pico', passed: env.PICO === 'pass', severity: env.PICO === 'pass' ? 'info' : 'error' },
-            { name: 'micropython-syntax', passed: env.MICRO === 'pass', severity: env.MICRO === 'pass' ? 'info' : 'error' },
-            { name: 'circuitpython-syntax', passed: env.CIRCUIT === 'pass', severity: env.CIRCUIT === 'pass' ? 'info' : 'error' }
+            { name: 'emulator-tests', passed: env.EMU_TEST === 'pass', severity: env.EMU_TEST === 'pass' ? 'info' : 'error', message: env.EMU_TEST === 'pass' ? 'Emulator unit/integration tests passed' : 'Emulator tests failed' },
+            { name: 'emulator-smoke', passed: env.EMU_SMOKE === 'pass', severity: env.EMU_SMOKE === 'pass' ? 'info' : 'error', message: env.EMU_SMOKE === 'pass' ? 'Emulator smoke test passed' : 'Emulator smoke test failed' },
+            { name: 'backend-routes', passed: env.BACKEND_ROUTES === 'pass', severity: env.BACKEND_ROUTES === 'pass' ? 'info' : 'critical', message: env.BACKEND_ROUTES === 'pass' ? 'Backend routes and contract verified' : 'Critical: Backend routes or server entry missing/broken' },
+            { name: 'compile-uno', passed: env.UNO === 'pass', severity: env.UNO === 'pass' ? 'info' : 'error', message: env.UNO === 'pass' ? 'Arduino UNO smoke sketch compiled' : 'Arduino UNO compilation failed' },
+            { name: 'compile-pico', passed: env.PICO === 'pass', severity: env.PICO === 'pass' ? 'info' : 'error', message: env.PICO === 'pass' ? 'Raspberry Pi Pico smoke sketch compiled' : 'Pico compilation failed' },
+            { name: 'micropython-syntax', passed: env.MICRO === 'pass', severity: env.MICRO === 'pass' ? 'info' : 'error', message: env.MICRO === 'pass' ? 'MicroPython syntax check passed' : 'MicroPython syntax error' },
+            { name: 'circuitpython-syntax', passed: env.CIRCUIT === 'pass', severity: env.CIRCUIT === 'pass' ? 'info' : 'error', message: env.CIRCUIT === 'pass' ? 'CircuitPython syntax check passed' : 'CircuitPython syntax error' }
           ];
 
           const failed = checks.filter(c => !c.passed);
           const passed = failed.length === 0;
-          const critical = failed.some(c => c.name === 'backend-routes');
+          const critical = failed.some(c => c.severity === 'critical');
 
           const outDir = path.join(process.cwd(), 'openhw-studio-backend', 'test-results', 'platform');
           fs.mkdirSync(outDir, { recursive: true });
@@ -161,18 +197,30 @@ jobs:
           for (const c of checks) cli.push(`- ${c.name}: ${c.passed ? 'PASS' : 'FAIL'} (${c.severity})`);
           const cliText = cli.join('\n');
 
-          fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
-          fs.writeFileSync(path.join(outDir, 'cli.txt'), cliText + '\n');
-          fs.writeFileSync(path.join(outDir, 'comment.md'), [
-            '## Platform Validation Summary',
+          const runUrl = `${env.GITHUB_SERVER_URL}/${env.GITHUB_REPOSITORY}/actions/runs/${env.GITHUB_RUN_ID}`;
+          
+          const md = [
+            '## 🛡️ Platform Validation Summary',
+            '',
+            `**Overall Status:** ${passed ? '✅ PASS' : '❌ FAIL'}`,
+            `**Critical Issues:** ${critical ? '⚠️ YES' : 'None'}`,
+            '',
+            '### Detailed Checks',
+            '| Check | Status | Severity | Message |',
+            '| :--- | :--- | :--- | :--- |',
+            ...checks.map(c => `| ${c.name} | ${c.passed ? '✅' : '❌'} | ${c.severity} | ${c.message} |`),
+            '',
+            '---',
+            `[View Full Run Logs](${runUrl})`,
             '',
             '```text',
             cliText,
-            '```',
-            '',
-            `Critical: ${critical ? 'YES' : 'NO'}`,
-            `Overall: ${passed ? 'PASS' : 'FAIL'}`
-          ].join('\n'));
+            '```'
+          ];
+
+          fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
+          fs.writeFileSync(path.join(outDir, 'cli.txt'), cliText + '\n');
+          fs.writeFileSync(path.join(outDir, 'comment.md'), md.join('\n'));
 
           fs.appendFileSync(process.env.GITHUB_OUTPUT, `passed=${passed}\ncritical=${critical}\n`);
           NODE
@@ -191,7 +239,9 @@ jobs:
       - name: Add to workflow summary
         if: always()
         run: |
-          cat openhw-studio-backend/test-results/platform/comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f openhw-studio-backend/test-results/platform/comment.md ]; then
+            cat openhw-studio-backend/test-results/platform/comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Comment result to PR conversation
         if: github.event_name == 'pull_request' && always()
