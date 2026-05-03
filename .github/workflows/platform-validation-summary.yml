@@ -51,10 +51,27 @@ jobs:
         working-directory: openhw-studio-emulator
         run: npm ci --no-audit --no-fund
 
-      - name: Install arduino-cli and cores
+      - name: Cache Arduino Toolchain
+        id: cache-arduino
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/bin
+            ~/.arduino15
+          key: ${{ runner.os }}-arduino-${{ hashFiles('openhw-studio-backend/.github/workflows/platform-validation-summary.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-
+
+      - name: Install arduino-cli
+        if: steps.cache-arduino.outputs.cache-hit != 'true'
         run: |
+          mkdir -p $HOME/bin
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=$HOME/bin sh
+
+      - name: Configure and install cores
+        run: |
           echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH=$PATH:$HOME/bin
           arduino-cli config init --overwrite
           arduino-cli config set board_manager.additional_urls "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
           arduino-cli core update-index
@@ -191,7 +208,9 @@ jobs:
       - name: Add to workflow summary
         if: always()
         run: |
-          cat openhw-studio-backend/test-results/platform/comment.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -f openhw-studio-backend/test-results/platform/comment.md ]; then
+            cat openhw-studio-backend/test-results/platform/comment.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Comment result to PR conversation
         if: github.event_name == 'pull_request' && always()

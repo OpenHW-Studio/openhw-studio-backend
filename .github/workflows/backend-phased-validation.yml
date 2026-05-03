@@ -151,13 +151,27 @@ jobs:
       - name: Install backend dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Cache Arduino Toolchain
+        id: cache-arduino
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/bin
+            ~/.arduino15
+          key: ${{ runner.os }}-arduino-${{ hashFiles('openhw-studio-backend/.github/workflows/backend-phased-validation.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-arduino-
+
       - name: Install arduino-cli
+        if: steps.cache-arduino.outputs.cache-hit != 'true'
         run: |
+          mkdir -p $HOME/bin
           curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | BINDIR=$HOME/bin sh
-          echo "$HOME/bin" >> $GITHUB_PATH
 
       - name: Configure and install cores
         run: |
+          echo "$HOME/bin" >> $GITHUB_PATH
+          export PATH=$PATH:$HOME/bin
           arduino-cli config init --overwrite
           arduino-cli config set board_manager.additional_urls "https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json"
           arduino-cli core update-index
