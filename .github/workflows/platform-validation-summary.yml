@@ -1,5 +1,8 @@
 name: Platform Validation Summary
 
+permissions:
+  issues: write
+
 on:
   pull_request:
     branches: [main, master, develop]
