@@ -219,3 +219,42 @@ export const rollbackDeployment = async (req, res) => {
          res.status(500).json({ error: 'Internal server error during rollback.' });
     }
 };
+
+/**
+ * Fetch logs for a specific workflow run job
+ */
+export const getWorkflowLogs = async (req, res) => {
+    const { repo, run_id } = req.query;
+
+    if (!repo || !run_id) {
+        return res.status(400).json({ error: 'repo and run_id are required.' });
+    }
+
+    try {
+        // 1. Get jobs for this run
+        const jobsResp = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/jobs`, { headers });
+        if (!jobsResp.ok) throw new Error('Failed to fetch jobs');
+        
+        const { jobs } = await jobsResp.json();
+        const activeJob = jobs.find(j => j.status === 'in_progress' || j.status === 'completed');
+        
+        if (!activeJob) return res.json({ logs: ['Awaiting job initiation...'] });
+
+        // 2. Fetch logs for the job
+        const logsResp = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/jobs/${activeJob.id}/logs`, { headers });
+        
+        if (!logsResp.ok) {
+            // Logs might not be ready yet
+            return res.json({ logs: ['Connecting to GitHub runner...', 'Awaiting output stream...'] });
+        }
+
+        const text = await logsResp.text();
+        const lines = text.split('\n').map(line => line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s/, '')); // Strip timestamps
+        
+        res.json({ success: true, logs: lines.slice(-200) }); // Return last 200 lines
+
+    } catch (error) {
+        console.error('Error fetching workflow logs:', error);
+        res.status(500).json({ error: 'Failed to fetch logs from GitHub.' });
+    }
+};

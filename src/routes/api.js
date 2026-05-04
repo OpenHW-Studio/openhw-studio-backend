@@ -32,10 +32,20 @@ router.get('/components/version', getComponentsVersion);        // tiny hash —
 router.get('/components/public-installed', backupInstalledComponents);
 
 
-import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild } from '../controllers/deploymentController.js';
+import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild, getWorkflowLogs } from '../controllers/deploymentController.js';
+import { getInfrastructureStatus, getSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus } from '../controllers/adminController.js';
+
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
 router.post('/admin/deployments/rollback', protectRoute, requireAdmin, rollbackDeployment);
+router.get('/admin/deployments/logs', protectRoute, requireAdmin, getWorkflowLogs);
+
+// Infrastructure & Logs
+router.get('/admin/infrastructure/status', protectRoute, requireAdmin, getInfrastructureStatus);
+router.post('/admin/infrastructure/restart', protectRoute, requireAdmin, restartService);
+router.get('/admin/system-logs', protectRoute, requireAdmin, getSystemLogs);
+router.get('/admin/usage-analytics', protectRoute, requireAdmin, getUsageAnalytics);
+router.get('/admin/audit-history', protectRoute, requireAdmin, getAuditHistory);
 
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
@@ -55,5 +65,8 @@ router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
 router.use('/progress', progressRouter)
+
+// Public System Status (for landing page)
+router.get('/public/system-status', getPublicSystemStatus);
 
 export default router;

@@ -1,22 +1,30 @@
 import { execFile } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { logAdminAction } from './adminController.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ARDUINO_CLI_PATH = 'arduino-cli';
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
+
+// Simple in-memory cache for library searches to boost performance
+const searchCache = new Map();
+const CACHE_EXPIRY = 60 * 60 * 1000; // 1 hour
 
 export const searchLibrary = (req, res) => {
-    const query = req.query.q;
+    const query = req.query.q?.toLowerCase().trim();
     if (!query) {
         return res.status(400).json({ error: 'Search query "q" is required.' });
     }
 
+    // Check Cache
+    const cached = searchCache.get(query);
+    if (cached && (Date.now() - cached.timestamp < CACHE_EXPIRY)) {
+        return res.json({ libraries: cached.data, cached: true });
+    }
+
     // Run: arduino-cli lib search "query" --format json
-    // Use a large maxBuffer (50MB) because the Arduino library index is massive
     execFile(ARDUINO_CLI_PATH, ['lib', 'search', query, '--format', 'json'], { maxBuffer: 1024 * 1024 * 50 }, (error, stdout, stderr) => {
         if (error) {
             console.error('Library search error:', stderr || stdout);
@@ -24,17 +32,22 @@ export const searchLibrary = (req, res) => {
         }
 
         try {
-            // Arduino-CLI sometimes leaks warning text before the JSON payload.
-            // We use Regex to extract just the outermost {} wrapper.
             const jsonStr = stdout.substring(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1);
             if (!jsonStr) throw new Error("No JSON found in stdout");
 
             const data = JSON.parse(jsonStr);
-            return res.json({ libraries: data.libraries || [] });
+            const libraries = data.libraries || [];
+
+            // Store in Cache
+            searchCache.set(query, {
+                timestamp: Date.now(),
+                data: libraries
+            });
+
+            return res.json({ libraries });
         } catch (parseErr) {
             console.error('Failed to parse search results:', parseErr);
-            console.error('Raw stdout was:', stdout.substring(0, 500) + '...');
-            return res.status(500).json({ error: 'Failed to parse search results from arduino-cli.' });
+            return res.status(500).json({ error: 'Failed to parse search results.' });
         }
     });
 };
@@ -62,11 +75,20 @@ export const listLibraries = (req, res) => {
     });
 };
 
-export const installLibrary = (req, res) => {
+export const installLibrary = async (req, res) => {
     const { name } = req.body;
     if (!name) {
         return res.status(400).json({ error: 'Library "name" is required.' });
     }
+
+    // SECURITY: Log install attempt
+    await logAdminAction(
+        req.user?.email || 'unknown-admin',
+        'INSTALL_LIBRARY',
+        `Installing library: ${name}`,
+        { library: name },
+        req.ip
+    );
 
     // Run: arduino-cli lib install "name"
     execFile(ARDUINO_CLI_PATH, ['lib', 'install', name], (error, stdout, stderr) => {
@@ -78,11 +100,20 @@ export const installLibrary = (req, res) => {
     });
 };
 
-export const uninstallLibrary = (req, res) => {
+export const uninstallLibrary = async (req, res) => {
     const { name } = req.body;
     if (!name) {
         return res.status(400).json({ error: 'Library "name" is required for uninstallation.' });
     }
+
+    // SECURITY: Log uninstall attempt
+    await logAdminAction(
+        req.user?.email || 'unknown-admin',
+        'UNINSTALL_LIBRARY',
+        `Uninstalling library: ${name}`,
+        { library: name },
+        req.ip
+    );
 
     // Run: arduino-cli lib uninstall "name"
     execFile(ARDUINO_CLI_PATH, ['lib', 'uninstall', name], (error, stdout, stderr) => {
