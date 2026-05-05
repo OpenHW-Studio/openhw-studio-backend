@@ -1,9 +1,11 @@
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import os from 'os';
 import AuditLog from '../models/AuditLog.js';
 import mongoose from 'mongoose';
 import Project from '../models/Project.js';
 import LiveSimulationSession from '../models/LiveSimulationSession.js';
+import SystemConfig from '../models/systemConfig.js';
 
 const execAsync = promisify(exec);
 
@@ -24,9 +26,9 @@ export const getInfrastructureStatus = async (req, res) => {
     }
 
     try {
-        // Command format: name,status,image,uptime
+        // Command format: name,status,image,uptime,size
         // Optimized for Ubuntu/Linux environments
-        const { stdout } = await execAsync("docker ps --format '{{.Names}}|{{.Status}}|{{.Image}}|{{.ID}}'");
+        const { stdout } = await execAsync("docker ps -s --format '{{.Names}}|{{.Status}}|{{.Image}}|{{.ID}}|{{.Size}}'");
         
         // Fetch resource usage (CPU/RAM)
         const { stdout: statsOut } = await execAsync("docker stats --no-stream --format '{{.Name}}|{{.CPUPerc}}|{{.MemUsage}}|{{.MemPerc}}'");
@@ -36,8 +38,11 @@ export const getInfrastructureStatus = async (req, res) => {
             return acc;
         }, {});
 
+        const loadAvg = os.loadavg()[0].toFixed(2);
+
         const containers = stdout.trim().split('\n').filter(Boolean).map(line => {
-            const [name, status, image, id] = line.split('|');
+            const [name, status, image, id, sizeInfo] = line.split('|');
+            const size = sizeInfo ? sizeInfo.split(' (')[0] : '0B';
             const stats = statsMap[name] || { cpu: '0%', mem: '0B / 0B', memPerc: '0%' };
             return {
                 name: name.replace(/_1$/, '').replace(/^simulator-/, ''),
@@ -45,7 +50,11 @@ export const getInfrastructureStatus = async (req, res) => {
                 version: image.split(':')[1] || 'latest',
                 hash: id,
                 uptime: status.replace(/^Up\s+/, ''),
-                resources: stats
+                resources: {
+                    ...stats,
+                    storage: size,
+                    load: loadAvg
+                }
             };
         });
 
@@ -60,7 +69,7 @@ export const getInfrastructureStatus = async (req, res) => {
                 version: 'unknown',
                 hash: 'N/A',
                 uptime: '0s',
-                resources: { cpu: '0%', mem: '0B', memPerc: '0%' }
+                resources: { cpu: '0%', mem: '0B', memPerc: '0%', storage: '0B', load: '0.00' }
             };
         });
 
@@ -70,18 +79,52 @@ export const getInfrastructureStatus = async (req, res) => {
 
         res.json({ success: true, services });
     } catch (error) {
-        // Fallback to mock data if Docker is not available (e.g. in development)
-        console.warn('Docker not found, using fallback data:', error.message);
+        const isDockerMissing = error.message.includes('not recognized') || 
+                               error.message.includes('not found') || 
+                               error.code === 'ENOENT';
+        
+        if (!isDockerMissing) {
+            console.error('Infrastructure Fetch Failed:', error.message);
+        }
+
+        // Fallback for local development environment
+        const loadAvg = os.loadavg()[0].toFixed(2);
+        const memUsage = process.memoryUsage();
+        const memMb = (memUsage.rss / 1024 / 1024).toFixed(2);
+
+        const localServices = [
+            {
+                name: 'frontend',
+                status: 'running (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: process.uptime().toFixed(0) + 's',
+                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            },
+            {
+                name: 'backend',
+                status: 'running (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: process.uptime().toFixed(0) + 's',
+                resources: { cpu: 'N/A', mem: memMb + ' MB', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            },
+            {
+                name: 'mongodb',
+                status: 'running (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: 'N/A',
+                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            }
+        ];
+
         res.json({
             success: true,
-            services: [
-                { name: 'frontend', status: 'running', version: 'v1.4.2', hash: '8f2d9c1', uptime: '14d 2h' },
-                { name: 'backend', status: 'running', version: 'v2.1.0', hash: '4a1e5b2', uptime: '3d 18h' },
-                { name: 'mongodb', status: 'running', version: '6.0.5', hash: 'sha256:d82', uptime: '45d 1h' }
-            ]
+            error: 'Docker connectivity unavailable. Showing local fallback stats.',
+            services: localServices
         });
-    }
-};
+    }};
 
 let cachedLogs = null;
 let lastLogFetch = 0;
@@ -98,7 +141,14 @@ export const getSystemLogs = async (req, res) => {
 
     try {
         // Fetch last 50 lines from docker-compose if available
-        const { stdout } = await execAsync('docker compose logs --tail=50 --no-log-prefix');
+        let stdout = '';
+        try {
+            const result = await execAsync('docker compose logs --tail=50 --no-log-prefix');
+            stdout = result.stdout;
+        } catch (e) {
+            // Docker not available, use system logs fallback
+            stdout = 'Infrastructure monitoring inactive (Local Dev Mode)\nBackend: Active\nFrontend: Active\nMongoDB: Active';
+        }
         
         const logs = stdout.split('\n').filter(Boolean).map(line => ({
             time: new Date().toISOString(),
@@ -111,13 +161,9 @@ export const getSystemLogs = async (req, res) => {
 
         res.json({ success: true, logs });
     } catch (error) {
-        // Fallback or empty if not in production
         res.json({
             success: true,
-            logs: [
-                { time: new Date().toISOString(), msg: "Infrastructure monitoring active (Dev Mode)", type: "info" },
-                { time: new Date().toISOString(), msg: "Docker daemon not detected, using internal event bus.", type: "warning" }
-            ]
+            logs: [] // Return empty list instead of mock logs
         });
     }
 };
@@ -150,7 +196,7 @@ export const restartService = async (req, res) => {
         res.json({ success: true, message: `${name} restarted successfully.` });
     } catch (error) {
         console.error(`Failed to restart ${name}:`, error);
-        res.json({ success: true, message: `${name} restart simulated (Dev Mode/No Docker).` });
+        res.status(500).json({ success: false, error: `Failed to restart ${name}: ${error.message}` });
     }
 };
 
@@ -175,32 +221,34 @@ export const getUsageAnalytics = async (req, res) => {
             count: b.count
         }));
 
-        // Compilation success/fail mock (until dedicated logging exists)
-        // We'll generate it based on recent activity for visualization
-        const compilationHistory = Array.from({ length: 7 }, (_, i) => {
-            const date = new Date();
-            date.setDate(date.getDate() - (6 - i));
-            const dateStr = date.toISOString().split('T')[0];
-            return {
-                date: dateStr,
-                success: Math.floor(Math.random() * 50) + 100,
-                fail: Math.floor(Math.random() * 10)
-            };
-        });
+        // Compilation success/fail real data would go here.
+        // For now, we return an empty history if no logs exist.
+        const compilationHistory = [];
+
+        const sessions = await LiveSimulationSession.find({
+            updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) }
+        }).select('lat lng teacherName').lean();
+
+        const regions = sessions
+            .filter(s => s.lat && s.lng)
+            .map(s => ({
+                lat: s.lat,
+                lng: s.lng,
+                label: s.teacherName || 'Anonymous',
+                count: 1
+            }));
 
         res.json({
             success: true,
             stats: {
                 totalSimulations,
                 activeSessions,
-                avgCompileTime: '4.2s',
-                storageUsed: '0.8GB',
-                peakConcurrency: 156,
-                topLibraries: topLibraries.length > 0 ? topLibraries : [
-                    { name: 'Wire', count: 420 },
-                    { name: 'SPI', count: 310 }
-                ],
-                compilationHistory
+                avgCompileTime: 'N/A',
+                storageUsed: 'N/A',
+                peakConcurrency: 'N/A',
+                topLibraries: topLibraries.length > 0 ? topLibraries : [],
+                compilationHistory,
+                regions: regions.length > 0 ? regions : []
             }
         });
     } catch (error) {
@@ -252,31 +300,73 @@ export const getPublicSystemStatus = async (req, res) => {
             updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) }
         });
 
-        const frontend = (services || []).find(s => s.name === 'frontend') || { version: 'v1.4.2', status: 'running' };
-        const backend = (services || []).find(s => s.name === 'backend') || { version: 'v2.1.0', status: 'running' };
+        const maintenance = await SystemConfig.findOne({ key: 'maintenance_mode' });
+        const isMaintenance = maintenance ? maintenance.value : false;
+
+        const frontend = (services || []).find(s => s.name === 'frontend') || { version: 'N/A', status: 'unknown' };
+        const backend = (services || []).find(s => s.name === 'backend') || { version: 'N/A', status: 'unknown' };
 
         res.json({
             success: true,
             status: {
                 frontend: frontend.version,
-                backend: backend.status === 'running' ? 'Operational' : 'Restricted',
+                backend: isMaintenance ? 'Maintenance' : (backend.status === 'running' ? 'Operational' : 'Restricted'),
                 database: 'Connected', 
                 load: 'Normal',
-                sessions: activeSessions,
-                env: 'Production'
+                sessions: isMaintenance ? 0 : activeSessions,
+                env: 'Production',
+                maintenance: isMaintenance
             }
         });
     } catch (error) {
         res.json({
             success: true,
             status: {
-                frontend: 'v1.4.2',
-                backend: 'Operational',
-                database: 'Connected',
-                load: 'Normal',
+                frontend: 'N/A',
+                backend: 'Unknown',
+                database: 'Disconnected', 
+                load: 'N/A',
                 sessions: 0,
                 env: 'Production'
             }
         });
+    }
+};
+
+/**
+ * Toggles Maintenance Mode (Admin Only)
+ */
+export const toggleMaintenanceMode = async (req, res) => {
+    const { enabled } = req.body;
+    try {
+        await SystemConfig.findOneAndUpdate(
+            { key: 'maintenance_mode' },
+            { $set: { value: !!enabled, updatedAt: new Date() } },
+            { upsert: true, new: true }
+        );
+
+        await logAdminAction(
+            req.user?.email || 'unknown-admin',
+            'TOGGLE_MAINTENANCE',
+            `Maintenance mode ${enabled ? 'ENABLED' : 'DISABLED'}`,
+            { enabled },
+            req.ip
+        );
+
+        res.json({ success: true, enabled });
+    } catch (error) {
+        res.status(500).json({ error: 'Failed to toggle maintenance mode' });
+    }
+};
+
+/**
+ * Gets Maintenance Status (Public)
+ */
+export const getMaintenanceStatus = async (req, res) => {
+    try {
+        const config = await SystemConfig.findOne({ key: 'maintenance_mode' });
+        res.json({ success: true, enabled: config ? config.value : false });
+    } catch (error) {
+        res.json({ success: true, enabled: false }); // Fallback to live if DB fails
     }
 };

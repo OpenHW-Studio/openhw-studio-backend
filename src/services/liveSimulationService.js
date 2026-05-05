@@ -4,6 +4,13 @@ import Class from "../models/Class.js";
 import LiveSimulationSession from "../models/LiveSimulationSession.js";
 import User from "../models/User.js";
 
+let geoip = null;
+try {
+  geoip = await import("geoip-lite");
+} catch (e) {
+  // geoip-lite not installed yet
+}
+
 const LIVE_SESSION_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const sessionsByCode = new Map();
 const sessionClients = new Map();
@@ -166,6 +173,9 @@ const persistLiveSimulationSession = async (session) => {
       })),
       snapshot: normalizeSnapshot(session.snapshot),
       updatedAt: session.updatedAt || new Date(),
+      ip: session.ip,
+      lat: session.lat,
+      lng: session.lng
     },
     { upsert: true, new: true, setDefaultsOnInsert: true },
   );
@@ -339,7 +349,7 @@ export const assertLiveSessionAccess = async (
   return session;
 };
 
-export const createLiveSimulationSession = async ({ classId, teacher, snapshot }) => {
+export const createLiveSimulationSession = async ({ classId, teacher, snapshot, ip = null }) => {
   if (!teacher?._id || (teacher.role !== "teacher" && teacher.role !== "admin")) {
     const error = new Error("Only teachers or admins can start a live simulation.");
     error.status = 403;
@@ -368,6 +378,15 @@ export const createLiveSimulationSession = async ({ classId, teacher, snapshot }
     sessionCode = generateSessionCode();
   }
 
+  let lat = null, lng = null;
+  if (ip && geoip) {
+    const geo = geoip.lookup(ip);
+    if (geo) {
+      lat = geo.ll[0];
+      lng = geo.ll[1];
+    }
+  }
+
   const nextSession = {
     sessionCode,
     classId: String(classroom._id),
@@ -381,6 +400,9 @@ export const createLiveSimulationSession = async ({ classId, teacher, snapshot }
     editorStudentIds: new Set(),
     pendingEditRequests: new Map(),
     snapshot: normalizeSnapshot(snapshot),
+    ip,
+    lat,
+    lng,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

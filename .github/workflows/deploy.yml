@@ -50,6 +50,23 @@ jobs:
             ${{ secrets.DOCKER_USERNAME }}/openhw-backend:develop
             ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
 
+  notify_admin:
+    name: Notify Dashboard
+    needs: test_and_build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send Webhook to Backend
+        run: |
+          curl -X POST https://openhw-studio.fossee.in/api/deploy/notify \
+          -H "Content-Type: application/json" \
+          -d '{
+            "repo": "${{ github.event.repository.name }}",
+            "prTitle": "Build Successful: Deployment Waiting for Approval",
+            "prDescription": "Commit: ${{ github.event.head_commit.message }}",
+            "secret": "ohw_studio_secure_notify_2026",
+            "filesChanged": []
+          }'
+
   deploy:
     name: Deploy to Production
     needs: test_and_build

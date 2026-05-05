@@ -33,7 +33,7 @@ router.get('/components/public-installed', backupInstalledComponents);
 
 
 import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild, getWorkflowLogs } from '../controllers/deploymentController.js';
-import { getInfrastructureStatus, getSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus } from '../controllers/adminController.js';
+import { getInfrastructureStatus, getSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus } from '../controllers/adminController.js';
 
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
@@ -46,6 +46,7 @@ router.post('/admin/infrastructure/restart', protectRoute, requireAdmin, restart
 router.get('/admin/system-logs', protectRoute, requireAdmin, getSystemLogs);
 router.get('/admin/usage-analytics', protectRoute, requireAdmin, getUsageAnalytics);
 router.get('/admin/audit-history', protectRoute, requireAdmin, getAuditHistory);
+router.post('/admin/maintenance/toggle', protectRoute, requireAdmin, toggleMaintenanceMode);
 
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
@@ -68,5 +69,6 @@ router.use('/progress', progressRouter)
 
 // Public System Status (for landing page)
 router.get('/public/system-status', getPublicSystemStatus);
+router.get('/public/maintenance-status', getMaintenanceStatus);
 
 export default router;
