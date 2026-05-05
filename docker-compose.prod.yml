@@ -36,6 +36,7 @@ services:
     volumes:
       - backend-temp:/app/temp
       - backend-data:/app/data
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/lib-list"]
       interval: 15s
