@@ -12,7 +12,16 @@ const submissionSchema = new mongoose.Schema({
   attachments: [{ type: String, trim: true }],
   files: [{ type: String, trim: true }],
   score: { type: Number },
-  feedback: { type: String }
+  feedback: { type: String },
+  screenshotUrl: { type: String, trim: true, default: "" }, // Image captured from emulator
+  autoGrade: {
+    score: { type: Number, min: 0, max: 100, default: null },
+    summary: { type: String, default: "" },
+    errors: [{ component: String, description: String }],
+    suggestions: [{ area: String, tip: String }],
+    gradedAt: { type: Date },
+    rawResponse: { type: String }
+  }
 }, { timestamps: true });
 
 submissionSchema.index({ assignmentId: 1, studentId: 1 }, { unique: true });

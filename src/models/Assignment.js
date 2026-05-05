@@ -11,6 +11,7 @@ const assignmentSchema = new mongoose.Schema({
   links: [{ type: String, trim: true }],
   attachments: [{ type: String, trim: true }],
   files: [{ type: String, trim: true }],
+  referenceImage: { type: String, trim: true, default: "" }, // Auto-grading reference solution
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
 }, { timestamps: true });
 

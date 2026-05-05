@@ -14,6 +14,7 @@ import {
   getAssignmentSubmissions,
   getMyAssignmentSubmission,
   upsertAssignmentSubmission,
+  autoGradeSubmission,
   getAssignments,
   createNotice,
   updateNotice,
@@ -44,6 +45,7 @@ router.get("/assignments", protectRoute, getAssignments);
 router.get("/:classId/assignments/:assignmentId/submissions", protectRoute, getAssignmentSubmissions);
 router.get("/:classId/assignments/:assignmentId/submission", protectRoute, getMyAssignmentSubmission);
 router.post("/:classId/assignments/:assignmentId/submission", protectRoute, upsertAssignmentSubmission);
+router.post("/:classId/assignments/:assignmentId/submissions/:submissionId/auto-grade", protectRoute, autoGradeSubmission);
 router.delete("/:classId/assignments/:assignmentId", protectRoute, deleteAssignment);
 
 router.post("/:classId/notices", protectRoute, createNotice);

@@ -6,7 +6,8 @@ import Comment from "../models/Comment.js";
 import Submission from "../models/Submission.js";
 import User from "../models/User.js";
 import { getClassroomAssetPublicPath } from "../middleware/classroomUpload.js";
-//enhanced
+import { gradeCircuitSubmission } from "../services/autoGradeService.js";
+
 const { ObjectId } = mongoose.Types;
 
 const isTeacher = (user) => user?.role === "teacher" || user?.role === "admin";
@@ -40,11 +41,11 @@ const userCanAccessClass = (classroom, user) => {
   if (!userId || !classroom) return false;
 
   const isOwner = extractId(classroom.teacher) === userId;
-  const isStudent =
+  const isStudentMember =
     Array.isArray(classroom.students) &&
     classroom.students.some((studentValue) => extractId(studentValue) === userId);
 
-  return isOwner || isStudent;
+  return isOwner || isStudentMember;
 };
 
 const parsePositiveInt = (value, fallback) => {
@@ -487,7 +488,7 @@ export const createAssignment = async (req, res) => {
     }
 
     const { classId } = req.params;
-    const { title, description, templateProjectId, templateShareId, templateUrl, dueDate, attachments, files, links } = req.body || {};
+    const { title, description, templateProjectId, templateShareId, templateUrl, dueDate, attachments, files, links, referenceImage } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -519,6 +520,7 @@ export const createAssignment = async (req, res) => {
     const sanitizedLinks = Array.isArray(links)
       ? links.filter((link) => typeof link === "string" && link.trim()).map((link) => link.trim())
       : [];
+    
     const sanitizedTemplateUrl = typeof templateUrl === "string" ? templateUrl.trim() : "";
     const sanitizedTemplateShareId = typeof templateShareId === "string" && templateShareId.trim()
       ? templateShareId.trim()
@@ -537,6 +539,7 @@ export const createAssignment = async (req, res) => {
       dueDate: dueDate ? new Date(dueDate) : undefined,
       links: sanitizedLinks,
       attachments: sanitizedAttachments,
+      referenceImage: typeof referenceImage === "string" && referenceImage.trim() ? referenceImage.trim() : "",
       createdBy: req.user._id,
     });
 
@@ -927,7 +930,7 @@ export const updateAssignment = async (req, res) => {
     }
 
     const { classId, assignmentId } = req.params;
-    const { title, description, dueDate, attachments, files, links, templateShareId, templateUrl } = req.body || {};
+    const { title, description, dueDate, attachments, files, links, templateShareId, templateUrl, referenceImage } = req.body || {};
 
     if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
       return res.status(400).json({ message: "Invalid classId or assignmentId." });
@@ -982,6 +985,10 @@ export const updateAssignment = async (req, res) => {
       updates.templateShareId = typeof templateShareId === "string" && templateShareId.trim()
         ? templateShareId.trim()
         : (nextTemplateUrl.match(/\/simulator\/share\/([^/?#]+)/)?.[1] || "");
+    }
+    // Allow teacher to update or clear the reference image for auto-grading
+    if (referenceImage !== undefined) {
+      updates.referenceImage = typeof referenceImage === "string" ? referenceImage.trim() : "";
     }
 
     const updatedAssignment = await Assignment.findByIdAndUpdate(
@@ -1183,7 +1190,7 @@ export const getMyAssignmentSubmission = async (req, res) => {
     }
 
     const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
-      "_id title description dueDate createdAt links attachments files templateShareId templateUrl",
+      "_id title description dueDate createdAt links attachments files templateShareId templateUrl referenceImage",
     );
 
     if (!assignment) {
@@ -1211,7 +1218,7 @@ export const getMyAssignmentSubmission = async (req, res) => {
 export const upsertAssignmentSubmission = async (req, res) => {
   try {
     const { classId, assignmentId } = req.params;
-    const { projectId, notes, attachments, files, links, simulationShareId, simulationUrl } = req.body || {};
+    const { projectId, notes, attachments, files, links, simulationShareId, simulationUrl, screenshotUrl } = req.body || {};
 
     if (req.user?.role !== "student") {
       return res.status(403).json({ message: "Only students can submit assignments." });
@@ -1230,7 +1237,7 @@ export const upsertAssignmentSubmission = async (req, res) => {
       return res.status(403).json({ message: "You are not part of this class." });
     }
 
-    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select("_id dueDate");
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select("_id dueDate referenceImage title description");
     if (!assignment) {
       return res.status(404).json({ message: "Assignment not found." });
     }
@@ -1263,9 +1270,12 @@ export const upsertAssignmentSubmission = async (req, res) => {
       notes: typeof notes === "string" ? notes.trim() : "",
       links: sanitizedLinks,
       attachments: sanitizedAttachments,
+      ...(typeof screenshotUrl === "string" && screenshotUrl.trim()
+        ? { screenshotUrl: screenshotUrl.trim() }
+        : {}),
     };
 
-    const submission = await Submission.findOneAndUpdate(
+    let submission = await Submission.findOneAndUpdate(
       { assignmentId, studentId: req.user._id },
       updatePayload,
       {
@@ -1276,9 +1286,86 @@ export const upsertAssignmentSubmission = async (req, res) => {
       },
     ).populate("projectId", "_id board updatedAt createdAt");
 
+    let effectiveScreenshot = typeof screenshotUrl === "string" && screenshotUrl.trim()
+      ? screenshotUrl.trim()
+      : submission.screenshotUrl;
+
+    // ✅ ROBUST FALLBACK: Find ANY image in attachments
+    if (!effectiveScreenshot && sanitizedAttachments.length > 0) {
+      const firstImage = sanitizedAttachments.find(f => /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(f));
+      if (firstImage) {
+        effectiveScreenshot = firstImage;
+        submission = await Submission.findByIdAndUpdate(
+          submission._id, 
+          { screenshotUrl: effectiveScreenshot },
+          { new: true }
+        ).populate("projectId", "_id board updatedAt createdAt");
+      }
+    }
+
+    // 🛑 ERROR CHECK: If the teacher didn't upload a solution image
+    if (!assignment.referenceImage) {
+      console.log("[AutoGrade] Skipped: No Reference Image found on Assignment.");
+      return res.status(200).json({
+        message: "Assignment submitted. (Auto-grading skipped: Teacher hasn't uploaded a reference image).",
+        submission,
+        autoGrading: false,
+      });
+    }
+
+    // 🛑 ERROR CHECK: If the student didn't upload an image
+    if (!effectiveScreenshot) {
+      console.log("[AutoGrade] Skipped: No Student Screenshot found.");
+      return res.status(200).json({
+        message: "Assignment submitted. (Auto-grading skipped: No circuit image found).",
+        submission,
+        autoGrading: false,
+      });
+    }
+
+    // ── Auto-grade: triggered only when both images are available ─────────────
+    // Run grading asynchronously — do NOT await here
+    (async () => {
+      try {
+        const { getClassroomAssetsRoot } = await import("../middleware/classroomUpload.js");
+        const path = await import("path");
+
+        const toAbsolute = (src) => {
+          if (src.startsWith("http://") || src.startsWith("https://")) return src;
+          if (src.startsWith("/api/assets/classroom/")) {
+            const rel = src.replace("/api/assets/classroom/", "");
+            return path.default.join(getClassroomAssetsRoot(), rel);
+          }
+          return src;
+        };
+
+        const result = await gradeCircuitSubmission({
+          referenceImageSource: toAbsolute(assignment.referenceImage),
+          studentImageSource:   toAbsolute(effectiveScreenshot),
+          assignmentTitle:      assignment.title,
+          assignmentDesc:       assignment.description || "",
+        });
+
+        await Submission.findByIdAndUpdate(submission._id, {
+          "autoGrade.score":       result.score,
+          "autoGrade.summary":     result.summary,
+          "autoGrade.errors":      result.errors,
+          "autoGrade.suggestions": result.suggestions,
+          "autoGrade.rawResponse": result.rawResponse,
+          "autoGrade.gradedAt":    new Date(),
+          // Also set the main score field for backward-compatibility
+          score: result.score,
+        });
+      } catch (gradeErr) {
+        // Log but never crash the student's submission
+        console.error("[AutoGrade] Failed to grade submission:", gradeErr.message);
+      }
+    })();
+
     return res.status(200).json({
       message: "Assignment submitted successfully.",
       submission,
+      autoGrading: true,
     });
   } catch (error) {
     return res.status(500).json({
@@ -1378,5 +1465,213 @@ export const deleteComment = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to delete comment.", error: error.message });
+  }
+};
+
+// ─── gradeSubmission ──────────────────────────────────────────────────────────
+export const gradeSubmission = async (req, res) => {
+  try {
+    const { classId, assignmentId, submissionId } = req.params;
+    const { score, feedback } = req.body || {};
+
+    if (
+      !isValidObjectId(classId) ||
+      !isValidObjectId(assignmentId) ||
+      !isValidObjectId(submissionId)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Invalid classId, assignmentId, or submissionId." });
+    }
+
+    if (!isTeacher(req.user)) {
+      return res
+        .status(403)
+        .json({ message: "Only teachers can grade submissions." });
+    }
+
+    if (score !== undefined) {
+      const numScore = Number(score);
+      if (Number.isNaN(numScore) || numScore < 0 || numScore > 100) {
+        return res
+          .status(400)
+          .json({ message: "Score must be a number between 0 and 100." });
+      }
+    }
+
+    if (score === undefined && feedback === undefined) {
+      return res
+        .status(400)
+        .json({ message: "Provide at least score or feedback to update." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (classroom.teacher.toString() !== req.user._id.toString()) {
+      return res
+        .status(403)
+        .json({ message: "Only the class teacher can grade submissions." });
+    }
+
+    const assignment = await Assignment.findOne({
+      _id: assignmentId,
+      classId,
+    }).select("_id");
+    if (!assignment) {
+      return res
+        .status(404)
+        .json({ message: "Assignment not found in this class." });
+    }
+
+    const existing = await Submission.findOne({
+      _id: submissionId,
+      assignmentId,
+    });
+    if (!existing) {
+      return res.status(404).json({ message: "Submission not found." });
+    }
+
+    const updates = {};
+    if (score !== undefined) updates.score = Number(score);
+    if (feedback !== undefined) {
+      updates.feedback =
+        typeof feedback === "string" ? feedback.trim() : "";
+    }
+
+    const updatedSubmission = await Submission.findByIdAndUpdate(
+      submissionId,
+      updates,
+      { new: true, runValidators: true }
+    )
+      .populate("studentId", "name email role image")
+      .populate("projectId", "_id board updatedAt createdAt");
+
+    return res.status(200).json({
+      message: "Submission graded successfully.",
+      submission: updatedSubmission,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to grade submission.",
+      error: error.message,
+    });
+  }
+};
+
+// ─── autoGradeSubmission ──────────────────────────────────────────────────────
+export const autoGradeSubmission = async (req, res) => {
+  try {
+    const { classId, assignmentId, submissionId } = req.params;
+    const { screenshotUrl: bodyScreenshotUrl } = req.body || {};
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId) || !isValidObjectId(submissionId)) {
+      return res.status(400).json({ message: "Invalid classId, assignmentId, or submissionId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    if (!userCanAccessClass(classroom, req.user)) {
+      return res.status(403).json({ message: "You are not part of this class." });
+    }
+
+    // Fetch the assignment — we need referenceImage
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId })
+      .select("_id title description referenceImage");
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    if (!assignment.referenceImage) {
+      return res.status(400).json({
+        message: "This assignment does not have a reference image set. The teacher needs to upload one to enable auto-grading.",
+      });
+    }
+
+    // Fetch the submission
+    let submission = await Submission.findOne({ _id: submissionId, assignmentId });
+    if (!submission) {
+      return res.status(404).json({ message: "Submission not found." });
+    }
+
+    // Students can only re-grade their own submission
+    const userId = extractId(req.user?._id || req.user?.id);
+    const isClassTeacher = extractId(classroom.teacher) === userId;
+    const isOwner = extractId(submission.studentId) === userId;
+
+    if (!isOwner && !isClassTeacher) {
+      return res.status(403).json({ message: "Access denied." });
+    }
+
+    // Determine screenshot source
+    let effectiveScreenshot = (typeof bodyScreenshotUrl === "string" && bodyScreenshotUrl.trim())
+      ? bodyScreenshotUrl.trim()
+      : submission.screenshotUrl;
+
+    // ✅ ROBUST FALLBACK Check if they manually uploaded an image to attachments
+    if (!effectiveScreenshot && submission.attachments && submission.attachments.length > 0) {
+      const firstImage = submission.attachments.find(f => /\.(png|jpe?g|gif|webp)(\?.*)?$/i.test(f));
+      if (firstImage) {
+        effectiveScreenshot = firstImage;
+        submission = await Submission.findByIdAndUpdate(submissionId, { screenshotUrl: effectiveScreenshot }, { new: true });
+      }
+    }
+
+    if (!effectiveScreenshot) {
+      return res.status(400).json({
+        message: "No screenshot available for this submission. Submit from the emulator or upload an image attachment.",
+      });
+    }
+
+    // Resolve path helper
+    const { getClassroomAssetsRoot } = await import("../middleware/classroomUpload.js");
+    const path = await import("path");
+
+    const toAbsolute = (src) => {
+      if (src.startsWith("http://") || src.startsWith("https://")) return src;
+      if (src.startsWith("/api/assets/classroom/")) {
+        const rel = src.replace("/api/assets/classroom/", "");
+        return path.default.join(getClassroomAssetsRoot(), rel);
+      }
+      return src;
+    };
+
+    // Call AI grading — this one IS awaited so the caller gets the result immediately
+    const result = await gradeCircuitSubmission({
+      referenceImageSource: toAbsolute(assignment.referenceImage),
+      studentImageSource:   toAbsolute(effectiveScreenshot),
+      assignmentTitle:      assignment.title,
+      assignmentDesc:       assignment.description || "",
+    });
+
+    const updatedSubmission = await Submission.findByIdAndUpdate(
+      submissionId,
+      {
+        "autoGrade.score":       result.score,
+        "autoGrade.summary":     result.summary,
+        "autoGrade.errors":      result.errors,
+        "autoGrade.suggestions": result.suggestions,
+        "autoGrade.rawResponse": result.rawResponse,
+        "autoGrade.gradedAt":    new Date(),
+        score: result.score,
+      },
+      { new: true }
+    ).populate("studentId", "name email role image");
+
+    return res.status(200).json({
+      message: "Submission auto-graded successfully.",
+      submission: updatedSubmission,
+      autoGrade: updatedSubmission.autoGrade,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to auto-grade submission.",
+      error: error.message,
+    });
   }
 };
