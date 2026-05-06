@@ -50,8 +50,8 @@ router.post('/admin/maintenance/toggle', protectRoute, requireAdmin, toggleMaint
 
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
-router.get('/admin/deploy/notifications', protectRoute, requireAdmin, getNotifications);
-router.post('/admin/deploy/trigger-build', protectRoute, requireAdmin, triggerBuild);
+router.get('/admin/deployments/notifications', protectRoute, requireAdmin, getNotifications);
+router.post('/admin/deployments/trigger', protectRoute, requireAdmin, triggerBuild);
 
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);

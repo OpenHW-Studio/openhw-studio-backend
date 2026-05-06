@@ -150,10 +150,12 @@ export const getSystemLogs = async (req, res) => {
             stdout = 'Infrastructure monitoring inactive (Local Dev Mode)\nBackend: Active\nFrontend: Active\nMongoDB: Active';
         }
         
+        const isDocker = stdout.includes('Active') || stdout.includes('|') || stdout.toLowerCase().includes('docker');
+        
         const logs = stdout.split('\n').filter(Boolean).map(line => ({
             time: new Date().toISOString(),
             msg: line.trim(),
-            type: line.toLowerCase().includes('error') ? 'error' : 'info'
+            type: line.toLowerCase().includes('error') ? 'error' : (isDocker ? 'docker' : 'info')
         }));
 
         cachedLogs = logs;
