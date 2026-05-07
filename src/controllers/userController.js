@@ -85,17 +85,29 @@ const signinUser = async (req, res) => {
       return res.status(400).json({ message: "Invalid credentials" });
     }
 
-    const token = generateToken(user);
+    // If admin is logging in as teacher/student/user, override the role in the JWT
+    let roleForToken = user.role;
+    if (user.role === 'admin' && role && ['teacher', 'student', 'user'].includes(role)) {
+      roleForToken = role;
+    }
+    const token = generateToken(user, roleForToken);
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
+    // For the response, use the requested login role instead of stored role
+    // This allows admins to login as teacher/student/user portals
+    const responseUser = serializeUser(user);
+    if (role && ['teacher', 'student', 'user'].includes(role) && user.role === 'admin') {
+      responseUser.role = role;
+    }
+
     res.status(200).json({
       message: "Login successful",
       token,
-      user: serializeUser(user),
+      user: responseUser,
       });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
@@ -168,7 +180,7 @@ if (!isStrongPassword(password)) {
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
-const token = generateToken(user);
+const token = generateToken(user, selectedRole);
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
@@ -213,6 +225,8 @@ const getUserProfile = async (req, res) => {
     }
 
     const profile = user.toObject();
+    // Respect role from JWT (middleware may override role for admin-login-as flows)
+    if (req.user && req.user.role) profile.role = req.user.role;
     delete profile.email;
 
     return res.status(200).json({
@@ -369,18 +383,29 @@ const googleLogin = async (req, res) => {
       }
     }
 
-    // Generate JWT
-    const token = generateToken(user);
+    // Generate JWT — if admin is logging in as teacher/student/user, override the role in the token
+    let roleForToken = user.role;
+    if (user.role === 'admin' && role && ['teacher', 'student', 'user'].includes(role)) {
+      roleForToken = role;
+    }
+    const token = generateToken(user, roleForToken);
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
+    // For the response, use the requested login role instead of stored role
+    // This allows admins to login as teacher/student/user portals
+    const responseUser = serializeUser(user);
+    if (role && ['teacher', 'student', 'user'].includes(role) && user.role === 'admin') {
+      responseUser.role = role;
+    }
+
     return res.status(200).json({
       message: "Google login successful.",
       token,
-      user: serializeUser(user),
+      user: responseUser,
     });
 
   } catch (error) {
