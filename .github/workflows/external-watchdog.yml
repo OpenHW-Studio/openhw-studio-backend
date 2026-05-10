@@ -1,0 +1,45 @@
+name: 🛡️ External Infrastructure Watchdog
+
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Runs every 30 minutes
+  workflow_dispatch: # Allows manual trigger
+
+jobs:
+  check-uptime:
+    name: Check Server Uptime
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Frontend (Website)
+        id: check_frontend
+        run: |
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" https://openhw-studio.fossee.in)
+          if [ "$STATUS" -ne 200 ]; then
+            echo "frontend_up=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "frontend_up=true" >> $GITHUB_OUTPUT
+
+      - name: Check Backend (API)
+        id: check_backend
+        if: always() # Run even if frontend check failed
+        run: |
+          # We check a simple API endpoint. If /api/health doesn't exist, we use /api/
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" https://openhw-studio.fossee.in/api/health)
+          if [ "$STATUS" -ne 200 ] && [ "$STATUS" -ne 404 ]; then
+            # 404 is acceptable for now if endpoint isn't made, but 500+ or connection error is bad
+            echo "backend_up=false" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "backend_up=true" >> $GITHUB_OUTPUT
+
+      - name: Notify Telegram on Failure
+        if: failure()
+        run: |
+          curl -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
+          -H "Content-Type: application/json" \
+          -d '{
+            "chat_id": "${{ secrets.TELEGRAM_CHAT_ID }}",
+            "text": "🆘 <b>TOTAL INFRASTRUCTURE ALERT</b>\n\n⚠️ <b>Status:</b> The server is unreachable from the outside world!\n\n🌍 <b>Target:</b> https://openhw-studio.fossee.in\n🛡️ <b>Guardian:</b> GitHub Actions External Monitor\n\n🚨 <i>Please check the VM status and Network settings immediately.</i>",
+            "parse_mode": "HTML"
+          }'
