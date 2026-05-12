@@ -12,6 +12,29 @@ const headers = {
     'X-GitHub-Api-Version': '2022-11-28'
 };
 
+const ALLOWED_REPOS = [
+    GITHUB_REPO_FRONTEND,
+    GITHUB_REPO_BACKEND,
+    'simulator-emulator',
+    'simulator-examples',
+    'openhw-docs'
+];
+
+const WEBHOOK_SECRET = process.env.DEPLOY_WEBHOOK_SECRET;
+
+const fetchWithTimeout = async (url, options = {}, timeout = 8000) => {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeout);
+    try {
+        const response = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(id);
+        return response;
+    } catch (e) {
+        clearTimeout(id);
+        throw e;
+    }
+};
+
 /**
  * Fetch pending deployments and their preceding smoke test logs
  */
@@ -23,7 +46,7 @@ export const getPendingDeployments = async (req, res) => {
     try {
         const fetchRuns = async (repo) => {
             // Fetch workflow runs that are 'waiting'
-            const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs?status=waiting`, { headers });
+            const response = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs?status=waiting`, { headers });
             
             if (!response.ok) {
                 console.error(`GitHub API error for ${repo}:`, await response.text());
@@ -34,7 +57,7 @@ export const getPendingDeployments = async (req, res) => {
             
             // For each run, fetch its jobs to get test results
             const runsWithJobs = await Promise.all(data.workflow_runs.map(async (run) => {
-                const jobsResponse = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run.id}/jobs`, { headers });
+                const jobsResponse = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run.id}/jobs`, { headers });
                 const jobsData = jobsResponse.ok ? await jobsResponse.json() : { jobs: [] };
                 
                 return {
@@ -82,7 +105,7 @@ export const approveDeployment = async (req, res) => {
 
     try {
         // Find the pending deployment for the run
-        const pendingResp = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, { headers });
+        const pendingResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, { headers });
         
         if (!pendingResp.ok) {
             return res.status(500).json({ error: 'Failed to fetch pending deployment details.' });
@@ -96,7 +119,7 @@ export const approveDeployment = async (req, res) => {
         }
 
         // Approve it
-        const approveResp = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, {
+        const approveResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -126,10 +149,15 @@ let deploymentNotifications = [];
  * Webhook endpoint for sub-repos to notify the backend of changes
  */
 export const notifyChange = (req, res) => {
-    const { repo, prTitle, prDescription, filesChanged } = req.body;
+    const { repo, prTitle, prDescription, filesChanged, secret } = req.body;
     
-    if (!repo) {
-        return res.status(400).json({ error: 'Repo name is required.' });
+    // Basic validation to prevent spamming the dashboard
+    if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
+        return res.status(401).json({ error: 'Invalid webhook secret.' });
+    }
+
+    if (!repo || !ALLOWED_REPOS.includes(repo)) {
+        return res.status(400).json({ error: 'Invalid or restricted repository.' });
     }
 
     const newNotification = {
@@ -158,12 +186,12 @@ export const getNotifications = (req, res) => {
 export const triggerBuild = async (req, res) => {
     const { target_repo, notification_id } = req.body;
 
-    if (!target_repo) {
-        return res.status(400).json({ error: 'target_repo is required.' });
+    if (!target_repo || !ALLOWED_REPOS.includes(target_repo)) {
+        return res.status(400).json({ error: 'Invalid or restricted repository.' });
     }
 
     try {
-        const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${target_repo}/actions/workflows/deploy.yml/dispatches`, {
+        const response = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${target_repo}/actions/workflows/deploy.yml/dispatches`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({ ref: 'develop' })
@@ -192,12 +220,12 @@ export const triggerBuild = async (req, res) => {
 export const rollbackDeployment = async (req, res) => {
     const { repo, image_tag } = req.body;
     
-    if (!repo || !image_tag) {
-        return res.status(400).json({ error: 'repo and image_tag are required.' });
+    if (!repo || !ALLOWED_REPOS.includes(repo) || !image_tag) {
+        return res.status(400).json({ error: 'Invalid repo or missing image_tag.' });
     }
     
     try {
-        const response = await fetch(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/workflows/rollback.yml/dispatches`, {
+        const response = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/workflows/rollback.yml/dispatches`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -217,5 +245,44 @@ export const rollbackDeployment = async (req, res) => {
     } catch (error) {
          console.error('Error rolling back:', error);
          res.status(500).json({ error: 'Internal server error during rollback.' });
+    }
+};
+
+/**
+ * Fetch logs for a specific workflow run job
+ */
+export const getWorkflowLogs = async (req, res) => {
+    const { repo, run_id } = req.query;
+
+    if (!repo || !run_id) {
+        return res.status(400).json({ error: 'repo and run_id are required.' });
+    }
+
+    try {
+        // 1. Get jobs for this run
+        const jobsResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/jobs`, { headers });
+        if (!jobsResp.ok) throw new Error('Failed to fetch jobs');
+        
+        const { jobs } = await jobsResp.json();
+        const activeJob = jobs.find(j => j.status === 'in_progress' || j.status === 'completed');
+        
+        if (!activeJob) return res.json({ logs: ['Awaiting job initiation...'] });
+
+        // 2. Fetch logs for the job
+        const logsResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/jobs/${activeJob.id}/logs`, { headers });
+        
+        if (!logsResp.ok) {
+            // Logs might not be ready yet
+            return res.json({ logs: ['Connecting to GitHub runner...', 'Awaiting output stream...'] });
+        }
+
+        const text = await logsResp.text();
+        const lines = text.split('\n').map(line => line.replace(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s/, '')); // Strip timestamps
+        
+        res.json({ success: true, logs: lines.slice(-200) }); // Return last 200 lines
+
+    } catch (error) {
+        console.error('Error fetching workflow logs:', error);
+        res.status(500).json({ error: 'Failed to fetch logs from GitHub.' });
     }
 };

@@ -31,6 +31,7 @@ export async function createLiveSimulation(req, res) {
       classId,
       teacher: req.user,
       snapshot: normalizeSnapshotPayload(req.body),
+      ip: req.ip
     });
 
     return res.status(201).json({
