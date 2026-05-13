@@ -54,8 +54,7 @@ services:
         condition: service_healthy
 
   health-agent:
-    build:
-      context: ./health-agent
+    image: ${DOCKER_USERNAME}/openhw-health-agent:${HEALTH_AGENT_TAG:-develop}
     container_name: openhw-health-agent
     restart: always
     environment:

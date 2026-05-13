@@ -10,6 +10,8 @@ jobs:
   test_and_build:
     name: Build & Test
     runs-on: ubuntu-latest
+    outputs:
+      agent_changed: ${{ steps.filter.outputs.agent }}
     steps:
       - name: Checkout backend code
         uses: actions/checkout@v4
@@ -20,9 +22,10 @@ jobs:
         id: filter
         uses: dorny/paths-filter@v3
         with:
+          working-directory: openhw-studio-backend
           filters: |
             agent:
-              - 'openhw-studio-backend/health-agent/**'
+              - 'health-agent/**'
 
       - name: Checkout examples code
         uses: actions/checkout@v4
@@ -118,6 +121,11 @@ jobs:
           # Update the local .env file with the new backend tag for persistence
           sed -i '/^BACKEND_TAG=/d' .env || true
           echo "BACKEND_TAG=${{ github.sha }}" >> .env
+          
+          if [ "${{ needs.test_and_build.outputs.agent_changed }}" == "true" ]; then
+            sed -i '/^HEALTH_AGENT_TAG=/d' .env || true
+            echo "HEALTH_AGENT_TAG=${{ github.sha }}" >> .env
+          fi
           
           # Ensure Docker Hub credentials are available
           export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
