@@ -1,3 +1,12 @@
-# Protect CI/CD workflows and sensitive configurations
+# CODEOWNERS for OpenHW Studio Backend
+# Only @danish9661 can approve changes to critical infrastructure
+
+# Health Agent Monitoring System
+/health-agent/ @danish9661
+
+# Deployment Workflows
 /.github/workflows/ @danish9661
 
+# Project Configuration
+docker-compose.prod.yml @danish9661
+deployment_guide.md @danish9661
