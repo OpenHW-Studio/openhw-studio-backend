@@ -1,54 +1,70 @@
-
 services:
-  backend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: openhw-backend
-    restart: unless-stopped
-    env_file: ./env
-    environment:
-      FRONTEND_URL: http://localhost:3000
-      GOOGLE_CALLBACK_URL: http://localhost:5001/auth/google/callback
-      EXAMPLES_DIR: /app/openhw-studio-examples/examples
+  mongodb:
+    image: mongo:6.0
+    container_name: openhw-mongodb
+    restart: always
     ports:
-      - "5001:5001"
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: ${DOCKER_USERNAME}/openhw-backend:${BACKEND_TAG:-develop}
+    container_name: openhw-backend
+    restart: always
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - PORT=5000
+      - MONGO_URI=mongodb://mongodb:27017/openhw-studio-production
+      - JWT_SECRET=${JWT_SECRET}
+      - SESSION_SECRET=${SESSION_SECRET}
+      - GITHUB_ADMIN_TOKEN=${GITHUB_ADMIN_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER:-OpenHW-Studio}
+      - FRONTEND_URL=${FRONTEND_URL}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
+      - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
+      - EXAMPLES_DIR=/app/openhw-studio-examples/examples
     volumes:
       - backend-temp:/app/temp
       - backend-data:/app/data
-      - ./openhw-studio-examples:/app/openhw-studio-examples:ro
-    networks:
-      - openhw-net
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:5001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/lib-list"]
       interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 20s
+      retries: 5
 
   frontend:
-    build:
-      context: .
-      dockerfile: ./OpenHW-studio-frontend/Dockerfile
-      args:
-        VITE_API_BASE_URL: http://localhost:5001/api
-        VITE_EXAMPLES_BASE_URL: http://localhost:5001/examples
-        VITE_GOOGLE_CLIENT_ID: "330028772877-csjlu9u6nam4bq6i1ergcrs4oetkhnqv.apps.googleusercontent.com"
-        VITE_ADMIN_EMAILS: ""
+    image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}
     container_name: openhw-frontend
-    restart: unless-stopped
+    restart: always
     ports:
-      - "3000:80"
+      - "80:80"
     depends_on:
       backend:
         condition: service_healthy
-    networks:
-      - openhw-net
+
+  health-agent:
+    image: ${DOCKER_USERNAME}/openhw-health-agent:${HEALTH_AGENT_TAG:-develop}
+    container_name: openhw-health-agent
+    restart: always
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc:/proc:ro
+      - /:/host_root:ro
 
 volumes:
+  mongodb_data:
   backend-temp:
   backend-data:
-
-networks:
-  openhw-net:
-    driver: bridge
