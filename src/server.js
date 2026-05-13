@@ -162,6 +162,10 @@ app.get('/health', (req, res) => res.json({ status: 'ok' }));
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
   './openhw-studio-examples/examples',

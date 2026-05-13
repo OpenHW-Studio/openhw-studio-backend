@@ -59,7 +59,10 @@ router.post('/live-simulations', protectRoute, createLiveSimulation);
 router.get('/live-simulations/:sessionCode', protectRoute, getLiveSimulation);
 
 import { runAutofixController } from '../controllers/autofixController.js';
+import { validateCircuitController } from '../controllers/validationController.js';
+
 router.post('/autofix', protectRoute, runAutofixController);
+router.post('/validation/run', validateCircuitController);
 
 // User routes for authentication and management
 router.use('/user', userRoutes);
