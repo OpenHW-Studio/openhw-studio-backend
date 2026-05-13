@@ -62,7 +62,6 @@ jobs:
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
 
       - name: Build and push Health Agent
-        if: steps.filter.outputs.agent == 'true'
         uses: docker/build-push-action@v5
         with:
             context: ./openhw-studio-backend/health-agent
@@ -122,10 +121,8 @@ jobs:
           sed -i '/^BACKEND_TAG=/d' .env || true
           echo "BACKEND_TAG=${{ github.sha }}" >> .env
           
-          if [ "${{ needs.test_and_build.outputs.agent_changed }}" == "true" ]; then
-            sed -i '/^HEALTH_AGENT_TAG=/d' .env || true
-            echo "HEALTH_AGENT_TAG=${{ github.sha }}" >> .env
-          fi
+          sed -i '/^HEALTH_AGENT_TAG=/d' .env || true
+          echo "HEALTH_AGENT_TAG=${{ github.sha }}" >> .env
           
           # Ensure Docker Hub credentials are available
           export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
