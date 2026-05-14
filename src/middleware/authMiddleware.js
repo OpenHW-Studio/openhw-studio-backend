@@ -21,11 +21,18 @@ export const protectRoute = async (req, res, next) => {
 
     const token = bearerToken || cookieToken;
     if (!token) {
-     return res.status(401).json({ message: "Unauthorized: No token provided" });
-     }
+      console.log("[Auth] No token provided");
+      return res.status(401).json({ message: "Unauthorized: No token provided" });
+    }
+    if (!process.env.JWT_SECRET) {
+      console.error("[Auth] CRITICAL: JWT_SECRET is not defined in environment!");
+    }
+    console.log("[Auth] Verifying token (prefix):", token.substring(0, 10) + "...");
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    console.log("[Auth] Decoded token:", decoded);
     const user = await User.findById(decoded.id).select("-password");
     if (!user) {
+      console.log("[Auth] User not found for ID:", decoded.id);
       return res.status(401).json({ message: "Unauthorized: User not found" });
     }
 
@@ -37,7 +44,8 @@ export const protectRoute = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
-    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+    console.error("[Auth] JWT Verification Error:", error.message);
+    return res.status(401).json({ message: `Unauthorized: ${error.message}` });
   }
 }
  

@@ -47,6 +47,7 @@ async function resolveRequestUser(req) {
 }
 
 export async function createSharedSimulation(req, res) {
+  console.log("[createSharedSimulation] Request user:", req.user);
   try {
     if (req.user?.role === "student") {
       const { classId, assignmentId } = req.body || {};
