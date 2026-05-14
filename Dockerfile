@@ -35,9 +35,9 @@ RUN arduino-cli config init && \
 
 # Install Raspberry Pi Pico SDK
 ENV PICO_SDK_PATH=/opt/pico-sdk
-RUN git clone -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
+RUN git clone --depth 1 -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
     cd $PICO_SDK_PATH && \
-    git submodule update --init
+    git submodule update --init --depth 1
 
 # Pre-install common libraries for the simulator (Pico/AVR compatible)
 RUN arduino-cli lib install \
