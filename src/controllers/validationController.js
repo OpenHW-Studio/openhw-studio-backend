@@ -11,19 +11,18 @@ export async function validateCircuitController(req, res) {
       return res.status(400).json({ error: 'Invalid request: project is required' });
     }
 
-    // Import the emulator's full circuit validator dynamically
+    // Import the emulator's unified validator dynamically
     const indexPath = path.resolve(__dirname, '..', '..', '..', 'openhw-studio-emulator', 'src', 'circuit-validation', 'index.js');
     const mod = await import(pathToFileURL(indexPath).href);
-    const FullCircuitValidator = mod.FullCircuitValidator;
+    const { runUnifiedValidation } = mod;
 
-    if (!FullCircuitValidator) {
-      return res.status(500).json({ error: 'FullCircuitValidator missing from emulator build' });
+    if (!runUnifiedValidation) {
+      return res.status(500).json({ error: 'runUnifiedValidation missing from emulator build' });
     }
 
-    const validator = new FullCircuitValidator(project);
-    const isSafe = validator.runValidation({ profile: 'balanced' });
+    const result = runUnifiedValidation(project, { profile: 'balanced' });
     
-    return res.json({ safe: isSafe, errors: validator.errors || [] });
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: err?.message || String(err) });
   }

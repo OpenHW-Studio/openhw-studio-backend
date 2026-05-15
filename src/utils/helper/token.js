@@ -6,7 +6,7 @@ const generateToken = (user, overrideRole = null) => {
   const roleToUse = overrideRole || user.role;
   
   const token = jwt.sign({ id: user._id, role: roleToUse }, process.env.JWT_SECRET, {
-    expiresIn: "1d",
+    expiresIn: process.env.JWT_EXPIRES_IN || "1d",
   });
 
   return token;
