@@ -12,17 +12,6 @@ const adventureWorldSchema = new mongoose.Schema(
   { _id: false },
 );
 
-const adventureNodeSchema = new mongoose.Schema(
-  {
-    id: { type: String, required: true, trim: true },
-    type: { type: String, default: "step", trim: true, maxlength: 40 },
-    title: { type: String, required: true, trim: true, maxlength: 180 },
-    order: { type: Number, default: 0 },
-    content: { type: mongoose.Schema.Types.Mixed, default: {} },
-  },
-  { _id: false },
-);
-
 const adventureQuizQuestionSchema = new mongoose.Schema(
   {
     id: { type: String, required: true, trim: true },
@@ -47,9 +36,13 @@ const adventureProjectSchema = new mongoose.Schema(
     prerequisite: { type: String, default: null },
     xpReward: { type: Number, default: 0, min: 0 },
     rewardComponents: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    assessment: {
+      passingThreshold: { type: Number, default: 0, min: 0, max: 100 },
+      evaluationCriteria: { type: mongoose.Schema.Types.Mixed, default: {} },
+      scoring: { type: mongoose.Schema.Types.Mixed, default: {} },
+    },
     theory: { type: [mongoose.Schema.Types.Mixed], default: [] },
     quizQuestions: { type: [adventureQuizQuestionSchema], default: [] },
-    nodes: { type: [adventureNodeSchema], default: [] },
   },
   { _id: false },
 );
@@ -60,7 +53,7 @@ const adventureContentSchema = new mongoose.Schema(
     projects: { type: [adventureProjectSchema], default: [] },
     version: { type: Number, default: 1, min: 1 },
   },
-  { _id: false },
+  { _id: false, strict: false },
 );
 
 const classAdventureConfigSchema = new mongoose.Schema(

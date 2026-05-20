@@ -16,14 +16,6 @@ const DEFAULT_CONTENT = {
 
 const isValidObjectId = (id) => ObjectId.isValid(id);
 
-const sanitizeNode = (node, index) => ({
-  id: typeof node?.id === "string" && node.id.trim() ? node.id.trim() : `node-${index + 1}`,
-  type: typeof node?.type === "string" && node.type.trim() ? node.type.trim() : "step",
-  title: typeof node?.title === "string" && node.title.trim() ? node.title.trim() : `Node ${index + 1}`,
-  order: Number.isFinite(node?.order) ? Number(node.order) : index + 1,
-  content: node?.content && typeof node.content === "object" ? node.content : {},
-});
-
 const sanitizeQuizQuestion = (question, index) => {
   const options = Array.isArray(question?.options)
     ? question.options.map((opt) => String(opt || "").trim()).filter(Boolean)
@@ -42,6 +34,12 @@ const sanitizeProject = (project, index, worldIds) => {
   const worldId = typeof project?.worldId === "string" && worldIds.has(project.worldId)
     ? project.worldId
     : [...worldIds][0];
+
+  // ── Assessment: promoted to top-level field (mirrors theory/quizQuestions pattern) ──
+  // Supports both legacy `content` format and new `assessment` format
+  const assessment = project?.assessment || project?.content || {}
+
+
   return {
     id: String(project?.id || slug).trim(),
     slug,
@@ -56,7 +54,11 @@ const sanitizeProject = (project, index, worldIds) => {
     rewardComponents: Array.isArray(project?.rewardComponents) ? project.rewardComponents : [],
     theory: Array.isArray(project?.theory) ? project.theory : [],
     quizQuestions: Array.isArray(project?.quizQuestions) ? project.quizQuestions.map(sanitizeQuizQuestion) : [],
-    nodes: Array.isArray(project?.nodes) ? project.nodes.map(sanitizeNode) : [],
+    assessment: {
+      passingThreshold: Number.isFinite(assessment?.passingThreshold) ? Number(assessment.passingThreshold) : 0,
+      evaluationCriteria: assessment?.evaluationCriteria && typeof assessment.evaluationCriteria === "object" ? assessment.evaluationCriteria : {},
+      scoring: assessment?.scoring && typeof assessment.scoring === "object" ? assessment.scoring : {},
+    },
   };
 };
 
