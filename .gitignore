@@ -141,3 +141,4 @@ test_comp.js
 
 .env
 env
+builds/

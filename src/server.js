@@ -11,6 +11,7 @@ import session from 'express-session';
 import passport from './config/passport.js';
 import authRoutes from './routes/auth.js';
 import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
+import { initESP32Module } from './esp32/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -179,6 +180,7 @@ app.use('/api/assets/classroom', express.static(classroomAssetsDir));
 const PORT = process.env.PORT || 5001;
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
+initESP32Module(server);
 server.listen(PORT, () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
 });
