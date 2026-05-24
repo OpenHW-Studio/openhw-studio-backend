@@ -10,7 +10,7 @@ const __dirname = path.dirname(__filename);
 
 // Find arduino-cli locally in the bin directory
 // const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
-const ARDUINO_CLI_PATH = 'arduino-cli';
+const ARDUINO_CLI_PATH = 'e:\\FOSSEE\\bin\\arduino-cli.exe';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
 const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
