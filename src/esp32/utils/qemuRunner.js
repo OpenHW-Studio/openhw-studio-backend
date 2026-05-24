@@ -547,8 +547,6 @@ export default class QemuRunner {
         if (gpioMatch) {
             const pin   = parseInt(gpioMatch[1], 10);
             const value = parseInt(gpioMatch[2], 10);
-            // [DEBUG_TELEMETRY] Log outgoing GPIO_SYNC
-            this._log.info(`[DEBUG_TELEMETRY] Parsed GPIO_SYNC: Pin ${pin} -> ${value}`);
 
             
             // Deduplicate GPIO state changes to prevent WebSocket flooding

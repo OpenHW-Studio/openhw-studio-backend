@@ -285,7 +285,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
 
 // ─── Ensure required directories exist at startup ─────────────────────────────
 
-for (const dir of [TEMP_DIR, BUILDS_DIR]) {
+for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) {
     fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -495,11 +495,12 @@ export const compileArduinoCode = (req, res) => {
     });
 
     // ── Async: compile → merge → launch QEMU ─────────────────────────────────
+    const CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
     const compileArgs = [
         'compile',
-        '--clean',
-        '--fqbn',       ESP32_FQBN,
-        '--output-dir', buildDir,
+        '--fqbn',             ESP32_FQBN,
+        '--build-cache-path', CACHE_DIR,
+        '--output-dir',       buildDir,
         sketchFile,
     ];
 
