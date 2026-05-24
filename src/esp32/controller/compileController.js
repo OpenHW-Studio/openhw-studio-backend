@@ -187,20 +187,31 @@ function _shiftLineNumbers(output, sketchFile) {
 }
 
 /**
- * Verify esptool.py is callable and return its resolved path.
+ * Verify esptool is callable and return its execution wrapper.
  * Throws a descriptive Error if it cannot be found.
  */
 function _requireEsptool() {
-    try {
-        execFileSync(ESPTOOL_PATH, ['version'], { stdio: 'pipe', timeout: 10_000 });
-        return ESPTOOL_PATH;
-    } catch {
-        throw new Error(
-            `esptool.py not found (tried: "${ESPTOOL_PATH}").\n` +
-            `Install it with:  pip install esptool\n` +
-            `Or set the ESPTOOL_PATH environment variable to its absolute path.`,
-        );
+    const candidates = [
+        { cmd: process.env.ESPTOOL_PATH || 'esptool.py', args: [] },
+        { cmd: 'esptool', args: [] },
+        { cmd: 'python', args: ['-m', 'esptool'] },
+        { cmd: 'python3', args: ['-m', 'esptool'] }
+    ];
+
+    for (const runner of candidates) {
+        try {
+            execFileSync(runner.cmd, [...runner.args, 'version'], { stdio: 'pipe', timeout: 10_000 });
+            return runner;
+        } catch (e) {
+            continue;
+        }
     }
+
+    throw new Error(
+        `esptool not found.\n` +
+        `Install it with:  pip install esptool\n` +
+        `Or set the ESPTOOL_PATH environment variable to its absolute path.`
+    );
 }
 
 /**
@@ -214,10 +225,10 @@ function _requireEsptool() {
  *
  * @param {string} buildDir    - arduino-cli --output-dir
  * @param {string} sketchBase  - sketch name (without extension)
- * @param {string} esptoolPath - resolved path to esptool.py
+ * @param {object} esptoolRunner - {cmd, args} from _requireEsptool
  * @returns {string} Absolute path to the merged-flash.bin
  */
-function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
+function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
     const bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
     const partTable  = path.join(buildDir, `${sketchBase}.partitions.bin`);
     const appBin     = path.join(buildDir, `${sketchBase}.bin`);
@@ -240,6 +251,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
     }
 
     const args = [
+        ...esptoolRunner.args,
         '--chip',          'esp32',
         'merge_bin',
         '--output',        mergedOut,
@@ -252,10 +264,10 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
         '0x10000', appBin,
     ];
 
-    execFileSync(esptoolPath, args, { stdio: 'pipe', timeout: 30_000 });
+    execFileSync(esptoolRunner.cmd, args, { stdio: 'pipe', timeout: 30_000 });
 
     if (!fs.existsSync(mergedOut)) {
-        throw new Error('esptool.py merge_bin succeeded but produced no output file.');
+        throw new Error('esptool merge_bin succeeded but produced no output file.');
     }
 
     return mergedOut;
@@ -362,9 +374,9 @@ export const compileArduinoCode = (req, res) => {
     }
 
     // ── esptool check (fail fast before touching disk) ────────────────────────
-    let esptoolPath;
+    let esptoolRunner;
     try {
-        esptoolPath = _requireEsptool();
+        esptoolRunner = _requireEsptool();
     } catch (err) {
         return res.status(500).json({ error: err.message });
     }
@@ -507,8 +519,8 @@ export const compileArduinoCode = (req, res) => {
             // ── Flash merge ───────────────────────────────────────────────────
             let mergedFlash;
             try {
-                mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolPath);
-                console.log(`[Compile:${buildId}] ✅ Flash image merged → ${mergedFlash}`);
+                mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
+                console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
             } catch (mergeErr) {
                 console.error(`[Compile:${buildId}] ❌ Flash merge failed:`, mergeErr.message);
                 _sendErrorAndCleanup(buildId, `Flash image merge failed:\n${mergeErr.message}`);

@@ -5,6 +5,11 @@ FROM node:20
 RUN apt-get update && apt-get install -y \
     curl \
     python3 \
+    python3-pip \
+    python3-venv \
+    esptool \
+    wget \
+    xz-utils \
     git \
     make \
     cmake \
@@ -21,16 +26,22 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
+# Install Espressif QEMU for ESP32 simulation
+RUN mkdir -p /opt/qemu && \
+    wget -qO- https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz | tar xJ -C /opt/qemu --strip-components=1
+ENV QEMU_ESP32_PATH=/opt/qemu/bin/qemu-system-xtensa
+
 # Install arduino-cli
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 ENV PATH=$PATH:/root/bin
 
 # Initialize arduino-cli and install cores
 RUN arduino-cli config init && \
-    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
+    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json,https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
     arduino-cli core install rp2040:rp2040 && \
+    arduino-cli core install esp32:esp32 && \
     rm -rf /root/.arduino15/staging/*
 
 # Install Raspberry Pi Pico SDK
