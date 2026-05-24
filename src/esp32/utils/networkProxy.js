@@ -454,7 +454,9 @@ export default class NetworkProxy {
     _handleQemuDisconnect() {
         console.log(`[NetProxy:${this._buildPrefix}] QEMU UART1 disconnected`);
         this._qemuSocket = null;
-        if (!this._destroyed) this._cleanup();
+        // Do NOT call _cleanup() here! QemuRunner might restart the QEMU process
+        // to recover from a crash. If we clean up the listening server, QEMU will
+        // fail to connect on reboot. We only cleanup when stop() is explicitly called.
     }
 
     _cleanup() {

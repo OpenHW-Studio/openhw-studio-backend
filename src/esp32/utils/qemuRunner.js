@@ -23,11 +23,12 @@
  *   the event loop.
  */
 
-import { spawn, execFileSync } from 'child_process';
+import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
 
@@ -76,7 +77,7 @@ const ROM_NOISE_PATTERNS = Object.freeze([
  * SimulatorBridge.h GPIO frame.
  * Format: >GPIO:<pin>:<val><
  */
-const GPIO_PATTERN = /^>GPIO:(\d+):([01])<$/;
+const GPIO_PATTERN = />GPIO:(\d+):([01])</;
 
 /**
  * SimulatorBridge.h simulation control frames.
@@ -85,7 +86,7 @@ const GPIO_PATTERN = /^>GPIO:(\d+):([01])<$/;
  *   BEAT   — periodic heartbeat liveness ping
  *   LOG    — structured log line: >SIM:LOG:<level>:<msg><
  */
-const SIM_FRAME_PATTERN = /^>SIM:([A-Z]+)(?::(.*))?<$/;
+const SIM_FRAME_PATTERN = />SIM:([A-Z]+)(?::([^<]*))?</;
 
 /**
  * Log patterns for detecting firmware crash / core panic.
@@ -150,14 +151,11 @@ export default class QemuRunner {
         this.pipesDir   = pipesDir;
         this.sketchDir  = sketchDir;
 
-        // Derived FIFO paths
-        this.uartIn  = path.join(pipesDir, 'uart.in');
-        this.uartOut = path.join(pipesDir, 'uart.out');
-
         // Runtime state
         this._process          = null;   // child_process handle
-        this._pollTimer        = null;   // setInterval handle for uart.out polling
-        this._uartOutFd        = -1;     // raw file descriptor for uart.out
+        this._uartServer       = null;   // net.Server for UART0
+        this._uartSocket       = null;   // net.Socket for UART0
+        this._uartPort         = null;   // TCP port for UART0
         this._outBuffer        = '';     // incomplete line accumulator
         this._proxy            = null;   // NetworkProxy instance
         this._log              = new SessionLogger(buildId);
@@ -202,16 +200,43 @@ export default class QemuRunner {
             return;
         }
 
-        if (!this._createFifos()) return; // error already sent to WS
-
         this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
         this._nicArgs  = this._buildNicArgs();
 
-        // Start the network proxy first; QEMU is spawned inside the callback
-        // so we know the proxy TCP port before building the QEMU argv.
+        // Start the network proxy first
         this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
             this._proxyPort = proxyPort;
-            this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort);
+            
+            // Start TCP Server for UART0
+            this._uartServer = net.createServer((socket) => {
+                this._log.info('📡 QEMU connected to UART0 TCP bridge');
+                this._uartSocket = socket;
+                
+                socket.setEncoding('utf8');
+                socket.on('data', (chunk) => {
+                    this.lastActivity = Date.now();
+                    this._handleSerialData(chunk);
+                });
+                
+                socket.on('error', (err) => {
+                    this._log.warn('UART0 socket error:', err.message);
+                });
+                
+                socket.on('close', () => {
+                    this._uartSocket = null;
+                });
+            });
+            
+            this._uartServer.on('error', (err) => {
+                this._log.error('❌ Failed to create UART0 TCP server:', err.message);
+                this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
+            });
+            
+            this._uartServer.listen(0, '127.0.0.1', () => {
+                this._uartPort = this._uartServer.address().port;
+                this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
+                this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+            });
         });
         this._proxy.start();
     }
@@ -224,23 +249,13 @@ export default class QemuRunner {
      * @param {0|1}    value - Pin level.
      */
     setVirtualPin(pin, value) {
-        if (this._destroyed) return;
+        if (this._destroyed || !this._uartSocket) return;
 
         const cmd = `<GPIO:${pin}:${value ? 1 : 0}>\n`;
-        let fd = -1;
         try {
-            // O_WRONLY | O_NONBLOCK — open never blocks if firmware isn't reading
-            fd = fs.openSync(this.uartIn, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK);
-            fs.writeSync(fd, cmd);
+            this._uartSocket.write(cmd);
         } catch (e) {
-            if (e.code !== 'ENXIO') {
-                // ENXIO = no reader on the FIFO yet (expected during boot) — silent
-                this._log.warn('setVirtualPin write error:', e.code, e.message);
-            }
-        } finally {
-            if (fd !== -1) {
-                try { fs.closeSync(fd); } catch { /* best-effort */ }
-            }
+            this._log.warn('setVirtualPin write error:', e.message);
         }
     }
 
@@ -255,7 +270,6 @@ export default class QemuRunner {
         this.phase = 'stopped';
         this._log.info('⚡ Killing QEMU process');
 
-        this._stopPollTimer();
         this._stopHeartbeatWatchdog();
 
         if (this._process) {
@@ -263,7 +277,6 @@ export default class QemuRunner {
             this._process = null;
         }
 
-        this._closeFd();
         this._cleanupPipes();
     }
 
@@ -274,35 +287,7 @@ export default class QemuRunner {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Private — FIFO setup
-    // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Creates the uart.in and uart.out named pipes.
-     * Removes stale FIFOs from a previous crashed session first.
-     * @returns {boolean} true on success, false if an error was sent to WS.
-     */
-    _createFifos() {
-        try {
-            fs.mkdirSync(this.pipesDir, { recursive: true });
-
-            // Remove stale FIFOs from a previous run (unlinkSync is safe on missing files)
-            for (const p of [this.uartIn, this.uartOut]) {
-                try { fs.unlinkSync(p); } catch { /* not present — fine */ }
-            }
-
-            // Node.js has no native mkfifo binding; use execFileSync for portability.
-            execFileSync('mkfifo', [this.uartIn]);
-            execFileSync('mkfifo', [this.uartOut]);
-
-            return true;
-        } catch (err) {
-            this._log.error('❌ Failed to create FIFOs:', err.message);
-            this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial pipes: ${err.message}` });
-            return false;
-        }
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Private — NIC argument builder
@@ -339,16 +324,14 @@ export default class QemuRunner {
      *   -serial pipe:<prefix>            → UART0 (SimulatorBridge GPIO + serial monitor)
      *   -serial tcp:127.0.0.1:<port>     → UART1 (WiFi payload multiplexer)
      */
-    _spawnQemu(qemuPath, nicArgs, proxyPort) {
-        const pipePrefix = path.join(this.pipesDir, 'uart');
-
+    _spawnQemu(qemuPath, nicArgs, proxyPort, uartPort) {
         const args = [
             '-nographic',
             '-machine', 'esp32',
             '-m', '4M',
             '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
-            '-serial',  `pipe:${pipePrefix}`,      // UART0 → SimulatorBridge
-            '-serial',  `tcp:127.0.0.1:${proxyPort}`, // UART1 → NetworkProxy
+            '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
+            '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
             ...nicArgs,
         ];
 
@@ -370,12 +353,8 @@ export default class QemuRunner {
             }
         }
 
-        // Attach lifecycle handlers before opening the FIFO to avoid race.
+        // Attach lifecycle handlers
         this._attachProcessHandlers();
-
-        // Open the uart.out FIFO for non-blocking reads.
-        // We retry because QEMU may not have opened its write-end yet.
-        this._openOutPipe(0);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -404,9 +383,7 @@ export default class QemuRunner {
                 this._handleCrash(`Process exited unexpectedly (code=${code ?? 'unknown'}, signal=${signal ?? 'none'})`);
             } else {
                 // Normal exit triggered by kill()
-                this._stopPollTimer();
                 this._stopHeartbeatWatchdog();
-                this._closeFd();
 
                 this.phase = 'stopped';
                 this._sendWs({ type: 'QEMU_EXIT', code: code ?? -1 });
@@ -426,9 +403,7 @@ export default class QemuRunner {
                 message: `Failed to start QEMU: ${err.message}. ` +
                          `Is qemu-system-xtensa installed and in PATH?`,
             });
-            this._stopPollTimer();
             this._stopHeartbeatWatchdog();
-            this._closeFd();
             if (!this._destroyed) this._cleanupPipes();
         });
     }
@@ -459,9 +434,7 @@ export default class QemuRunner {
             this._sendWs({ type: 'QEMU_BOOTING' });
 
             // Teardown the current process context cleanly
-            this._stopPollTimer();
             this._stopHeartbeatWatchdog();
-            this._closeFd();
 
             if (this._process) {
                 try {
@@ -478,7 +451,7 @@ export default class QemuRunner {
             setTimeout(() => {
                 if (this._destroyed) return;
                 this._log.info(`Rebooting QEMU ESP32 instance (Attempt ${this._restartCount}/${this._maxRestarts})...`);
-                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort);
+                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
             }, 500);
         } else {
             // Exceeded retry count
@@ -492,87 +465,7 @@ export default class QemuRunner {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    // Private — uart.out FIFO polling
-    // ─────────────────────────────────────────────────────────────────────────
 
-    /**
-     * Attempt to open uart.out O_NONBLOCK. Retries up to OPEN_PIPE_MAX_ATTEMPTS
-     * times (×100 ms = 5 s) while QEMU is still initialising its write-end.
-     *
-     * Once opened, starts a setInterval poll loop.
-     */
-    _openOutPipe(attempt) {
-        if (this._destroyed || !this._process) return;
-
-        try {
-            const fd = fs.openSync(
-                this.uartOut,
-                fs.constants.O_RDONLY | fs.constants.O_NONBLOCK,
-            );
-            this._uartOutFd = fd;
-            this._log.info('📡 uart.out FIFO opened — starting poll loop');
-            this._startPollLoop(fd);
-        } catch (e) {
-            if (attempt < OPEN_PIPE_MAX_ATTEMPTS) {
-                setTimeout(() => this._openOutPipe(attempt + 1), 100);
-            } else {
-                this._log.error(
-                    `❌ Could not open uart.out after ${OPEN_PIPE_MAX_ATTEMPTS * 100}ms:`,
-                    e.message,
-                );
-                this._sendWs({
-                    type:    'QEMU_ERROR',
-                    message: 'UART serial pipe failed to open — QEMU may have crashed at boot.',
-                });
-            }
-        }
-    }
-
-    /**
-     * Poll uart.out every POLL_INTERVAL_MS milliseconds.
-     * Reads up to READ_BUF_SIZE bytes per tick to prevent starvation.
-     */
-    _startPollLoop(fd) {
-        const buf = Buffer.allocUnsafe(READ_BUF_SIZE);
-
-        this._pollTimer = setInterval(() => {
-            // Abort if QEMU has been killed between ticks
-            if (this._destroyed || !this._process) {
-                this._stopPollTimer();
-                this._closeFd();
-                return;
-            }
-
-            try {
-                const n = fs.readSync(fd, buf, 0, buf.length, null);
-                if (n > 0) {
-                    this.lastActivity = Date.now();
-                    this._handleSerialData(buf.subarray(0, n).toString('utf8'));
-                }
-            } catch (e) {
-                // EAGAIN / EWOULDBLOCK = no data ready — this is normal
-                if (e.code !== 'EAGAIN' && e.code !== 'EWOULDBLOCK') {
-                    this._log.error('uart.out read error:', e.code, e.message);
-                    this._stopPollTimer();
-                }
-            }
-        }, POLL_INTERVAL_MS);
-    }
-
-    _stopPollTimer() {
-        if (this._pollTimer !== null) {
-            clearInterval(this._pollTimer);
-            this._pollTimer = null;
-        }
-    }
-
-    _closeFd() {
-        if (this._uartOutFd !== -1) {
-            try { fs.closeSync(this._uartOutFd); } catch { /* best-effort */ }
-            this._uartOutFd = -1;
-        }
-    }
 
     // ─────────────────────────────────────────────────────────────────────────
     // Private — UART data parser
@@ -604,8 +497,9 @@ export default class QemuRunner {
         this._outBuffer = lines.pop();
 
         for (const raw of lines) {
-            const line = raw.replace(/\r/g, '').trim();
-            if (line) this._processLine(line);
+            // Process complete line — strip CR and ANSI escape sequences
+            const lineClean = raw.replace(/\r/g, '').replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
+            if (lineClean) this._processLine(lineClean);
         }
     }
 
@@ -624,6 +518,7 @@ export default class QemuRunner {
      *   • Everything else → send SERIAL_OUTPUT
      */
     _processLine(line) {
+        this._log.info('RAW UART LINE:', line);
         // ── Phase 1: ROM boot detection ───────────────────────────────────────
         if (!this._bootDetected) {
             if (BOOT_SIGNATURES.some(sig => line.includes(sig))) {
@@ -652,6 +547,9 @@ export default class QemuRunner {
         if (gpioMatch) {
             const pin   = parseInt(gpioMatch[1], 10);
             const value = parseInt(gpioMatch[2], 10);
+            // [DEBUG_TELEMETRY] Log outgoing GPIO_SYNC
+            this._log.info(`[DEBUG_TELEMETRY] Parsed GPIO_SYNC: Pin ${pin} -> ${value}`);
+
             
             // Deduplicate GPIO state changes to prevent WebSocket flooding
             if (pin >= 0 && pin < this._lastGpioValues.length) {
@@ -767,8 +665,14 @@ export default class QemuRunner {
             this._proxy = null;
         }
 
-        for (const p of [this.uartIn, this.uartOut]) {
-            try { fs.unlinkSync(p); } catch { /* already gone */ }
+        if (this._uartSocket && !this._uartSocket.destroyed) {
+            try { this._uartSocket.destroy(); } catch { /* best-effort */ }
+            this._uartSocket = null;
+        }
+
+        if (this._uartServer) {
+            try { this._uartServer.close(); } catch { /* best-effort */ }
+            this._uartServer = null;
         }
 
         try { fs.rmdirSync(this.pipesDir); } catch { /* non-empty or already gone */ }

@@ -68,7 +68,7 @@ const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '10', 10);
  * Any QEMU runner that has not emitted UART output for this many ms is killed.
  */
 const SESSION_TIMEOUT_MS = parseInt(
-    process.env.SESSION_TIMEOUT_MS || String(5 * 60 * 1000), // 5 minutes
+    process.env.SESSION_TIMEOUT_MS || String(15 * 1000), // 15 seconds
     10,
 );
 
@@ -108,19 +108,29 @@ const _activeRunners = new Map();
 // ─── Session GC ───────────────────────────────────────────────────────────────
 
 /**
- * Scan active runners every minute for idle sessions.
+ * Scan active runners every 5 seconds for idle sessions.
  * Unref'd so this timer does not prevent the process from exiting cleanly.
  */
 const _gcTimer = setInterval(() => {
     const now = Date.now();
     for (const [buildId, runner] of _activeRunners.entries()) {
-        if (now - runner.lastActivity > SESSION_TIMEOUT_MS) {
-            console.log(`[Compile] ⏱️  Session ${buildId} timed out — killing QEMU`);
+        const isConnected = wsManager.hasLiveSession(buildId);
+        
+        if (isConnected) {
+            runner.disconnectedAt = null;
+        } else if (runner.disconnectedAt == null) {
+            runner.disconnectedAt = now;
+        }
+
+        const disconnectedTime = runner.disconnectedAt ? (now - runner.disconnectedAt) : 0;
+
+        if (now - runner.lastActivity > SESSION_TIMEOUT_MS || disconnectedTime > SESSION_TIMEOUT_MS) {
+            console.log(`[Compile] 🧹  Session ${buildId} timed out (disconnected or idle) — killing QEMU`);
             runner.kill();
             _cleanup(buildId);
         }
     }
-}, 60_000);
+}, 5_000);
 _gcTimer.unref();
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -419,6 +429,8 @@ export const compileArduinoCode = (req, res) => {
         //   }
         //   void loop() { _sim_user_loop(); }  ← user's blink logic
 
+        const codeInput = req.body.code || '';
+        console.log('\n\n[ESP32 COMPILE] Received Code:\n', codeInput, '\n[END CODE]\n');
         const preamble = [
             '#define setup _sim_user_setup',
             '#define loop  _sim_user_loop',
