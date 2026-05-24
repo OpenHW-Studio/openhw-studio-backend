@@ -5,6 +5,8 @@ import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
 
+import { handleESP32Compile } from '../esp32/index.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -893,7 +895,11 @@ async function fetchPicoCircuitPythonUf2Asset() {
 }
 
 export const compileArduinoCode = (req, res) => {
-    const { code, files, sketchName, fqbn, builder } = req.body || {};
+    const { code, files, sketchName, fqbn, builder, target } = req.body || {};
+
+    if (target === 'esp32' || String(fqbn).includes('esp32')) {
+        return handleESP32Compile(req, res);
+    }
 
     if (!code && (!Array.isArray(files) || files.length === 0)) {
         return sendCompileFailure(
@@ -904,7 +910,8 @@ export const compileArduinoCode = (req, res) => {
         );
     }
 
-    const targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
+    let targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
+    
     const normalizedBuilder = String(builder || '').trim() || 'arduino-cli';
     const safeSketchName = sanitizeSketchName(sketchName || 'sketch');
     const requestHash = buildCompileRequestHash({
