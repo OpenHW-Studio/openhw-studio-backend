@@ -11,7 +11,6 @@ import session from 'express-session';
 import passport from './config/passport.js';
 import authRoutes from './routes/auth.js';
 import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
-import { initESP32Module } from './esp32/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -97,9 +96,29 @@ app.use(session({
 app.use(passport.initialize());
 app.use(passport.session());
 
+const isLocalNetworkOrigin = (origin) => {
+  if (!origin) return false;
+  try {
+    const { hostname } = new URL(origin);
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+    if (/^192\.168\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+    if (/^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) return true;
+    const m = hostname.match(/^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/);
+    if (m) {
+      const second = Number(m[1]);
+      return second >= 16 && second <= 31;
+    }
+  } catch (_) { /* ignore */ }
+  return false;
+};
+
 app.use(cors({
   origin(origin, callback) {
     if (!origin || allowedOrigins.has(origin)) {
+      callback(null, true);
+      return;
+    }
+    if (process.env.NODE_ENV !== 'production' && isLocalNetworkOrigin(origin)) {
       callback(null, true);
       return;
     }
@@ -177,10 +196,13 @@ const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
   ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
   : path.resolve(backendRoot, 'data/classroom');
 app.use('/api/assets/classroom', express.static(classroomAssetsDir));
-const PORT = process.env.PORT || 5001;
+const HOST = process.env.HOST || '0.0.0.0';
+const PORT = Number(process.env.PORT) || 5001;
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
-initESP32Module(server);
-server.listen(PORT, () => {
-  console.log(`OpenHW Studio Backend running on port ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`OpenHW Studio Backend running on http://${HOST}:${PORT}`);
+  if (HOST === '0.0.0.0') {
+    console.log('LAN access: use your machine IP instead of localhost (e.g. http://192.168.1.10:' + PORT + ')');
+  }
 });

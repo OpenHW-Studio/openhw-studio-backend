@@ -138,6 +138,8 @@ temp/
 *.ino
 *.hex
 test_comp.js
+
+.env
 env
 data/
 history.json
