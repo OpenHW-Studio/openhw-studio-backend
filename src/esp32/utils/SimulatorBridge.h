@@ -1,12 +1,12 @@
 /**
- * SimulatorBridge.h  —  ESP32 QEMU GPIO + Serial Shim  (v3.0 — stable)
- * ─────────────────────────────────────────────────────────────────────────────
+ * SimulatorBridge.h    ESP32 QEMU GPIO + Serial Shim  (v3.0  stable)
+ * 
  * Injected at compile time by compileController.js.
  * The bridge entry-point is _simBridgeInit(), which is called from the
- * compiler-injected setup() wrapper — AFTER the Arduino core has fully
+ * compiler-injected setup() wrapper  AFTER the Arduino core has fully
  * initialized hardware, FreeRTOS, and the flash cache.
  *
- * ── WHY NOT __attribute__((constructor)) ─────────────────────────────────────
+ *  WHY NOT __attribute__((constructor)) 
  *   C++ constructors run during static-init, before app_main() and before
  *   the IDF initialises the flash cache.  Calling Serial.begin(),
  *   xTaskCreatePinnedToCore(), or ANY FreeRTOS primitive at that stage
@@ -16,20 +16,20 @@
  *   The fix is to perform all bridge init inside _simBridgeInit(), which is
  *   called by the injected setup() wrapper after Arduino hardware is ready.
  *
- * ── Boot lifecycle ────────────────────────────────────────────────────────────
- *   ROM → IDF → app_main() → Arduino hardware init → injected setup() {
- *       _simBridgeInit()   ← mutex + Serial + tasks spawned HERE (safe)
- *       _sim_user_setup()  ← user's original setup() body
- *       sim_ready()        ← sends >SIM:READY< (auto-called if user forgot)
- *   } → injected loop() { _sim_user_loop() } → repeat
+ *  Boot lifecycle 
+ *   ROM  IDF  app_main()  Arduino hardware init  injected setup() {
+ *       _simBridgeInit()    mutex + Serial + tasks spawned HERE (safe)
+ *       _sim_user_setup()   user's original setup() body
+ *       sim_ready()         sends >SIM:READY< (auto-called if user forgot)
+ *   }  injected loop() { _sim_user_loop() }  repeat
  *
- * ── Protocol (firmware → Node.js over uart.out) ───────────────────────────────
+ *  Protocol (firmware  Node.js over uart.out) 
  *   >GPIO:<pin>:<val><         digitalWrite event
  *   >SIM:READY<                device fully initialised
  *   >SIM:BEAT<                 heartbeat (every SIM_HEARTBEAT_MS)
  *   >SIM:LOG:<level>:<msg><    structured log
  *
- * ── Protocol (Node.js → firmware over uart.in) ────────────────────────────────
+ *  Protocol (Node.js  firmware over uart.in) 
  *   <GPIO:<pin>:<val>>\n       virtual pin injection
  */
 
@@ -43,7 +43,7 @@
 #include "esp_log.h"
 #include <esp_task_wdt.h>
 
-// ─── Configuration ────────────────────────────────────────────────────────────
+//  Configuration 
 
 #define SIM_GPIO_COUNT      40
 #define SIM_CMD_MAX_LEN     64
@@ -62,7 +62,7 @@
 #define SIM_ERROR   "ERROR"
 #define SIM_SUCCESS "OK"
 
-// ─── GPIO state ───────────────────────────────────────────────────────────────
+//  GPIO state 
 
 // Set all pins initially to 0xFF (floating/un-driven state)
 volatile uint8_t sim_gpio_state[SIM_GPIO_COUNT] = {
@@ -89,13 +89,13 @@ volatile bool sim_dht_in_progress[SIM_GPIO_COUNT] = {false};
 volatile unsigned long sim_dht_low_start_us[SIM_GPIO_COUNT] = {0};
 volatile unsigned long sim_dht_trigger_us[SIM_GPIO_COUNT] = {0};
 
-// ─── Serial TX mutex ──────────────────────────────────────────────────────────
+//  Serial TX mutex 
 // Declared non-static so the injected setup() wrapper can test it.
 // NULL until _simBridgeInit() is called.
 
 SemaphoreHandle_t _sim_serial_mtx = nullptr;
 
-// ─── Low-level frame sender ───────────────────────────────────────────────────
+//  Low-level frame sender 
 
 static void _sim_send(const char* frame) {
     if (!_sim_serial_mtx) return;
@@ -109,7 +109,15 @@ static void _sim_send(const char* frame) {
     }
 }
 
-// ─── Public: structured logging ───────────────────────────────────────────────
+// Public non-static wrapper called by Wire.cpp and future SPI shim.
+// `frame` MUST be in SRAM (stack / heap)  never pass a flash string literal.
+// Using _sim_send guarantees the serial mutex is held during the write,
+// preventing concurrent access between Core 0 (UART RX task) and Core 1 (user).
+void sim_wire_emit(const char* frame) {
+    _sim_send(frame);
+}
+
+//  Public: structured logging 
 
 void sim_log(const char* level, const char* msg) {
     char frame[256];
@@ -118,9 +126,9 @@ void sim_log(const char* level, const char* msg) {
 }
 void sim_log(const char* level, const String& msg) { sim_log(level, msg.c_str()); }
 
-// ─── Public: ready handshake ──────────────────────────────────────────────────
+//  Public: ready handshake 
 
-// Non-static — the injected setup() wrapper checks this to auto-call sim_ready().
+// Non-static  the injected setup() wrapper checks this to auto-call sim_ready().
 bool _sim_ready_sent = false;
 
 void sim_ready() {
@@ -130,7 +138,7 @@ void sim_ready() {
     sim_log(SIM_SUCCESS, "Device ready");
 }
 
-// ─── Heartbeat task ───────────────────────────────────────────────────────────
+//  Heartbeat task 
 
 #if SIM_HEARTBEAT_MS > 0
 static void _simulatorHeartbeatTask(void*) {
@@ -141,7 +149,24 @@ static void _simulatorHeartbeatTask(void*) {
 }
 #endif
 
-// ─── UART RX task ─────────────────────────────────────────────────────────────
+//  Wire.cpp shared RX buffer (extern  defined in Wire.cpp) 
+// The UART task below writes here when it receives <I2C_RESP:addr:hex>.
+// Wire.cpp's requestFrom() reads from it via spin-wait.
+// Only available when Wire.h (our simulator shim) was included.
+
+#ifdef TwoWire_h
+extern volatile uint8_t  sim_wire_rx_buf[];
+extern volatile uint8_t  sim_wire_rx_len;
+extern volatile bool     sim_wire_rx_ready;
+#endif
+
+// SPI RX ring buffer (used by future SimSPI)
+#define SIM_SPI_RX_MAX 256
+static uint8_t           _sim_spi_rx_buf[SIM_SPI_RX_MAX];
+static volatile uint16_t _sim_spi_rx_head = 0;
+static volatile uint16_t _sim_spi_rx_tail = 0;
+
+//  UART RX task 
 
 static void _simulatorUARTTask(void*) {
     String rxBuf;
@@ -152,7 +177,7 @@ static void _simulatorUARTTask(void*) {
                 while (Serial.available() > 0) {
                     const char c = static_cast<char>(Serial.read());
                     if (c == '\n') {
-                        // Parse <GPIO:pin:value>
+                        //  <GPIO:pin:value> 
                         if (rxBuf.length() > 8 && rxBuf.charAt(0) == '<' && rxBuf.startsWith("<GPIO:")) {
                             const int c1 = rxBuf.indexOf(':');
                             const int c2 = rxBuf.indexOf(':', c1 + 1);
@@ -161,25 +186,76 @@ static void _simulatorUARTTask(void*) {
                                 const int pin = rxBuf.substring(c1 + 1, c2).toInt();
                                 const int val = rxBuf.substring(c2 + 1, cl).toInt();
                                 if (pin >= 0 && pin < SIM_GPIO_COUNT) {
-                                    sim_gpio_state[pin] = val ? 1 : 0;
+                                    sim_gpio_state[pin]        = val ? 1 : 0;
                                     sim_gpio_analog_value[pin] = static_cast<uint16_t>(val);
                                 }
                             }
                         }
-                        // Parse <DHT:pin:temp:humidity>
-                        else if (rxBuf.length() > 8 && rxBuf.charAt(0) == '<' && rxBuf.startsWith("<DHT:")) {
+                        //  <ADC:pin:val_12bit> 
+                        else if (rxBuf.length() > 8 && rxBuf.startsWith("<ADC:")) {
+                            const int c1 = rxBuf.indexOf(':');
+                            const int c2 = rxBuf.indexOf(':', c1 + 1);
+                            const int cl = rxBuf.indexOf('>', c2);
+                            if (c1 > 0 && c2 > c1 && cl > c2) {
+                                const int pin = rxBuf.substring(c1 + 1, c2).toInt();
+                                const int val = rxBuf.substring(c2 + 1, cl).toInt();
+                                if (pin >= 0 && pin < SIM_GPIO_COUNT) {
+                                    sim_gpio_analog_value[pin] = static_cast<uint16_t>(val & 0x0FFF);
+                                }
+                            }
+                        }
+                        //  <I2C_RESP:addr_hex:hexdata> 
+                        // Written into Wire.cpp's sim_wire_rx_buf so requestFrom()
+                        // can serve the bytes back to the calling sketch.
+                        else if (rxBuf.length() > 10 && rxBuf.startsWith("<I2C_RESP:")) {
+#ifdef TwoWire_h
+                            const int c1 = rxBuf.indexOf(':');
+                            const int c2 = rxBuf.indexOf(':', c1 + 1);
+                            const int cl = rxBuf.indexOf('>', c2);
+                            if (c1 > 0 && c2 > c1 && cl > c2) {
+                                const String hex = rxBuf.substring(c2 + 1, cl);
+                                uint8_t n = 0;
+                                const uint8_t maxn = 64; // SIM_WIRE_RX_SIZE
+                                for (int i = 0; i + 1 < (int)hex.length() && n < maxn; i += 2) {
+                                    char hb[3] = { hex.charAt(i), hex.charAt(i + 1), '\0' };
+                                    sim_wire_rx_buf[n++] = (uint8_t)strtoul(hb, nullptr, 16);
+                                }
+                                sim_wire_rx_len   = n;
+                                sim_wire_rx_ready = true;
+                            }
+#endif
+                        }
+                        //  <SPI_RESP:hexdata> 
+                        else if (rxBuf.length() > 10 && rxBuf.startsWith("<SPI_RESP:")) {
+                            const int c1 = rxBuf.indexOf(':');
+                            const int cl = rxBuf.indexOf('>', c1 + 1);
+                            if (c1 > 0 && cl > c1) {
+                                const String hex = rxBuf.substring(c1 + 1, cl);
+                                for (int i = 0; i + 1 < (int)hex.length(); i += 2) {
+                                    char hb[3] = { hex.charAt(i), hex.charAt(i + 1), '\0' };
+                                    uint8_t b = (uint8_t)strtoul(hb, nullptr, 16);
+                                    uint16_t next = (_sim_spi_rx_head + 1) % SIM_SPI_RX_MAX;
+                                    if (next != _sim_spi_rx_tail) {
+                                        _sim_spi_rx_buf[_sim_spi_rx_head] = b;
+                                        _sim_spi_rx_head = next;
+                                    }
+                                }
+                            }
+                        }
+                        //  <DHT:pin:temp:humidity> 
+                        else if (rxBuf.length() > 8 && rxBuf.startsWith("<DHT:")) {
                             const int c1 = rxBuf.indexOf(':');
                             const int c2 = rxBuf.indexOf(':', c1 + 1);
                             const int c3 = rxBuf.indexOf(':', c2 + 1);
                             const int cl = rxBuf.indexOf('>', c3);
                             if (c1 > 0 && c2 > c1 && c3 > c2 && cl > c3) {
-                                const int pin = rxBuf.substring(c1 + 1, c2).toInt();
+                                const int pin  = rxBuf.substring(c1 + 1, c2).toInt();
                                 const int temp = rxBuf.substring(c2 + 1, c3).toInt();
-                                const int hum = rxBuf.substring(c3 + 1, cl).toInt();
+                                const int hum  = rxBuf.substring(c3 + 1, cl).toInt();
                                 if (pin >= 0 && pin < SIM_GPIO_COUNT) {
                                     sim_dht_enabled[pin] = true;
-                                    sim_dht_temp[pin] = static_cast<int16_t>(temp);
-                                    sim_dht_hum[pin] = static_cast<uint16_t>(hum);
+                                    sim_dht_temp[pin]    = static_cast<int16_t>(temp);
+                                    sim_dht_hum[pin]     = static_cast<uint16_t>(hum);
                                 }
                             }
                         }
@@ -196,7 +272,9 @@ static void _simulatorUARTTask(void*) {
     }
 }
 
-// ─── GPIO shims ───────────────────────────────────────────────────────────────
+
+
+//  GPIO shims 
 
 void sim_pinMode(uint8_t pin, uint8_t mode) {
     if (pin >= SIM_GPIO_COUNT) return;
@@ -319,7 +397,7 @@ void sim_digitalWrite(uint8_t pin, uint8_t value) {
     }
 
     const uint8_t level = value ? 1 : 0;
-    if (sim_gpio_state[pin] == level) return; // dedup — no change, skip TX
+    if (sim_gpio_state[pin] == level) return; // dedup  no change, skip TX
     sim_gpio_state[pin] = level;
     char frame[24];
     snprintf(frame, sizeof(frame), ">GPIO:%d:%d<", pin, level);
@@ -338,7 +416,7 @@ uint16_t sim_analogRead(uint8_t pin) {
     return val;
 }
 
-// ─── Bridge init (called from injected setup() wrapper) ───────────────────────
+//  Bridge init (called from injected setup() wrapper) 
 
 void _simBridgeInit_Early() {
     // 1. Disable task watchdogs inside simulation builds to prevent false reboots
@@ -347,7 +425,7 @@ void _simBridgeInit_Early() {
     disableCore1WDT();
 #endif
 
-    // 2. TX mutex — first, before any _sim_send() is possible
+    // 2. TX mutex  first, before any _sim_send() is possible
     if (!_sim_serial_mtx) {
         _sim_serial_mtx = xSemaphoreCreateMutex();
     }
@@ -367,14 +445,14 @@ void _simBridgeInit_Early() {
  */
 void _simBridgeInit_Late() {
 
-    // 4. Clean startup banner — no firmware version, heap, or core-freq spam
+    // 4. Clean startup banner  no firmware version, heap, or core-freq spam
     Serial.println();
-    Serial.println(F("═══════════════════════════════════"));
+    Serial.println(F(""));
     Serial.println(F("  ESP32 Simulator Started"));
     Serial.println(F("  Status        : READY"));
     Serial.println(F("  GPIO System   : OK"));
     Serial.println(F("  Runtime       : ACTIVE"));
-    Serial.println(F("═══════════════════════════════════"));
+    Serial.println(F(""));
     Serial.println();
     Serial.flush();
 
@@ -393,7 +471,7 @@ void _simBridgeInit_Late() {
 #endif
 }
 
-// ─── Macro hijacking ──────────────────────────────────────────────────────────
+//  Macro hijacking 
 // MUST appear AFTER all shim function definitions so that the shims themselves
 // compile against the real Arduino API.
 
@@ -406,5 +484,11 @@ void _simBridgeInit_Late() {
 #define digitalRead  sim_digitalRead
 #define digitalWrite sim_digitalWrite
 #define analogRead   sim_analogRead
+
+// Note: Wire and SPI interception is handled by the Wire.h / SPI.h shims
+// (SimulatorWire.h / SimulatorWire.cpp) which are injected into the sketch
+// build folder by compileController.js.  Those files completely redefine the
+// TwoWire class so that every I2C write emits a >I2C:<addr>:<hex>< UART frame
+// and every SPI byte emits a >SPI:<hex>< frame, all without touching hardware.
 
 #endif // SIMULATOR_BRIDGE_H

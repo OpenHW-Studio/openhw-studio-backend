@@ -80,6 +80,16 @@ const ROM_NOISE_PATTERNS = Object.freeze([
 const GPIO_PATTERN = />GPIO:(\d+):([01])</;
 
 /**
+ * SimulatorBridge.h I2C frame.
+ * Format: >I2C:<addr_hex>:<data_hex><
+ * e.g.  >I2C:3c:000001< 
+ */
+const I2C_PATTERN     = />I2C:([0-9a-fA-F]+):([0-9a-fA-F]*)</;
+const I2C_READ_PATTERN = />I2C_READ:([0-9a-fA-F]+):([0-9a-fA-F]+)</;
+const SPI_PATTERN      = />SPI:([0-9a-fA-F]{2})</;
+const SPIBUF_PATTERN   = />SPIBUF:([0-9a-fA-F]+)</
+
+/**
  * SimulatorBridge.h simulation control frames.
  * Format: >SIM:<cmd>[:<args>]<
  *   READY  — firmware setup() complete; device is fully initialised
@@ -194,12 +204,204 @@ export default class QemuRunner {
      * start() — Create FIFOs, boot NetworkProxy, then spawn QEMU.
      * Returns immediately; QEMU events are delivered via WebSocketManager.
      */
+    _getSharedLibraryPath() {
+        const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
+        const envPath = process.env.QEMU_ESP32_LIB;
+        if (envPath && fs.existsSync(envPath)) return envPath;
+        
+        const localPath = path.resolve(__dirname, libName);
+        if (fs.existsSync(localPath)) return localPath;
+        
+        return null;
+    }
+
+    _writeWorkerCmd(cmd) {
+        if (this._process && this._process.stdin && this._process.stdin.writable) {
+            try {
+                this._process.stdin.write(JSON.stringify(cmd) + '\n');
+            } catch (err) {
+                this._log.warn('Failed to write command to worker:', err.message);
+            }
+        }
+    }
+
+    _startSharedLibraryWorker(libPath) {
+        this.phase = 'booting';
+        this._sendWs({ type: 'QEMU_BOOTING' });
+
+        const pythonCmd = os.platform() === 'win32' ? 'python' : 'python3';
+        const workerScript = path.resolve(__dirname, 'esp32_worker.py');
+
+        this._log.info(`🚀 Spawning Shared-Library worker: ${pythonCmd} -u ${workerScript}`);
+
+        this._process = spawn(pythonCmd, ['-u', workerScript], {
+            stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        if (this._process && this._process.pid) {
+            try {
+                os.setPriority(this._process.pid, 10);
+            } catch (e) {
+                this._log.warn('Failed to set worker process priority:', e.message);
+            }
+        }
+
+        try {
+            const firmwareB64 = fs.readFileSync(this.flashImage).toString('base64');
+            const config = {
+                lib_path: libPath,
+                firmware_b64: firmwareB64,
+                machine: 'esp32-picsimlab',
+                sensors: [],
+                wifi_enabled: process.env.WIFI_MODE === 'slirp' || process.env.WIFI_MODE === 'tap',
+                wifi_hostfwd_port: 0
+            };
+            this._process.stdin.write(JSON.stringify(config) + '\n');
+        } catch (err) {
+            this._log.error('Failed to write worker config:', err.message);
+            this._sendWs({ type: 'QEMU_ERROR', message: `Worker config error: ${err.message}` });
+            this.kill();
+            return;
+        }
+
+        let outBuf = '';
+        this._process.stdout.on('data', (data) => {
+            outBuf += data.toString();
+            const lines = outBuf.split('\n');
+            outBuf = lines.pop();
+            for (const line of lines) {
+                const cleanLine = line.trim();
+                if (cleanLine) {
+                    try {
+                        const event = JSON.parse(cleanLine);
+                        this._handleWorkerEvent(event);
+                    } catch (e) {
+                        this._log.warn('Worker output not JSON:', cleanLine);
+                    }
+                }
+            }
+        });
+
+        this._process.stderr.on('data', (data) => {
+            const text = data.toString().trim();
+            if (text) {
+                this._log.info(`[Worker Log] ${text}`);
+            }
+        });
+
+        this._process.on('close', (code, signal) => {
+            this._log.info(`🛑 Worker exited (code=${code}, signal=${signal}, destroyed=${this._destroyed})`);
+            if (!this._destroyed) {
+                this._handleCrash(`Worker exited unexpectedly (code=${code ?? 'unknown'}, signal=${signal ?? 'none'})`);
+            } else {
+                this.phase = 'stopped';
+                this._sendWs({ type: 'QEMU_EXIT', code: code ?? -1 });
+                wsManager.unregisterSession(this.buildId);
+                this._process = null;
+            }
+        });
+
+        this._process.on('error', (err) => {
+            this._log.error('🔴 Failed to spawn worker:', err.message);
+            this.phase = 'stopped';
+            this._sendWs({
+                type:    'QEMU_ERROR',
+                message: `Failed to start shared-library worker: ${err.message}.`,
+            });
+            if (!this._destroyed) this.kill();
+        });
+    }
+
+    _handleWorkerEvent(event) {
+        const etype = event.type;
+        if (etype === 'system') {
+            const ev = event.event;
+            if (ev === 'booted') {
+                this.phase = 'running';
+                this.isReady = true;
+                this._sendWs({ type: 'FIRMWARE_READY' });
+                this._sendWs({ type: 'QEMU_READY' });
+            } else if (ev === 'crash') {
+                this._handleCrash(`Worker reported system crash: ${event.reason || 'unknown'}`);
+            } else if (ev === 'reboot') {
+                this._log.info(`🔄 Guest OS rebooted (count=${event.count})`);
+                this._sendWs({ type: 'SERIAL_OUTPUT', text: `\r\n🔄 [SYSTEM] ESP32 rebooted (count=${event.count})...\r\n` });
+            }
+        } else if (etype === 'gpio_change') {
+            const pin = event.pin;
+            const value = event.state;
+            this._sendWs({ type: 'GPIO_SYNC', pin, value });
+        } else if (etype === 'uart_tx') {
+            const uart = event.uart;
+            const byte = event.byte;
+            if (!this._uartBuffers) {
+                this._uartBuffers = {};
+            }
+            if (!this._uartBuffers[uart]) {
+                this._uartBuffers[uart] = [];
+            }
+            this._uartBuffers[uart].push(byte);
+
+            if (byte === 10 || byte === 13 || byte === 46 || this._uartBuffers[uart].length >= 256) {
+                const text = Buffer.from(this._uartBuffers[uart]).toString('utf8');
+                this._uartBuffers[uart] = [];
+                if (uart === 0) {
+                    this._sendWs({ type: 'SERIAL_OUTPUT', text });
+                } else {
+                    this._sendWs({ type: 'UART_OUTPUT', uart, text });
+                }
+            }
+        } else if (etype === 'gpio_dir') {
+            this._sendWs({ type: 'GPIO_DIR', pin: event.pin, dir: event.dir });
+        } else if (etype === 'ledc_duty') {
+            this._sendWs({ type: 'PWM_SYNC', channel: event.channel, duty_pct: event.duty_pct });
+        } else if (etype === 'ws2812_update') {
+            this._sendWs({ type: 'WS2812_UPDATE', channel: event.channel, pixels: event.pixels });
+        } else if (etype === 'gpio_routing') {
+            this._sendWs({ type: 'GPIO_ROUTING', gpio: event.gpio, signal_id: event.signal_id });
+        } else if (etype === 'gpio_routing_clear') {
+            this._sendWs({ type: 'GPIO_ROUTING_CLEAR', gpio: event.gpio });
+        } else if (etype === 'i2c_event') {
+            this._sendWs({ type: 'protocol:i2c', bus: event.bus, addr: event.addr, event: event.event, response: event.response });
+        } else if (etype === 'i2c_transaction') {
+            this._sendWs({ type: 'I2C_TRANSACTION', addr: event.addr, data: event.data });
+        } else if (etype === 'proxy_i2c_complete') {
+            this._sendWs({ type: 'PROXY_I2C_COMPLETE', addr: event.addr, data: event.data });
+        } else if (etype === 'spi_event') {
+            this._sendWs({ type: 'protocol:spi', bus: event.bus, event: event.event, response: event.response });
+        } else if (etype === 'spi_batch') {
+            this._sendWs({ type: 'SPI_BATCH', b64: event.b64 });
+        } else if (etype === 'epaper_update') {
+            this._sendWs({
+                type: 'EPAPER_UPDATE',
+                data: {
+                    component_id: event.component_id,
+                    width: event.width,
+                    height: event.height,
+                    frame_b64: event.frame_b64,
+                    refresh_ms: event.refresh_ms || 50
+                }
+            });
+        } else if (etype === 'error') {
+            this._log.error('Worker error event:', event.message);
+            this._sendWs({ type: 'QEMU_ERROR', message: event.message });
+        }
+    }
+
     start() {
         if (this._destroyed) {
             this._log.warn('start() called on a destroyed runner — ignoring.');
             return;
         }
 
+        const libPath = this._getSharedLibraryPath();
+        if (libPath) {
+            this._isSharedLibraryMode = true;
+            this._startSharedLibraryWorker(libPath);
+            return;
+        }
+
+        this._isSharedLibraryMode = false;
         this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
         this._nicArgs  = this._buildNicArgs();
 
@@ -249,13 +451,215 @@ export default class QemuRunner {
      * @param {0|1}    value - Pin level.
      */
     setVirtualPin(pin, value) {
-        if (this._destroyed || !this._uartSocket) return;
+        if (this._destroyed) return;
+
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'set_pin', pin, value: value ? 1 : 0 });
+            return;
+        }
+
+        if (!this._uartSocket) return;
 
         const cmd = `<GPIO:${pin}:${value ? 1 : 0}>\n`;
         try {
             this._uartSocket.write(cmd);
         } catch (e) {
             this._log.warn('setVirtualPin write error:', e.message);
+        }
+    }
+
+    setVirtualDht(pin, temp, hum) {
+        if (this._destroyed) return;
+
+        if (this._isSharedLibraryMode) {
+            if (!this._attachedSensors) {
+                this._attachedSensors = new Set();
+            }
+            if (!this._attachedSensors.has(pin)) {
+                this._attachedSensors.add(pin);
+                this._writeWorkerCmd({
+                    cmd: 'sensor_attach',
+                    sensor_type: 'dht22',
+                    pin: pin,
+                    temperature: temp,
+                    humidity: hum
+                });
+            } else {
+                this._writeWorkerCmd({
+                    cmd: 'sensor_update',
+                    pin: pin,
+                    temperature: temp,
+                    humidity: hum
+                });
+            }
+        }
+    }
+
+    setVirtualAdc(channel, millivolts) {
+        if (this._destroyed) return;
+
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({
+                cmd: 'set_adc',
+                channel: channel,
+                millivolts: millivolts
+            });
+        }
+    }
+
+    sensorAttach(sensor_type, pin, properties) {
+        if (this._destroyed) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'sensor_attach', sensor_type, pin, ...properties });
+        }
+    }
+
+    /**
+     * setAdcValue(pin, value)
+     * Inject a 12-bit ADC value for a GPIO pin (legacy mode only).
+     * The value is sent to the firmware as <ADC:pin:val>\n via UART RX.
+     */
+    setAdcValue(pin, value) {
+        if (this._destroyed) return;
+        if (!this._isSharedLibraryMode) {
+            const cmd = `<ADC:${pin}:${value}>\n`;
+            if (this._uartSocket && !this._uartSocket.destroyed) {
+                try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) {}
+            }
+        } else {
+            // Shared-lib mode: set_adc_raw already exists
+            this._writeWorkerCmd({ cmd: 'set_adc_raw', channel: pin, raw: value });
+        }
+    }
+
+    /**
+     * setI2cResponse(addr, bytes)
+     * Pre-load the I2C read-response bytes for a given 7-bit address.
+     * When the firmware calls Wire.requestFrom(addr, n), the firmware shim
+     * emits >I2C_READ:addr:qty< and this runner injects <I2C_RESP:addr:hex>.
+     */
+    setI2cResponse(addr, bytes) {
+        if (this._destroyed) return;
+        if (!this._i2cResponses) this._i2cResponses = new Map();
+        this._i2cResponses.set(addr, bytes);
+    }
+
+    /**
+     * _scheduleSpiFlush()
+     * Schedules a one-shot 33ms timer that encodes all buffered SPI TX bytes
+     * as base64 and emits a SPI_BATCH WebSocket event. Re-arming is idempotent.
+     */
+    _scheduleSpiFlush() {
+        if (this._spiFlushTimer) return; // already scheduled
+        this._spiFlushTimer = setTimeout(() => {
+            this._spiFlushTimer = null;
+            if (!this._spiTxBuf || this._spiTxBuf.length === 0) return;
+            // Encode hex pairs as a binary buffer then base64
+            const hexStr = this._spiTxBuf.join('');
+            this._spiTxBuf = [];
+            const bin = Buffer.from(hexStr, 'hex');
+            const b64 = bin.toString('base64');
+            this._sendWs({ type: 'SPI_BATCH', b64 });
+        }, 33);
+    }
+
+    sensorUpdate(pin, properties) {
+        if (this._destroyed) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'sensor_update', pin, ...properties });
+        }
+    }
+
+    sensorDetach(pin) {
+        if (this._destroyed) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'sensor_detach', pin });
+        }
+    }
+
+    /**
+     * sendSerialInput(uart, bytes)
+     *
+     * Inject raw bytes into the ESP32's UART RX FIFO.
+     * In shared-library mode, forwards a 'uart_receive' command to the Python
+     * worker which calls qemu_picsimlab_uart_receive() directly — the safest
+     * and most timing-accurate path.
+     * In legacy TCP mode, writes the bytes as a raw buffer over the UART0 socket.
+     *
+     * The caller (compileController) is responsible for chunking to ≤64 bytes
+     * to prevent FIFO overflow, matching the Velxio constraint.
+     *
+     * @param {number}   uart  - UART index (0 = primary Serial, 1/2 = extra).
+     * @param {number[]} bytes - Array of byte values (0–255).
+     */
+    sendSerialInput(uart, bytes) {
+        if (this._destroyed) return;
+        if (!Array.isArray(bytes) || bytes.length === 0) return;
+
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'uart_receive', uart, bytes });
+            return;
+        }
+
+        // Legacy mode — only UART0 is bridged via the TCP socket
+        if (uart === 0 && this._uartSocket && !this._uartSocket.destroyed) {
+            try {
+                this._uartSocket.write(Buffer.from(bytes));
+            } catch (e) {
+                this._log.warn('sendSerialInput write error (legacy):', e.message);
+            }
+        }
+    }
+
+    // ── ESP32-CAM frame injection ─────────────────────────────────────────────
+    // Mirrors Velxio's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
+    // The worker routes to velxio_push_camera_frame() in libqemu-xtensa which
+    // delivers the bytes to the QEMU OV2640+I²S DMA buffer.  esp_camera_fb_get()
+    // in the firmware receives the frame transparently.
+
+    /**
+     * sendCameraAttach()
+     *
+     * Tell the worker a webcam frame source is connected. Call once when the
+     * user grants camera permission. No-op if library not built with camera patch.
+     */
+    sendCameraAttach() {
+        if (this._destroyed) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'camera_attach' });
+        }
+    }
+
+    /**
+     * sendCameraFrame(b64, fmt?, width?, height?)
+     *
+     * Push one JPEG frame from the browser webcam to the QEMU OV2640 DMA buffer.
+     * Encoding: base64 in JSON, ~10–14 KB per QVGA frame at quality 0.6.
+     * At 10 fps that's ~120 KB/s — trivial over local WS.
+     *
+     * @param {string} b64    - JPEG frame as base64 string (btoa of raw bytes).
+     * @param {string} fmt    - Image format, 'jpeg' by default.
+     * @param {number} width  - Frame width in pixels (default 320).
+     * @param {number} height - Frame height in pixels (default 240).
+     */
+    sendCameraFrame(b64, fmt = 'jpeg', width = 320, height = 240) {
+        if (this._destroyed) return;
+        if (!b64) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'camera_frame', b64, fmt, w: width, h: height });
+        }
+    }
+
+    /**
+     * sendCameraDetach()
+     *
+     * Drop the queued frame and detach the camera. Calls velxio_push_camera_frame
+     * with a NULL/empty payload on the C side which resets the DMA pointer.
+     */
+    sendCameraDetach() {
+        if (this._destroyed) return;
+        if (this._isSharedLibraryMode) {
+            this._writeWorkerCmd({ cmd: 'camera_detach' });
         }
     }
 
@@ -273,11 +677,31 @@ export default class QemuRunner {
         this._stopHeartbeatWatchdog();
 
         if (this._process) {
-            try { this._process.kill('SIGKILL'); } catch { /* already exited */ }
+            try {
+                if (this._isSharedLibraryMode) {
+                    this._writeWorkerCmd({ cmd: 'stop' });
+                    this._process.kill('SIGKILL');
+                } else {
+                    this._process.kill('SIGKILL');
+                }
+            } catch { /* already exited */ }
             this._process = null;
         }
 
-        this._cleanupPipes();
+        if (!this._isSharedLibraryMode) {
+            this._cleanupPipes();
+        } else {
+            if (this.sketchDir) {
+                try {
+                    if (fs.existsSync(this.sketchDir)) {
+                        fs.rmSync(this.sketchDir, { recursive: true, force: true });
+                        this._log.info(`🧹 Sketch build folder cleaned up: ${this.sketchDir}`);
+                    }
+                } catch (e) {
+                    this._log.error(`Failed to delete sketch build folder ${this.sketchDir}:`, e.message);
+                }
+            }
+        }
     }
 
     _stopHeartbeatWatchdog() {
@@ -446,13 +870,49 @@ export default class QemuRunner {
 
             // Clear incomplete line buffer
             this._outBuffer = '';
+            if (this._uartBuffers) {
+                this._uartBuffers = {};
+            }
 
-            // Schedule QEMU reboot after a brief cooldown
-            setTimeout(() => {
+            // Schedule QEMU reboot after a brief cooldown.
+            // Wait 1.5 s to give the OS time to reclaim the TCP port from
+            // the crashed QEMU process before we try to bind it again.
+            setTimeout(async () => {
                 if (this._destroyed) return;
                 this._log.info(`Rebooting QEMU ESP32 instance (Attempt ${this._restartCount}/${this._maxRestarts})...`);
-                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
-            }, 500);
+
+                // On Windows, force-kill any process still listening on the UART
+                // port left behind by the crashed QEMU (zombie TCP server).
+                if (this._uartPort) {
+                    try {
+                        const { execSync } = await import('child_process');
+                        // netstat -ano shows PID; find the one on our port and kill it
+                        const out = execSync(
+                            `netstat -ano | findstr ":${this._uartPort} "`,
+                            { encoding: 'utf8', timeout: 3000 }
+                        );
+                        const pids = new Set();
+                        for (const line of out.split('\n')) {
+                            const m = line.trim().split(/\s+/);
+                            const pid = parseInt(m[m.length - 1], 10);
+                            if (pid > 4) pids.add(pid);  // skip System (PID 4)
+                        }
+                        for (const pid of pids) {
+                            try {
+                                execSync(`taskkill /PID ${pid} /F`, { timeout: 2000 });
+                                this._log.info(`🧹 Killed zombie QEMU process PID ${pid} holding port ${this._uartPort}`);
+                            } catch { /* already dead */ }
+                        }
+                    } catch { /* netstat failed or no zombie — proceed anyway */ }
+                }
+
+                if (this._isSharedLibraryMode) {
+                    const libPath = this._getSharedLibraryPath();
+                    this._startSharedLibraryWorker(libPath);
+                } else {
+                    this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                }
+            }, 1500);
         } else {
             // Exceeded retry count
             const fatalMsg = `\r\n❌ [SYSTEM] ESP32 simulator crashed repeatedly. Emulation aborted.\r\n`;
@@ -558,6 +1018,61 @@ export default class QemuRunner {
             } else {
                 this._sendWs({ type: 'GPIO_SYNC', pin, value });
             }
+            return;
+        }
+
+        // ── I2C shim intercept ───────────────────────────────────────────────
+        // >I2C:<addr_hex>:<data_hex>< — write transaction from SimWire
+        const i2cMatch = line.match(I2C_PATTERN);
+        if (i2cMatch) {
+            const addr = parseInt(i2cMatch[1], 16);
+            const hexStr = i2cMatch[2];
+            const data = [];
+            for (let i = 0; i < hexStr.length; i += 2) {
+                data.push(parseInt(hexStr.substring(i, i + 2), 16));
+            }
+            this._sendWs({ type: 'I2C_TRANSACTION', addr, data });
+            return;
+        }
+
+        // >I2C_READ:<addr_hex>:<qty_hex>< — read request from SimWire.requestFrom()
+        // Respond immediately by injecting cached response bytes via UART RX.
+        const i2cReadMatch = line.match(I2C_READ_PATTERN);
+        if (i2cReadMatch) {
+            const addr = parseInt(i2cReadMatch[1], 16);
+            const qty  = parseInt(i2cReadMatch[2], 16);
+            // Also notify frontend so it can update component state
+            this._sendWs({ type: 'I2C_READ_REQ', addr, qty });
+            // Inject cached response if available
+            const respBytes = this._i2cResponses?.get(addr);
+            if (respBytes && respBytes.length > 0) {
+                const hex = Array.from(respBytes.slice(0, qty))
+                    .map(b => b.toString(16).padStart(2, '0')).join('');
+                const cmd = `<I2C_RESP:${addr.toString(16).padStart(2,'0')}:${hex}>\n`;
+                if (this._uartSocket && !this._uartSocket.destroyed) {
+                    try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) {}
+                }
+            }
+            return;
+        }
+
+        // >SPI:<hexbyte>< — single byte SPI.transfer() from SimSPI
+        // >SPIBUF:<hexdata>< — buffer SPI.transferBytes() from SimSPI
+        // Both are batched into a SPI_BATCH WS event every 33ms.
+        const spiMatch = line.match(SPI_PATTERN);
+        if (spiMatch) {
+            if (!this._spiTxBuf) this._spiTxBuf = [];
+            this._spiTxBuf.push(spiMatch[1]);
+            this._scheduleSpiFlush();
+            return;
+        }
+        const spiBufMatch = line.match(SPIBUF_PATTERN);
+        if (spiBufMatch) {
+            if (!this._spiTxBuf) this._spiTxBuf = [];
+            // Split into 2-char hex pairs
+            const hex = spiBufMatch[1];
+            for (let i = 0; i < hex.length; i += 2) this._spiTxBuf.push(hex.substring(i, i + 2));
+            this._scheduleSpiFlush();
             return;
         }
 
