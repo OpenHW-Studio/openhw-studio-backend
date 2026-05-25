@@ -5,6 +5,7 @@ permissions:
   issues: write
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main, master, develop]
   push:
