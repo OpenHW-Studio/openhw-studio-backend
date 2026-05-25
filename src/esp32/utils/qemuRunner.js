@@ -181,6 +181,15 @@ export default class QemuRunner {
         this._proxyPort        = null;
         this._lastGpioValues   = new Uint8Array(40).fill(0xFF);
 
+        // ── Performance diagnostic counters (logged every 1s) ─────────────────
+        this._perf = {
+            wsSent:     0,   // WS messages sent this window
+            gpioRaw:    0,   // gpio_change events from worker (pre-dedup)
+            gpioSent:   0,   // GPIO_SYNC forwarded to WS     (post-dedup)
+            workerEvts: 0,   // total _handleWorkerEvent calls
+            logTimer:   null,
+        };
+
         /**
          * Lifecycle phase — reported to the frontend via WS messages.
          *
@@ -313,6 +322,7 @@ export default class QemuRunner {
     }
 
     _handleWorkerEvent(event) {
+        this._perf.workerEvts++;
         const etype = event.type;
         if (etype === 'system') {
             const ev = event.event;
@@ -325,18 +335,29 @@ export default class QemuRunner {
                 this._handleCrash(`Worker reported system crash: ${event.reason || 'unknown'}`);
             } else if (ev === 'reboot') {
                 this._log.info(`🔄 Guest OS rebooted (count=${event.count})`);
-                this._sendWs({ type: 'SERIAL_OUTPUT', text: `\r\n🔄 [SYSTEM] ESP32 rebooted (count=${event.count})...\r\n` });
+                this._sendWs({ type: 'SERIAL_LOG', level: 'INFO', message: `ESP32 rebooted (count=${event.count})` });
             }
         } else if (etype === 'gpio_change') {
             const pin = event.pin;
             const value = event.state;
-            this._sendWs({ type: 'GPIO_SYNC', pin, value });
+            this._perf.gpioRaw++;
+            // Deduplicate — only forward if pin state actually changed.
+            // The UART path already had this via _lastGpioValues; the worker
+            // path was missing it, causing GPIO_SYNC flooding during boot.
+            if (pin >= 0 && pin < this._lastGpioValues.length) {
+                if (this._lastGpioValues[pin] !== value) {
+                    this._lastGpioValues[pin] = value;
+                    this._perf.gpioSent++;
+                    this._sendWs({ type: 'GPIO_SYNC', pin, value });
+                }
+                // else: same value — suppress silently
+            } else {
+                this._perf.gpioSent++;
+                this._sendWs({ type: 'GPIO_SYNC', pin, value });
+            }
         } else if (etype === 'uart_tx') {
             const uart = event.uart;
             const byte = event.byte;
-            if (!this._uartBuffers) {
-                this._uartBuffers = {};
-            }
             if (!this._uartBuffers[uart]) {
                 this._uartBuffers[uart] = [];
             }
@@ -346,7 +367,8 @@ export default class QemuRunner {
                 const text = Buffer.from(this._uartBuffers[uart]).toString('utf8');
                 this._uartBuffers[uart] = [];
                 if (uart === 0) {
-                    this._sendWs({ type: 'SERIAL_OUTPUT', text });
+                    // Raw serial output forwarding is disabled to prevent UI lag
+                    // this._sendWs({ type: 'SERIAL_OUTPUT', text });
                 } else {
                     this._sendWs({ type: 'UART_OUTPUT', uart, text });
                 }
@@ -393,6 +415,21 @@ export default class QemuRunner {
             this._log.warn('start() called on a destroyed runner — ignoring.');
             return;
         }
+
+        // ── Start 1-second perf diagnostic logger ────────────────────────────
+        this._perf.logTimer = setInterval(() => {
+            const { wsSent, gpioRaw, gpioSent, workerEvts } = this._perf;
+            this._log.info(
+                `[PERF] phase=${this.phase} | WS-sent/s=${wsSent}` +
+                ` | worker-events/s=${workerEvts}` +
+                ` | GPIO-raw/s=${gpioRaw} GPIO-forwarded/s=${gpioSent}` +
+                ` (suppressed=${gpioRaw - gpioSent})`
+            );
+            this._perf.wsSent     = 0;
+            this._perf.gpioRaw    = 0;
+            this._perf.gpioSent   = 0;
+            this._perf.workerEvts = 0;
+        }, 1000);
 
         const libPath = this._getSharedLibraryPath();
         if (libPath) {
@@ -671,6 +708,12 @@ export default class QemuRunner {
         if (this._destroyed) return;
         this._destroyed = true;
 
+        // Stop perf log timer
+        if (this._perf.logTimer) {
+            clearInterval(this._perf.logTimer);
+            this._perf.logTimer = null;
+        }
+
         this.phase = 'stopped';
         this._log.info('⚡ Killing QEMU process');
 
@@ -847,9 +890,11 @@ export default class QemuRunner {
             this._restartCount++;
 
             // Print diagnostic warning in the client's serial monitor
-            const diagMsg = `\r\n⚠️ [SYSTEM] ESP32 simulator crashed or stalled: ${reason}.\r\n` +
-                            `⚠️ [SYSTEM] Restarting emulation session (Attempt ${this._restartCount}/${this._maxRestarts})...\r\n\r\n`;
-            this._sendWs({ type: 'SERIAL_OUTPUT', text: diagMsg });
+            this._sendWs({
+                type: 'SERIAL_LOG',
+                level: 'WARN',
+                message: `ESP32 simulator crashed or stalled: ${reason}. Restarting emulation session (Attempt ${this._restartCount}/${this._maxRestarts})...`
+            });
 
             // Transition state back to booting
             this.phase = 'booting';
@@ -895,7 +940,7 @@ export default class QemuRunner {
                         for (const line of out.split('\n')) {
                             const m = line.trim().split(/\s+/);
                             const pid = parseInt(m[m.length - 1], 10);
-                            if (pid > 4) pids.add(pid);  // skip System (PID 4)
+                            if (pid > 4 && pid !== process.pid) pids.add(pid);  // skip System (PID 4) and ourselves
                         }
                         for (const pid of pids) {
                             try {
@@ -915,8 +960,11 @@ export default class QemuRunner {
             }, 1500);
         } else {
             // Exceeded retry count
-            const fatalMsg = `\r\n❌ [SYSTEM] ESP32 simulator crashed repeatedly. Emulation aborted.\r\n`;
-            this._sendWs({ type: 'SERIAL_OUTPUT', text: fatalMsg });
+            this._sendWs({
+                type: 'SERIAL_LOG',
+                level: 'ERROR',
+                message: 'ESP32 simulator crashed repeatedly. Emulation aborted.'
+            });
             this._sendWs({
                 type:    'QEMU_ERROR',
                 message: `QEMU simulator terminated: ${reason}. Repeated crashes detected.`,
@@ -978,7 +1026,9 @@ export default class QemuRunner {
      *   • Everything else → send SERIAL_OUTPUT
      */
     _processLine(line) {
-        this._log.info('RAW UART LINE:', line);
+        if (process.env.DEBUG_RAW_UART === 'true') {
+            this._log.info('RAW UART LINE:', line);
+        }
         // ── Phase 1: ROM boot detection ───────────────────────────────────────
         if (!this._bootDetected) {
             if (BOOT_SIGNATURES.some(sig => line.includes(sig))) {
@@ -992,9 +1042,7 @@ export default class QemuRunner {
         // ── Crash / Core Panic detection ──────────────────────────────────────
         if (CRASH_PATTERNS.some(re => re.test(line))) {
             this._log.error('🔴 Crash pattern detected in serial output:', line);
-            // Propagate the crash line to the serial monitor so user sees the panic trace,
-            // then trigger recovery asynchronously to allow remaining outputs to deliver.
-            this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
+            // Propagate the crash event, but skip raw trace serialization to prevent lag
             setTimeout(() => {
                 this._handleCrash('Guru Meditation / Cache Error');
             }, 50);
@@ -1091,8 +1139,8 @@ export default class QemuRunner {
             if (ROM_NOISE_PATTERNS.some(re => re.test(line))) return;
         }
 
-        // ── Regular serial output → client serial monitor ─────────────────────
-        this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
+        // ── Regular serial output → client serial monitor (Disabled to prevent UI/event-loop lag) ─────────────────────
+        // this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
     }
 
     /**
@@ -1165,6 +1213,7 @@ export default class QemuRunner {
      * Always injects buildId so the frontend can verify session ownership.
      */
     _sendWs(payload) {
+        this._perf.wsSent++;
         wsManager.sendToSession(this.buildId, { ...payload, buildId: this.buildId });
     }
 

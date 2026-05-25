@@ -51,6 +51,8 @@ const SHIM_HEADERS = Object.freeze([
     { src: path.resolve(__dirname, '../utils/SimulatorBridge.h'),            dst: 'SimulatorBridge.h'    },
     { src: path.resolve(__dirname, '../utils/SimulatorWire.h'),              dst: 'Wire.h'               },
     { src: path.resolve(__dirname, '../utils/SimulatorWire.cpp'),            dst: 'Wire.cpp'             },
+    { src: path.resolve(__dirname, '../utils/SimulatorSPI.h'),               dst: 'SPI.h'                },
+    { src: path.resolve(__dirname, '../utils/SimulatorSPI.cpp'),             dst: 'SPI.cpp'              },
     { src: path.resolve(__dirname, '../utils/SimulatorWiFi.h'),              dst: 'WiFi.h'               },
     { src: path.resolve(__dirname, '../utils/SimulatorWiFiClient.h'),        dst: 'WiFiClient.h'         },
     { src: path.resolve(__dirname, '../utils/SimulatorWiFiClientSecure.h'),  dst: 'WiFiClientSecure.h'   },

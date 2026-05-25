@@ -104,7 +104,6 @@ static void _sim_send(const char* frame) {
         Serial.print('\n');
         Serial.print(frame);
         Serial.print('\n');
-        Serial.flush();
         xSemaphoreGive(_sim_serial_mtx);
     }
 }
