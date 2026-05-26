@@ -600,6 +600,19 @@ export default class QemuRunner {
         }, 33);
     }
 
+    _flushSpi() {
+        if (this._spiFlushTimer) {
+            clearTimeout(this._spiFlushTimer);
+            this._spiFlushTimer = null;
+        }
+        if (!this._spiTxBuf || this._spiTxBuf.length === 0) return;
+        const hexStr = this._spiTxBuf.join('');
+        this._spiTxBuf = [];
+        const bin = Buffer.from(hexStr, 'hex');
+        const b64 = bin.toString('base64');
+        this._sendWs({ type: 'SPI_BATCH', b64 });
+    }
+
     sensorUpdate(pin, properties) {
         if (this._destroyed) return;
         if (this._isSharedLibraryMode) {
@@ -1053,6 +1066,9 @@ export default class QemuRunner {
         // >GPIO:<pin>:<val>< must NEVER reach the serial monitor.
         const gpioMatch = line.match(GPIO_PATTERN);
         if (gpioMatch) {
+            // Flush any buffered SPI bytes before changing GPIO pin state
+            this._flushSpi();
+
             const pin   = parseInt(gpioMatch[1], 10);
             const value = parseInt(gpioMatch[2], 10);
 
