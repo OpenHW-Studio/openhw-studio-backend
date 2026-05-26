@@ -54,6 +54,7 @@ RUN arduino-cli lib install \
     "Adafruit BusIO" \
     "Adafruit Unified Sensor" \
     "Ticker" \
+    "SparkFun MAX3010x Pulse and Proximity Sensor Library" \
     && rm -rf /root/.arduino15/staging/*
 
 # Set working directory
