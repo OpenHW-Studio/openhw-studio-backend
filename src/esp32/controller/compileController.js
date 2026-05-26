@@ -48,11 +48,15 @@ const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
 
 // Simulator shim headers injected into every sketch build directory
 const SHIM_HEADERS = Object.freeze([
-    { src: path.resolve(__dirname, '../utils/SimulatorBridge.h'),       dst: 'SimulatorBridge.h'       },
-    { src: path.resolve(__dirname, '../utils/SimulatorWiFi.h'),         dst: 'WiFi.h'                  },
-    { src: path.resolve(__dirname, '../utils/SimulatorWiFiClient.h'),   dst: 'WiFiClient.h'            },
-    { src: path.resolve(__dirname, '../utils/SimulatorWiFiClientSecure.h'), dst: 'WiFiClientSecure.h'  },
-    { src: path.resolve(__dirname, '../utils/SimulatorWiFiServer.h'),   dst: 'WiFiServer.h'            },
+    { src: path.resolve(__dirname, '../utils/SimulatorBridge.h'),            dst: 'SimulatorBridge.h'    },
+    { src: path.resolve(__dirname, '../utils/SimulatorWire.h'),              dst: 'Wire.h'               },
+    { src: path.resolve(__dirname, '../utils/SimulatorWire.cpp'),            dst: 'Wire.cpp'             },
+    { src: path.resolve(__dirname, '../utils/SimulatorSPI.h'),               dst: 'SPI.h'                },
+    { src: path.resolve(__dirname, '../utils/SimulatorSPI.cpp'),             dst: 'SPI.cpp'              },
+    { src: path.resolve(__dirname, '../utils/SimulatorWiFi.h'),              dst: 'WiFi.h'               },
+    { src: path.resolve(__dirname, '../utils/SimulatorWiFiClient.h'),        dst: 'WiFiClient.h'         },
+    { src: path.resolve(__dirname, '../utils/SimulatorWiFiClientSecure.h'),  dst: 'WiFiClientSecure.h'   },
+    { src: path.resolve(__dirname, '../utils/SimulatorWiFiServer.h'),        dst: 'WiFiServer.h'         },
 ]);
 
 // ─── Configuration constants (all overridable via env) ────────────────────────
@@ -68,7 +72,7 @@ const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '10', 10);
  * Any QEMU runner that has not emitted UART output for this many ms is killed.
  */
 const SESSION_TIMEOUT_MS = parseInt(
-    process.env.SESSION_TIMEOUT_MS || String(5 * 60 * 1000), // 5 minutes
+    process.env.SESSION_TIMEOUT_MS || String(15 * 1000), // 15 seconds
     10,
 );
 
@@ -108,19 +112,29 @@ const _activeRunners = new Map();
 // ─── Session GC ───────────────────────────────────────────────────────────────
 
 /**
- * Scan active runners every minute for idle sessions.
+ * Scan active runners every 5 seconds for idle sessions.
  * Unref'd so this timer does not prevent the process from exiting cleanly.
  */
 const _gcTimer = setInterval(() => {
     const now = Date.now();
     for (const [buildId, runner] of _activeRunners.entries()) {
-        if (now - runner.lastActivity > SESSION_TIMEOUT_MS) {
-            console.log(`[Compile] ⏱️  Session ${buildId} timed out — killing QEMU`);
+        const isConnected = wsManager.hasLiveSession(buildId);
+        
+        if (isConnected) {
+            runner.disconnectedAt = null;
+        } else if (runner.disconnectedAt == null) {
+            runner.disconnectedAt = now;
+        }
+
+        const disconnectedTime = runner.disconnectedAt ? (now - runner.disconnectedAt) : 0;
+
+        if (now - runner.lastActivity > SESSION_TIMEOUT_MS || disconnectedTime > SESSION_TIMEOUT_MS) {
+            console.log(`[Compile] 🧹  Session ${buildId} timed out (disconnected or idle) — killing QEMU`);
             runner.kill();
             _cleanup(buildId);
         }
     }
-}, 60_000);
+}, 5_000);
 _gcTimer.unref();
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -176,8 +190,8 @@ function _sendErrorAndCleanup(buildId, output) {
  *   Input:  /builds/abc/abc.ino:5:3: error: ...
  *   Output: /builds/abc/abc.ino:3:3: error: ...
  */
-function _shiftLineNumbers(output, sketchFile) {
-    if (!output) return output;
+function _shiftLineNumbers(output, sketchFile, isSharedLibraryMode = false) {
+    if (!output || isSharedLibraryMode) return output;
     const escaped = sketchFile.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const re = new RegExp(`(${escaped}):(\\d+)(:\\d+:.*)`, 'g');
     return output.replace(re, (_, file, lineStr, rest) => {
@@ -187,20 +201,31 @@ function _shiftLineNumbers(output, sketchFile) {
 }
 
 /**
- * Verify esptool.py is callable and return its resolved path.
+ * Verify esptool is callable and return its execution wrapper.
  * Throws a descriptive Error if it cannot be found.
  */
 function _requireEsptool() {
-    try {
-        execFileSync(ESPTOOL_PATH, ['version'], { stdio: 'pipe', timeout: 10_000 });
-        return ESPTOOL_PATH;
-    } catch {
-        throw new Error(
-            `esptool.py not found (tried: "${ESPTOOL_PATH}").\n` +
-            `Install it with:  pip install esptool\n` +
-            `Or set the ESPTOOL_PATH environment variable to its absolute path.`,
-        );
+    const candidates = [
+        { cmd: process.env.ESPTOOL_PATH || 'esptool.py', args: [] },
+        { cmd: 'esptool', args: [] },
+        { cmd: 'python', args: ['-m', 'esptool'] },
+        { cmd: 'python3', args: ['-m', 'esptool'] }
+    ];
+
+    for (const runner of candidates) {
+        try {
+            execFileSync(runner.cmd, [...runner.args, 'version'], { stdio: 'pipe', timeout: 10_000 });
+            return runner;
+        } catch (e) {
+            continue;
+        }
     }
+
+    throw new Error(
+        `esptool not found.\n` +
+        `Install it with:  pip install esptool\n` +
+        `Or set the ESPTOOL_PATH environment variable to its absolute path.`
+    );
 }
 
 /**
@@ -214,10 +239,10 @@ function _requireEsptool() {
  *
  * @param {string} buildDir    - arduino-cli --output-dir
  * @param {string} sketchBase  - sketch name (without extension)
- * @param {string} esptoolPath - resolved path to esptool.py
+ * @param {object} esptoolRunner - {cmd, args} from _requireEsptool
  * @returns {string} Absolute path to the merged-flash.bin
  */
-function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
+function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
     const bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
     const partTable  = path.join(buildDir, `${sketchBase}.partitions.bin`);
     const appBin     = path.join(buildDir, `${sketchBase}.bin`);
@@ -240,6 +265,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
     }
 
     const args = [
+        ...esptoolRunner.args,
         '--chip',          'esp32',
         'merge_bin',
         '--output',        mergedOut,
@@ -252,10 +278,10 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
         '0x10000', appBin,
     ];
 
-    execFileSync(esptoolPath, args, { stdio: 'pipe', timeout: 30_000 });
+    execFileSync(esptoolRunner.cmd, args, { stdio: 'pipe', timeout: 30_000 });
 
     if (!fs.existsSync(mergedOut)) {
-        throw new Error('esptool.py merge_bin succeeded but produced no output file.');
+        throw new Error('esptool merge_bin succeeded but produced no output file.');
     }
 
     return mergedOut;
@@ -263,7 +289,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolPath) {
 
 // ─── Ensure required directories exist at startup ─────────────────────────────
 
-for (const dir of [TEMP_DIR, BUILDS_DIR]) {
+for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) {
     fs.mkdirSync(dir, { recursive: true });
 }
 
@@ -324,7 +350,133 @@ wsManager.onClientConnection((ws) => {
                 }
             }
         }
+
+        // ── SET_ADC (analog input potentiometer sync) ────────────────────────
+        if (data.type === 'SET_ADC' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) {
+                const channel    = parseInt(data.channel, 10);
+                const millivolts = parseInt(data.millivolts, 10);
+                if (!isNaN(channel) && channel >= 0 && channel < 8 && !isNaN(millivolts)) {
+                    if (typeof runner.setVirtualAdc === 'function') {
+                        runner.setVirtualAdc(channel, millivolts);
+                    }
+                }
+            }
+        }
+
+        // ── SENSOR_ATTACH (attach advanced I2C/SPI/ePaper sensors) ───────────
+        if (data.type === 'SENSOR_ATTACH' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) {
+                runner.sensorAttach?.(data.sensor_type, data.pin, data.properties || {});
+            }
+        }
+
+        // ── SENSOR_UPDATE (update sensor parameters) ────────────────────────
+        if (data.type === 'SENSOR_UPDATE' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) {
+                runner.sensorUpdate?.(data.pin, data.properties || {});
+            }
+        }
+
+        // ── SENSOR_DETACH (detach sensor) ────────────────────────────────────
+        if (data.type === 'SENSOR_DETACH' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) {
+                runner.sensorDetach?.(data.pin);
+            }
+        }
+
+        // ── ADC_SET (inject analog value for a GPIO pin) ─────────────────────
+        // Frontend sends this when a potentiometer / LDR component state changes.
+        // data: { buildId, pin: number, value: number (0-4095) }
+        if (data.type === 'ADC_SET' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && typeof runner.setAdcValue === 'function') {
+                runner.setAdcValue(data.pin, data.value);
+            }
+        }
+
+        // ── I2C_RESP_SET (pre-load I2C read-response bytes for an address) ───
+        // Frontend sends this when an I2C sensor component has data to be read.
+        // data: { buildId, addr: number (7-bit), bytes: number[] }
+        if (data.type === 'I2C_RESP_SET' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && typeof runner.setI2cResponse === 'function') {
+                runner.setI2cResponse(data.addr, data.bytes || []);
+            }
+        }
+
+        // ── SPI_RESP_SET (pre-load MISO bytes for SPI transactions) ─────────
+        // Frontend sends this for SPI peripherals that need to send data back.
+        // data: { buildId, bytes: number[] }
+        if (data.type === 'SPI_RESP_SET' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && !runner._destroyed) {
+                // Push bytes via UART RX injection
+                if (typeof runner.sendSerialInput === 'function') {
+                    const hex = data.bytes.map(b => b.toString(16).padStart(2, '0')).join('');
+                    const cmd = Buffer.from(`<SPI_RESP:${hex}>\n`);
+                    runner.sendSerialInput(0, Array.from(cmd));
+                }
+            }
+        }
+
+
+        // ── SERIAL_INPUT (inject UART RX bytes into firmware) ────────────────
+        // Sent by the frontend sendSerialBytes() helper in ≤64-byte chunks to
+        // prevent QEMU's 128-byte UART RX FIFO from overflowing.
+        // Supports UART0 (default) and secondary UARTs 1 / 2.
+        if (data.type === 'SERIAL_INPUT' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) {
+                const bytes = data.bytes;
+                const uart  = typeof data.uart === 'number' ? data.uart : 0;
+                if (Array.isArray(bytes) && bytes.length > 0) {
+                    if (typeof runner.sendSerialInput === 'function') {
+                        runner.sendSerialInput(uart, bytes);
+                    }
+                }
+            }
+        }
+
+        // ── CAMERA_ATTACH (tell worker webcam is connected) ──────────────────
+        // Mirrors Velxio simulation.py: esp32_camera_attach → esp_lib_manager.camera_attach()
+        if (data.type === 'CAMERA_ATTACH' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && typeof runner.sendCameraAttach === 'function') {
+                runner.sendCameraAttach();
+            }
+        }
+
+        // ── CAMERA_FRAME (push JPEG to QEMU OV2640 DMA buffer) ───────────────
+        // Mirrors Velxio simulation.py: esp32_camera_frame → esp_lib_manager.camera_frame()
+        // Only accepted in shared-library mode — velxio_push_camera_frame() only
+        // exists in a libqemu-xtensa rebuilt with the OV2640+I²S patch.
+        if (data.type === 'CAMERA_FRAME' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && data.b64 && typeof runner.sendCameraFrame === 'function') {
+                runner.sendCameraFrame(
+                    String(data.b64),
+                    String(data.fmt || 'jpeg'),
+                    Number(data.w  || 320),
+                    Number(data.h  || 240),
+                );
+            }
+        }
+
+        // ── CAMERA_DETACH (drop frame, reset DMA pointer) ─────────────────────
+        // Mirrors Velxio simulation.py: esp32_camera_detach → esp_lib_manager.camera_detach()
+        if (data.type === 'CAMERA_DETACH' && data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner && typeof runner.sendCameraDetach === 'function') {
+                runner.sendCameraDetach();
+            }
+        }
     });
+
 
     // Client disconnects — session stays alive for the reconnect window;
     // the session GC handles eventual cleanup if the client never returns.
@@ -362,9 +514,9 @@ export const compileArduinoCode = (req, res) => {
     }
 
     // ── esptool check (fail fast before touching disk) ────────────────────────
-    let esptoolPath;
+    let esptoolRunner;
     try {
-        esptoolPath = _requireEsptool();
+        esptoolRunner = _requireEsptool();
     } catch (err) {
         return res.status(500).json({ error: err.message });
     }
@@ -381,6 +533,10 @@ export const compileArduinoCode = (req, res) => {
 
     // Open the pending buffer BEFORE any async I/O so no QEMU output is lost
     wsManager.createPendingSession(buildId);
+
+    const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
+    const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
+    let isSharedLibraryMode = false;
 
     try {
         fs.mkdirSync(sketchDir, { recursive: true });
@@ -407,51 +563,88 @@ export const compileArduinoCode = (req, res) => {
         //   }
         //   void loop() { _sim_user_loop(); }  ← user's blink logic
 
-        const preamble = [
-            '#define setup _sim_user_setup',
-            '#define loop  _sim_user_loop',
-            '',
-            'void sim_pinMode(uint8_t pin, uint8_t mode);',
-            'void sim_digitalWrite(uint8_t pin, uint8_t val);',
-            'uint8_t sim_digitalRead(uint8_t pin);',
-            'uint16_t sim_analogRead(uint8_t pin);',
-            '',
-            '#define pinMode sim_pinMode',
-            '#define digitalWrite sim_digitalWrite',
-            '#define digitalRead sim_digitalRead',
-            '#define analogRead sim_analogRead',
-            '',
-        ].join('\n');
+        const codeInput = req.body.code || '';
+        console.log('\n\n[ESP32 COMPILE] Received Code:\n', codeInput, '\n[END CODE]\n');
+        
+        isSharedLibraryMode = fs.existsSync(libPath);
 
-        const suffix = [
-            '',
-            '#undef setup',
-            '#undef loop',
-            '#include "SimulatorBridge.h"',
-            '',
-            'void setup() {',
-            '    _simBridgeInit_Early();',
-            '    _sim_user_setup();',
-            '    _simBridgeInit_Late();',
-            '    if (!_sim_ready_sent) sim_ready();',
-            '}',
-            '',
-            'void loop() {',
-            '    _sim_user_loop();',
-            '}',
-            '',
-        ].join('\n');
+        let finalCode;
+        if (isSharedLibraryMode) {
+            finalCode = codeInput;
+            console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+        } else {
+            const preamble = [
+                '#define setup _sim_user_setup',
+                '#define loop  _sim_user_loop',
+                '',
+                'void sim_pinMode(uint8_t pin, uint8_t mode);',
+                'void sim_digitalWrite(uint8_t pin, uint8_t val);',
+                'uint8_t sim_digitalRead(uint8_t pin);',
+                'uint16_t sim_analogRead(uint8_t pin);',
+                '',
+                '#define pinMode sim_pinMode',
+                '#define digitalWrite sim_digitalWrite',
+                '#define digitalRead sim_digitalRead',
+                '#define analogRead sim_analogRead',
+                '',
+            ].join('\n');
 
-        const finalCode = preamble + code + suffix;
+            const suffix = [
+                '',
+                '#undef setup',
+                '#undef loop',
+                '#include "SimulatorBridge.h"',
+                '',
+                'void setup() {',
+                '    _simBridgeInit_Early();',
+                '    _sim_user_setup();',
+                '    _simBridgeInit_Late();',
+                '    if (!_sim_ready_sent) sim_ready();',
+                '}',
+                '',
+                'void loop() {',
+                '    _sim_user_loop();',
+                '}',
+                '',
+            ].join('\n');
+
+            finalCode = preamble + codeInput + suffix;
+        }
 
         fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-        // Copy all shim headers into the sketch directory so arduino-cli finds them
-        for (const { src, dst } of SHIM_HEADERS) {
-            if (fs.existsSync(src)) {
-                fs.copyFileSync(src, path.join(sketchDir, dst));
-            } else {
-                console.warn(`[Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
+        if (!isSharedLibraryMode) {
+            // Copy all shim headers into the sketch directory so arduino-cli finds them.
+            // Also strip any non-ASCII bytes that text editors may inject (Unicode box-drawing
+            // chars in comments cause "extended character is not valid" gcc errors).
+            for (const { src, dst } of SHIM_HEADERS) {
+                if (fs.existsSync(src)) {
+                    const destPath = path.join(sketchDir, dst);
+                    const rawBytes = fs.readFileSync(src);   // read as Buffer (bytes)
+
+                    // 1. Strip UTF-8 BOM (EF BB BF) if present
+                    const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
+
+                    // 2. Copy only ASCII bytes (0x00-0x7F), skip any byte > 0x7F
+                    const asciiBytes = [];
+                    for (let i = startIdx; i < rawBytes.length; i++) {
+                        if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                    }
+
+                    // 3. Safety: if the source file started with '/*' but stripping removed
+                    //    the leading '/' (a multi-byte UTF-8 sequence spanning byte 0 is
+                    //    extremely unlikely but has been observed), re-prepend it.
+                    const origStart = rawBytes.slice(startIdx, startIdx + 3).toString('latin1');
+                    if (origStart.startsWith('/**') || origStart.startsWith('/*')) {
+                        if (asciiBytes[0] !== 0x2F) { // '/'
+                            asciiBytes.unshift(0x2F);
+                        }
+                    }
+
+                    fs.writeFileSync(destPath, Buffer.from(asciiBytes));
+                } else {
+                    console.warn(`[Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
+                }
             }
         }
     } catch (err) {
@@ -471,11 +664,12 @@ export const compileArduinoCode = (req, res) => {
     });
 
     // ── Async: compile → merge → launch QEMU ─────────────────────────────────
+    const CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
     const compileArgs = [
         'compile',
-        '--clean',
-        '--fqbn',       ESP32_FQBN,
-        '--output-dir', buildDir,
+        '--fqbn',             ESP32_FQBN,
+        '--build-cache-path', CACHE_DIR,
+        '--output-dir',       buildDir,
         sketchFile,
     ];
 
@@ -487,7 +681,7 @@ export const compileArduinoCode = (req, res) => {
         { timeout: COMPILE_TIMEOUT_MS },
         (error, stdout, stderr) => {
             const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
-            const output    = _shiftLineNumbers(rawOutput, sketchFile);
+            const output    = _shiftLineNumbers(rawOutput, sketchFile, isSharedLibraryMode);
 
             // arduino-cli may exit with an error code but still produce usable
             // artifacts (e.g. warnings-as-errors disabled). We use artifact
@@ -507,8 +701,8 @@ export const compileArduinoCode = (req, res) => {
             // ── Flash merge ───────────────────────────────────────────────────
             let mergedFlash;
             try {
-                mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolPath);
-                console.log(`[Compile:${buildId}] ✅ Flash image merged → ${mergedFlash}`);
+                mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
+                console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
             } catch (mergeErr) {
                 console.error(`[Compile:${buildId}] ❌ Flash merge failed:`, mergeErr.message);
                 _sendErrorAndCleanup(buildId, `Flash image merge failed:\n${mergeErr.message}`);
@@ -607,4 +801,66 @@ export const directBoot = (req, res) => {
 
         console.log(`[Compile:${buildId}] 🚀 QEMU started via Direct Boot from ${mergedFlash}`);
     }, 1500);
+};
+
+/**
+ * POST /api/compile/esp32/run-binary
+ *
+ * Boot QEMU directly from a dynamic base64-encoded firmware binary.
+ * Useful for running MicroPython or other pre-compiled binary payloads.
+ */
+export const runBinary = (req, res) => {
+    const { firmware_b64, target } = req.body;
+
+    if (!firmware_b64 || typeof firmware_b64 !== 'string') {
+        return res.status(400).json({ error: 'Request body must include a non-empty "firmware_b64" string.' });
+    }
+
+    if (target !== 'esp32') {
+        return res.status(400).json({ error: 'This handler only supports target="esp32".' });
+    }
+
+    if (_activeRunners.size >= MAX_SESSIONS) {
+        return res.status(503).json({
+            error: `Server at capacity (${_activeRunners.size}/${MAX_SESSIONS} active sessions).`,
+        });
+    }
+
+    const buildId   = crypto.randomUUID();
+    const sketchDir = path.join(BUILDS_DIR, buildId);
+    const pipesDir  = path.join(os.tmpdir(), `openhw-${buildId}`);
+    const mergedFlash = path.join(sketchDir, 'merged-flash.bin');
+
+    wsManager.createPendingSession(buildId);
+
+    try {
+        fs.mkdirSync(sketchDir, { recursive: true });
+        const buffer = Buffer.from(firmware_b64, 'base64');
+        fs.writeFileSync(mergedFlash, buffer);
+    } catch (err) {
+        wsManager.unregisterSession(buildId);
+        _cleanup(buildId);
+        return res.status(500).json({
+            error: 'Failed to write binary firmware.',
+            detail: err.message,
+        });
+    }
+
+    // Respond immediately so client can open WS and send REGISTER_SESSION
+    res.json({
+        success: true,
+        buildId,
+        message: 'Binary loaded successfully. Connect via WebSocket and send REGISTER_SESSION.',
+    });
+
+    // Brief delay to let the client open the WebSocket and register
+    setTimeout(() => {
+        wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+        const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+        _activeRunners.set(buildId, runner);
+        runner.start();
+
+        console.log(`[Compile:${buildId}] 🚀 QEMU started via runBinary`);
+    }, 1000);
 };

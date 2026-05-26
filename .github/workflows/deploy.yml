@@ -60,6 +60,8 @@ jobs:
             tags: |
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:develop
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
+            cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache
+            cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache,mode=max
 
       - name: Build and push Health Agent
         if: steps.filter.outputs.agent == 'true'

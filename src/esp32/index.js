@@ -18,7 +18,9 @@ import {
     compileArduinoCode,
     stopSession,
     directBoot,
+    runBinary,
 } from './controller/compileController.js';
+
 
 /**
  * Attach the ESP32 WebSocket bridge to the already-created HTTP server.
@@ -46,3 +48,6 @@ export const handleESP32Stop = stopSession;
 
 /** Express route handler: boot QEMU directly from a pre-compiled .bin. */
 export const handleESP32DirectBoot = directBoot;
+
+/** Express route handler: boot QEMU directly from a dynamic base64-encoded .bin. */
+export const handleESP32RunBinary = runBinary;
