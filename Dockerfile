@@ -37,7 +37,7 @@ ENV PATH=$PATH:/root/bin
 
 # Initialize arduino-cli and install cores
 RUN arduino-cli config init && \
-    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json,https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json && \
+    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json,https://espressif.github.io/arduino-esp32/package_esp32_index.json && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
     arduino-cli core install rp2040:rp2040 && \
