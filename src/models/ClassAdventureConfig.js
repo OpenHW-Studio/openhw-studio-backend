@@ -43,6 +43,19 @@ const adventureProjectSchema = new mongoose.Schema(
     },
     theory: { type: [mongoose.Schema.Types.Mixed], default: [] },
     quizQuestions: { type: [adventureQuizQuestionSchema], default: [] },
+    guidedSteps: {
+      type: [{
+        id: { type: Number, required: true },
+        phase: { type: String, enum: ['wire', 'code', 'run'], required: true },
+        icon: { type: String, trim: true, maxlength: 16 },
+        color: { type: String, trim: true, maxlength: 40 },
+        title: { type: String, required: true, trim: true, maxlength: 140 },
+        instruction: { type: String, trim: true, maxlength: 1000 },
+        tip: { type: String, trim: true, maxlength: 800 },
+        code: { type: String, trim: true, maxlength: 5000 },
+      }],
+      default: [],
+    },
   },
   { _id: false },
 );

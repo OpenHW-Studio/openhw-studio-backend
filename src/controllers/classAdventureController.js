@@ -29,6 +29,19 @@ const sanitizeQuizQuestion = (question, index) => {
   };
 };
 
+const sanitizeGuidedStep = (step, index) => {
+  return {
+    id: Number.isFinite(step?.id) ? Number(step.id) : index,
+    phase: ['wire', 'code', 'run'].includes(step?.phase) ? step.phase : 'wire',
+    icon: typeof step?.icon === "string" ? step.icon.trim() : "🔧",
+    color: typeof step?.color === "string" ? step.color.trim() : "#22c55e",
+    title: typeof step?.title === "string" && step.title.trim() ? step.title.trim() : `Step ${index + 1}`,
+    instruction: typeof step?.instruction === "string" ? step.instruction.trim() : "",
+    tip: typeof step?.tip === "string" ? step.tip.trim() : "",
+    code: typeof step?.code === "string" ? step.code.trim() : "",
+  };
+};
+
 const sanitizeProject = (project, index, worldIds) => {
   const slug = String(project?.slug || "").trim() || `project-${index + 1}`;
   const worldId = typeof project?.worldId === "string" && worldIds.has(project.worldId)
@@ -39,6 +52,9 @@ const sanitizeProject = (project, index, worldIds) => {
   // Supports both legacy `content` format and new `assessment` format
   const assessment = project?.assessment || project?.content || {}
 
+  const guidedSteps = Array.isArray(project?.guidedSteps)
+    ? project.guidedSteps.map(sanitizeGuidedStep)
+    : [];
 
   return {
     id: String(project?.id || slug).trim(),
@@ -54,11 +70,12 @@ const sanitizeProject = (project, index, worldIds) => {
     rewardComponents: Array.isArray(project?.rewardComponents) ? project.rewardComponents : [],
     theory: Array.isArray(project?.theory) ? project.theory : [],
     quizQuestions: Array.isArray(project?.quizQuestions) ? project.quizQuestions.map(sanitizeQuizQuestion) : [],
-    assessment: {
+assessment: {
       passingThreshold: Number.isFinite(assessment?.passingThreshold) ? Number(assessment.passingThreshold) : 0,
       evaluationCriteria: assessment?.evaluationCriteria && typeof assessment.evaluationCriteria === "object" ? assessment.evaluationCriteria : {},
       scoring: assessment?.scoring && typeof assessment.scoring === "object" ? assessment.scoring : {},
     },
+    guidedSteps,
   };
 };
 
