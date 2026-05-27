@@ -72,7 +72,7 @@ const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '10', 10);
  * Any QEMU runner that has not emitted UART output for this many ms is killed.
  */
 const SESSION_TIMEOUT_MS = parseInt(
-    process.env.SESSION_TIMEOUT_MS || String(15 * 1000), // 15 seconds
+    process.env.SESSION_TIMEOUT_MS || String(300 * 1000), // 5 minutes
     10,
 );
 

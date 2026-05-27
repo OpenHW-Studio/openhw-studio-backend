@@ -6,6 +6,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 import { handleESP32Compile } from '../esp32/index.js';
+import { handleSTM32Compile } from '../stm32/index.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -899,6 +900,10 @@ export const compileArduinoCode = (req, res) => {
 
     if (target === 'esp32' || String(fqbn).includes('esp32')) {
         return handleESP32Compile(req, res);
+    }
+
+    if (target === 'stm32' || String(fqbn).toLowerCase().includes('stm32')) {
+        return handleSTM32Compile(req, res);
     }
 
     if (!code && (!Array.isArray(files) || files.length === 0)) {
