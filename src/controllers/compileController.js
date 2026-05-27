@@ -893,7 +893,7 @@ async function fetchPicoCircuitPythonUf2Asset() {
 }
 
 export const compileArduinoCode = (req, res) => {
-    const { code, files, sketchName, fqbn, builder } = req.body || {};
+    const { code, files, sketchName, fqbn, builder, libraries } = req.body || {};
 
     if (!code && (!Array.isArray(files) || files.length === 0)) {
         return sendCompileFailure(
@@ -1170,17 +1170,23 @@ pico_add_extra_outputs(firmware)
           return;
     }
 
-    const cliArgs = [
-        'compile',
-        '--fqbn', targetFqbn,
-        '--build-path', buildDir,
-    ];
+    // Auto-install any libraries declared by the autocoding manifest before compiling.
+    // Uses --no-overwrite so already-installed libraries are skipped instantly.
+    const requiredLibs = Array.isArray(libraries)
+        ? libraries.map((l) => String(l || '').trim()).filter(Boolean)
+        : [];
 
-    cliArgs.push(sketchDir);
+    const installLibrariesThenCompile = () => {
+        const cliArgs = [
+            'compile',
+            '--fqbn', targetFqbn,
+            '--build-path', buildDir,
+        ];
+        cliArgs.push(sketchDir);
 
-      execFile(ARDUINO_CLI_PATH, cliArgs, {
-          env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
-      }, (error, stdout, stderr) => {
+        execFile(ARDUINO_CLI_PATH, cliArgs, {
+            env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
+        }, (error, stdout, stderr) => {
         // Read produced firmware artifact regardless of warnings, but handle hard errors.
         let compiledArtifact = {
             payload: '',
@@ -1257,7 +1263,54 @@ pico_add_extra_outputs(firmware)
 
         setCompileResultCache(requestHash, responsePayload);
         return res.json({ ...responsePayload, cache: 'miss' });
-    });
+        }); // end execFile compile
+    }; // end installLibrariesThenCompile
+
+    // Sequential library install: install each required lib before compiling.
+    // --no-overwrite skips libraries already present so this is fast on repeat runs.
+    if (requiredLibs.length === 0) {
+        return installLibrariesThenCompile();
+    }
+
+    let libIdx = 0;
+    const installNext = () => {
+        if (libIdx >= requiredLibs.length) {
+            return installLibrariesThenCompile();
+        }
+        const libName = requiredLibs[libIdx++];
+        console.log(`[compile] Auto-installing library: ${libName}`);
+        execFile(
+            ARDUINO_CLI_PATH,
+            ['lib', 'install', libName, '--no-overwrite'],
+            { timeout: 60000 },
+            (libErr, libStdout, libStderr) => {
+                if (libErr) {
+                    // If --no-overwrite isn't supported (older arduino-cli), retry without it.
+                    const errMsg = String(libStderr || libStdout || libErr.message || '');
+                    if (errMsg.toLowerCase().includes('unknown flag')) {
+                        execFile(
+                            ARDUINO_CLI_PATH,
+                            ['lib', 'install', libName],
+                            { timeout: 60000 },
+                            (retryErr) => {
+                                if (retryErr) {
+                                    console.warn(`[compile] Failed to install library "${libName}":`, retryErr.message);
+                                }
+                                installNext();
+                            }
+                        );
+                    } else {
+                        console.warn(`[compile] Failed to install library "${libName}":`, errMsg);
+                        installNext();
+                    }
+                } else {
+                    console.log(`[compile] Library installed: ${libName}`);
+                    installNext();
+                }
+            }
+        );
+    };
+    installNext();
 };
 
 export const flashFirmware = (req, res) => {
