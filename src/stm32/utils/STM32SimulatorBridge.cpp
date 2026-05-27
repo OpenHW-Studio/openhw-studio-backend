@@ -1,5 +1,6 @@
 #include "SimulatorBridge.h"
 #include <Arduino.h>
+#include "SPI.h"
 
 extern "C" {
     volatile uint8_t sim_gpio_state[SIM_GPIO_COUNT];
@@ -55,228 +56,47 @@ void sim_ready() {
     sim_log(SIM_SUCCESS, "STM32 Device ready");
 }
 
+uint32_t get_flat_pin(uint32_t pin) {
+    uint32_t pin8 = (uint8_t)(int8_t)pin;
+    PinName stmPin = digitalPinToPinName(pin8);
+    if (stmPin == NC) {
+        if (pin8 < SIM_GPIO_COUNT) return pin8;
+        return 0xFF;
+    }
+    uint32_t port = STM_PORT(stmPin);
+    uint32_t pinNum = STM_PIN(stmPin);
+    uint32_t flat = port * 16 + pinNum;
+    if (flat >= SIM_GPIO_COUNT) {
+        if (pin8 < SIM_GPIO_COUNT) return pin8;
+        return 0xFF;
+    }
+    return flat;
+}
+
 const char* _get_pin_name(uint32_t pin) {
-    #ifdef PA0
-    if (pin == PA0) return "PA0";
-    #endif
-    #ifdef PA1
-    if (pin == PA1) return "PA1";
-    #endif
-    #ifdef PA2
-    if (pin == PA2) return "PA2";
-    #endif
-    #ifdef PA3
-    if (pin == PA3) return "PA3";
-    #endif
-    #ifdef PA4
-    if (pin == PA4) return "PA4";
-    #endif
-    #ifdef PA5
-    if (pin == PA5) return "PA5";
-    #endif
-    #ifdef PA6
-    if (pin == PA6) return "PA6";
-    #endif
-    #ifdef PA7
-    if (pin == PA7) return "PA7";
-    #endif
-    #ifdef PA8
-    if (pin == PA8) return "PA8";
-    #endif
-    #ifdef PA9
-    if (pin == PA9) return "PA9";
-    #endif
-    #ifdef PA10
-    if (pin == PA10) return "PA10";
-    #endif
-    #ifdef PA11
-    if (pin == PA11) return "PA11";
-    #endif
-    #ifdef PA12
-    if (pin == PA12) return "PA12";
-    #endif
-    #ifdef PA13
-    if (pin == PA13) return "PA13";
-    #endif
-    #ifdef PA14
-    if (pin == PA14) return "PA14";
-    #endif
-    #ifdef PA15
-    if (pin == PA15) return "PA15";
-    #endif
-
-    #ifdef PB0
-    if (pin == PB0) return "PB0";
-    #endif
-    #ifdef PB1
-    if (pin == PB1) return "PB1";
-    #endif
-    #ifdef PB2
-    if (pin == PB2) return "PB2";
-    #endif
-    #ifdef PB3
-    if (pin == PB3) return "PB3";
-    #endif
-    #ifdef PB4
-    if (pin == PB4) return "PB4";
-    #endif
-    #ifdef PB5
-    if (pin == PB5) return "PB5";
-    #endif
-    #ifdef PB6
-    if (pin == PB6) return "PB6";
-    #endif
-    #ifdef PB7
-    if (pin == PB7) return "PB7";
-    #endif
-    #ifdef PB8
-    if (pin == PB8) return "PB8";
-    #endif
-    #ifdef PB9
-    if (pin == PB9) return "PB9";
-    #endif
-    #ifdef PB10
-    if (pin == PB10) return "PB10";
-    #endif
-    #ifdef PB11
-    if (pin == PB11) return "PB11";
-    #endif
-    #ifdef PB12
-    if (pin == PB12) return "PB12";
-    #endif
-    #ifdef PB13
-    if (pin == PB13) return "PB13";
-    #endif
-    #ifdef PB14
-    if (pin == PB14) return "PB14";
-    #endif
-    #ifdef PB15
-    if (pin == PB15) return "PB15";
-    #endif
-
-    #ifdef PC13
-    if (pin == PC13) return "PC13";
-    #endif
-    #ifdef PC14
-    if (pin == PC14) return "PC14";
-    #endif
-    #ifdef PC15
-    if (pin == PC15) return "PC15";
-    #endif
-
+    uint32_t flat = get_flat_pin(pin);
+    if (flat == 0xFF) return nullptr;
+    
+    static char nameBuf[8];
+    uint32_t port = flat / 16;
+    uint32_t pinNum = flat % 16;
+    if (port < 8) {
+        snprintf(nameBuf, sizeof(nameBuf), "P%c%d", 'A' + port, pinNum);
+        return nameBuf;
+    }
     return nullptr;
 }
 
 int _parse_pin_name(const String& pinStr) {
-    #ifdef PA0
-    if (pinStr == "PA0") return PA0;
-    #endif
-    #ifdef PA1
-    if (pinStr == "PA1") return PA1;
-    #endif
-    #ifdef PA2
-    if (pinStr == "PA2") return PA2;
-    #endif
-    #ifdef PA3
-    if (pinStr == "PA3") return PA3;
-    #endif
-    #ifdef PA4
-    if (pinStr == "PA4") return PA4;
-    #endif
-    #ifdef PA5
-    if (pinStr == "PA5") return PA5;
-    #endif
-    #ifdef PA6
-    if (pinStr == "PA6") return PA6;
-    #endif
-    #ifdef PA7
-    if (pinStr == "PA7") return PA7;
-    #endif
-    #ifdef PA8
-    if (pinStr == "PA8") return PA8;
-    #endif
-    #ifdef PA9
-    if (pinStr == "PA9") return PA9;
-    #endif
-    #ifdef PA10
-    if (pinStr == "PA10") return PA10;
-    #endif
-    #ifdef PA11
-    if (pinStr == "PA11") return PA11;
-    #endif
-    #ifdef PA12
-    if (pinStr == "PA12") return PA12;
-    #endif
-    #ifdef PA13
-    if (pinStr == "PA13") return PA13;
-    #endif
-    #ifdef PA14
-    if (pinStr == "PA14") return PA14;
-    #endif
-    #ifdef PA15
-    if (pinStr == "PA15") return PA15;
-    #endif
-
-    #ifdef PB0
-    if (pinStr == "PB0") return PB0;
-    #endif
-    #ifdef PB1
-    if (pinStr == "PB1") return PB1;
-    #endif
-    #ifdef PB2
-    if (pinStr == "PB2") return PB2;
-    #endif
-    #ifdef PB3
-    if (pinStr == "PB3") return PB3;
-    #endif
-    #ifdef PB4
-    if (pinStr == "PB4") return PB4;
-    #endif
-    #ifdef PB5
-    if (pinStr == "PB5") return PB5;
-    #endif
-    #ifdef PB6
-    if (pinStr == "PB6") return PB6;
-    #endif
-    #ifdef PB7
-    if (pinStr == "PB7") return PB7;
-    #endif
-    #ifdef PB8
-    if (pinStr == "PB8") return PB8;
-    #endif
-    #ifdef PB9
-    if (pinStr == "PB9") return PB9;
-    #endif
-    #ifdef PB10
-    if (pinStr == "PB10") return PB10;
-    #endif
-    #ifdef PB11
-    if (pinStr == "PB11") return PB11;
-    #endif
-    #ifdef PB12
-    if (pinStr == "PB12") return PB12;
-    #endif
-    #ifdef PB13
-    if (pinStr == "PB13") return PB13;
-    #endif
-    #ifdef PB14
-    if (pinStr == "PB14") return PB14;
-    #endif
-    #ifdef PB15
-    if (pinStr == "PB15") return PB15;
-    #endif
-
-    #ifdef PC13
-    if (pinStr == "PC13") return PC13;
-    #endif
-    #ifdef PC14
-    if (pinStr == "PC14") return PC14;
-    #endif
-    #ifdef PC15
-    if (pinStr == "PC15") return PC15;
-    #endif
-
-    return pinStr.toInt();
+    if (pinStr.length() >= 3 && pinStr[0] == 'P') {
+        char portChar = pinStr[1];
+        int pinNum = pinStr.substring(2).toInt();
+        int port = portChar - 'A';
+        if (port >= 0 && port < 8 && pinNum >= 0 && pinNum < 16) {
+            return port * 16 + pinNum;
+        }
+    }
+    return get_flat_pin(pinStr.toInt());
 }
 
 static String rxBuf = "";
@@ -390,43 +210,45 @@ extern "C" void yield(void) {
 }
 
 extern "C" void sim_pinMode(uint32_t pin, uint32_t mode) {
-    if (pin >= SIM_GPIO_COUNT) return;
+    uint32_t flatPin = get_flat_pin(pin);
+    if (flatPin == 0xFF) return;
     _process_serial_input();
 
-    if (sim_dht_enabled[pin]) {
+    if (sim_dht_enabled[flatPin]) {
         if (mode == INPUT || mode == INPUT_PULLUP) {
-            if (sim_gpio_mode[pin] == OUTPUT && sim_gpio_state[pin] == 0) {
-                unsigned long low_duration = micros() - sim_dht_low_start_us[pin];
+            if (sim_gpio_mode[flatPin] == OUTPUT && sim_gpio_state[flatPin] == 0) {
+                unsigned long low_duration = micros() - sim_dht_low_start_us[flatPin];
                 if (low_duration > 800) {
-                    sim_dht_trigger_us[pin] = micros();
-                    sim_dht_in_progress[pin] = true;
+                    sim_dht_trigger_us[flatPin] = micros();
+                    sim_dht_in_progress[flatPin] = true;
                 }
             }
         }
     }
 
-    sim_gpio_mode[pin] = mode;
-    if (mode == INPUT_PULLUP && sim_gpio_state[pin] == 0xFF) {
-        sim_gpio_state[pin] = 1;
-    } else if (mode == INPUT_PULLDOWN && sim_gpio_state[pin] == 0xFF) {
-        sim_gpio_state[pin] = 0;
+    sim_gpio_mode[flatPin] = mode;
+    if (mode == INPUT_PULLUP && sim_gpio_state[flatPin] == 0xFF) {
+        sim_gpio_state[flatPin] = 1;
+    } else if (mode == INPUT_PULLDOWN && sim_gpio_state[flatPin] == 0xFF) {
+        sim_gpio_state[flatPin] = 0;
     }
 }
 
 extern "C" uint32_t sim_digitalRead(uint32_t pin) {
-    if (pin >= SIM_GPIO_COUNT) return LOW;
+    uint32_t flatPin = get_flat_pin(pin);
+    if (flatPin == 0xFF) return LOW;
     _process_serial_input();
 
-    if (sim_dht_enabled[pin]) {
-        if (sim_dht_in_progress[pin]) {
-            unsigned long elapsed = micros() - sim_dht_trigger_us[pin];
+    if (sim_dht_enabled[flatPin]) {
+        if (sim_dht_in_progress[flatPin]) {
+            unsigned long elapsed = micros() - sim_dht_trigger_us[flatPin];
             if (elapsed < 40) return HIGH;
             if (elapsed < 120) return LOW;
             if (elapsed < 200) return HIGH;
             
             unsigned long bit_start = 200;
-            uint16_t h_val = sim_dht_hum[pin];
-            int16_t t_val = sim_dht_temp[pin];
+            uint16_t h_val = sim_dht_hum[flatPin];
+            int16_t t_val = sim_dht_temp[flatPin];
             uint16_t t_unsigned = abs(t_val);
             if (t_val < 0) t_unsigned |= 0x8000;
             uint8_t checksum = ((h_val >> 8) + (h_val & 0xFF) + (t_unsigned >> 8) + (t_unsigned & 0xFF)) & 0xFF;
@@ -446,46 +268,48 @@ extern "C" uint32_t sim_digitalRead(uint32_t pin) {
             }
             
             if (elapsed >= bit_start && elapsed < bit_start + 50) return LOW;
-            sim_dht_in_progress[pin] = false;
+            sim_dht_in_progress[flatPin] = false;
             return HIGH;
         }
         return HIGH;
     }
 
-    uint8_t val = sim_gpio_state[pin];
+    uint8_t val = sim_gpio_state[flatPin];
     if (val == 0xFF) {
-        return (sim_gpio_mode[pin] == INPUT_PULLUP) ? HIGH : LOW;
+        return (sim_gpio_mode[flatPin] == INPUT_PULLUP) ? HIGH : LOW;
     }
     return val;
 }
 
 extern "C" void sim_digitalWrite(uint32_t pin, uint32_t value) {
-    if (pin >= SIM_GPIO_COUNT) return;
+    uint32_t flatPin = get_flat_pin(pin);
+    if (flatPin == 0xFF) return;
+    SPI.flush();
     _process_serial_input();
 
     char dbg[64];
-    snprintf(dbg, sizeof(dbg), "digitalWrite pin=%d val=%d", pin, value);
-    sim_log(SIM_INFO, dbg);
+    snprintf(dbg, sizeof(dbg), "digitalWrite pin=%lu (flat=%lu) val=%lu", pin, flatPin, value);
+    // sim_log(SIM_INFO, dbg);
 
-    if (sim_dht_enabled[pin]) {
+    if (sim_dht_enabled[flatPin]) {
         if (value == 0) {
-            if (sim_gpio_state[pin] != 0) {
-                sim_dht_low_start_us[pin] = micros();
+            if (sim_gpio_state[flatPin] != 0) {
+                sim_dht_low_start_us[flatPin] = micros();
             }
         } else {
-            if (sim_gpio_state[pin] == 0) {
-                unsigned long low_duration = micros() - sim_dht_low_start_us[pin];
+            if (sim_gpio_state[flatPin] == 0) {
+                unsigned long low_duration = micros() - sim_dht_low_start_us[flatPin];
                 if (low_duration > 800) {
-                    sim_dht_trigger_us[pin] = micros();
-                    sim_dht_in_progress[pin] = true;
+                    sim_dht_trigger_us[flatPin] = micros();
+                    sim_dht_in_progress[flatPin] = true;
                 }
             }
         }
     }
 
     const uint8_t level = value ? 1 : 0;
-    if (sim_gpio_state[pin] == level) return;
-    sim_gpio_state[pin] = level;
+    if (sim_gpio_state[flatPin] == level) return;
+    sim_gpio_state[flatPin] = level;
 
     const char* pinName = _get_pin_name(pin);
     if (!pinName) return;
@@ -496,11 +320,12 @@ extern "C" void sim_digitalWrite(uint32_t pin, uint32_t value) {
 }
 
 extern "C" uint32_t sim_analogRead(uint32_t pin) {
-    if (pin >= SIM_GPIO_COUNT) return 0;
+    uint32_t flatPin = get_flat_pin(pin);
+    if (flatPin == 0xFF) return 0;
     _process_serial_input();
-    uint16_t val = sim_gpio_analog_value[pin];
+    uint16_t val = sim_gpio_analog_value[flatPin];
     if (val == 0xFFFF) {
-        uint8_t dig = sim_gpio_state[pin];
+        uint8_t dig = sim_gpio_state[flatPin];
         if (dig == 0xFF) return 0;
         return dig ? 4095 : 0;
     }

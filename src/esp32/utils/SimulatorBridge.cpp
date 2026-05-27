@@ -1,5 +1,6 @@
 #include "SimulatorBridge.h"
 #include <Arduino.h>
+#include "SPI.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -248,6 +249,7 @@ uint8_t sim_digitalRead(uint8_t pin) {
 
 void sim_digitalWrite(uint8_t pin, uint8_t value) {
     if (pin >= SIM_GPIO_COUNT) return;
+    SPI.flush();
     
     if (sim_dht_enabled[pin]) {
         if (value == 0) {

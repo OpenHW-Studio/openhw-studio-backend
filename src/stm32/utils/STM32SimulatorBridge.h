@@ -16,7 +16,7 @@
 
 #define SIM_GPIO_COUNT      128
 #define SIM_CMD_MAX_LEN     64
-#define SIM_UART_BAUD       115200
+#define SIM_UART_BAUD       2000000
 
 // Log-level tokens
 #define SIM_INFO    "INFO"
