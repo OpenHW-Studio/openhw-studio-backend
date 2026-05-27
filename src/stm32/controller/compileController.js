@@ -39,6 +39,7 @@ const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
 // Simulator shim headers injected into every STM32 sketch build directory
 const SHIM_HEADERS = Object.freeze([
     { src: path.resolve(__dirname, '../utils/STM32SimulatorBridge.h'),  dst: 'SimulatorBridge.h' },
+    { src: path.resolve(__dirname, '../utils/STM32SimulatorBridge.cpp'),dst: 'SimulatorBridge.cpp' },
     { src: path.resolve(__dirname, '../utils/STM32SimulatorWire.h'),    dst: 'Wire.h'            },
     { src: path.resolve(__dirname, '../utils/STM32SimulatorWire.cpp'),  dst: 'Wire.cpp'          },
     { src: path.resolve(__dirname, '../utils/STM32SimulatorSPI.h'),     dst: 'SPI.h'             },
@@ -300,16 +301,6 @@ export const compileArduinoCode = (req, res) => {
             '#define setup _sim_user_setup',
             '#define loop  _sim_user_loop',
             '',
-            'void sim_pinMode(uint8_t pin, uint8_t mode);',
-            'void sim_digitalWrite(uint8_t pin, uint8_t val);',
-            'uint8_t sim_digitalRead(uint8_t pin);',
-            'uint16_t sim_analogRead(uint8_t pin);',
-            '',
-            '#define pinMode sim_pinMode',
-            '#define digitalWrite sim_digitalWrite',
-            '#define digitalRead sim_digitalRead',
-            '#define analogRead sim_analogRead',
-            '',
         ].join('\n');
 
         const suffix = [
@@ -374,12 +365,14 @@ export const compileArduinoCode = (req, res) => {
     });
 
     // ── Async: compile → launch Renode ────────────────────────────────────────
-    const CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
+    const CACHE_DIR = path.join(buildDir, 'cache');
     const compileArgs = [
         'compile',
+        '--clean',
         '--fqbn',             STM32_FQBN,
         '--build-cache-path', CACHE_DIR,
         '--output-dir',       buildDir,
+        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
         sketchFile,
     ];
 

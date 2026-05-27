@@ -186,3 +186,4 @@ initSTM32Module(server);
 server.listen(PORT, () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
 });
+// Nodemon trigger change for --port 0 fix

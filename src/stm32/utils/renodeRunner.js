@@ -308,19 +308,22 @@ export default class RenodeRunner {
             `    size: 0x100`,
             `    initable: true`,
             `    script: '''`,
-            `if 'dwt_cyccnt' not in dir():`,
-            `    dwt_cyccnt = 0`,
             `if request.IsRead:`,
             `    if request.Offset == 0x04:`,
-            `        dwt_cyccnt = (dwt_cyccnt + 72000) & 0xFFFFFFFF`,
-            `        request.Value = dwt_cyccnt`,
+            `        cpu = None`,
+            `        for c in self.GetMachine().SystemBus.GetCPUs():`,
+            `            cpu = c`,
+            `            break`,
+            `        if cpu is not None:`,
+            `            request.Value = int(cpu.ExecutedInstructions * 10) & 0xFFFFFFFF`,
+            `        else:`,
+            `            request.Value = 0`,
             `    elif request.Offset == 0x00:`,
             `        request.Value = 1`,
             `    else:`,
             `        request.Value = 0`,
             `if request.IsWrite:`,
-            `    if request.Offset == 0x04:`,
-            `        dwt_cyccnt = request.Value`,
+            `    pass`,
             `'''`,
         ].join('\n');
 
@@ -376,6 +379,7 @@ export default class RenodeRunner {
         const args = [
             '--plain',           // no GUI / no interactive console
             '--disable-xwt',    // disable XWT GUI subsystem (headless)
+            '--port', '0',      // disable / allocate random telnet monitor port to prevent collisions
             '-e',               // execute inline script
             `include @${this._rescPath}`,
         ];
@@ -476,9 +480,6 @@ export default class RenodeRunner {
             // the returned buffer contains only raw UART bytes.
             const data = this._handleTelnet(socket, chunk);
             if (data.length > 0) {
-                const hex = data.toString('hex').replace(/.{2}/g, '$& ').trim();
-                const txt = data.toString('utf8').replace(/[\r\n]/g, '↵').replace(/[^\x20-\x7E↵]/g, '·');
-                this._logDebug(`TCP-DATA (${data.length}B): hex=[${hex}] txt=[${txt}]`);
                 this._parser.feed(data);
             }
         });
@@ -620,6 +621,26 @@ export default class RenodeRunner {
             return;
         }
 
+        // >TONE:PA5:440:0<
+        if (frame.startsWith('TONE:')) {
+            const parts = frame.split(':');
+            if (parts.length >= 3) {
+                const pin   = parts[1];
+                const frequency = parseInt(parts[2], 10);
+                const duration  = parts[3] ? parseInt(parts[3], 10) : 0;
+                if (pin && !isNaN(frequency)) {
+                    this.wsManager.sendToSession(this.buildId, {
+                        type:    'TONE',
+                        buildId: this.buildId,
+                        pin,
+                        frequency,
+                        duration,
+                    });
+                }
+            }
+            return;
+        }
+
         // >SIM:READY<
         if (frame === 'SIM:READY') {
             this.isReady = true;
@@ -696,10 +717,12 @@ export default class RenodeRunner {
         // >SPIBUF:<hex>< — SPI bulk write
         if (frame.startsWith('SPIBUF:')) {
             const hex = frame.slice('SPIBUF:'.length);
+            const bin = Buffer.from(hex, 'hex');
+            const b64 = bin.toString('base64');
             this.wsManager.sendToSession(this.buildId, {
-                type:    'SPI_TRANSACTION',
+                type:    'SPI_BATCH',
                 buildId: this.buildId,
-                hex,
+                b64,
             });
             return;
         }

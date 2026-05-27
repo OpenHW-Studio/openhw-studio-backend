@@ -18,8 +18,9 @@ void SPIClass::flush() {
 
 void SPIClass::write(uint8_t data) {
     _tx_buf[_tx_len++] = data;
-    if (_tx_len >= 64) flush();
-    else flush();
+    if (_tx_len >= 64) {
+        flush();
+    }
 }
 
 void SPIClass::write16(uint16_t data) {
