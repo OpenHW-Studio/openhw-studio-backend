@@ -40,8 +40,8 @@ const __dirname  = path.dirname(__filename);
 
 // ─── Path constants ────────────────────────────────────────────────────────────
 
-const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
-const ESPTOOL_PATH     = process.env.ESPTOOL_PATH     || 'esptool.py';
+const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'e:\\\\FOSSEE\\\\bin\\\\arduino-cli.exe';
+const ESPTOOL_PATH     = process.env.ESPTOOL_PATH     || 'C:\\\\Users\\\\ACER\\\\AppData\\\\Local\\\\Arduino15\\\\packages\\\\esp32\\\\tools\\\\esptool_py\\\\5.1.0\\\\esptool.exe';
 
 const TEMP_DIR    = path.resolve(__dirname, '../../../temp');
 const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
@@ -206,7 +206,7 @@ function _shiftLineNumbers(output, sketchFile, isSharedLibraryMode = false) {
  */
 function _requireEsptool() {
     const candidates = [
-        { cmd: process.env.ESPTOOL_PATH || 'esptool.py', args: [] },
+        { cmd: ESPTOOL_PATH, args: [] },
         { cmd: 'esptool', args: [] },
         { cmd: 'python', args: ['-m', 'esptool'] },
         { cmd: 'python3', args: ['-m', 'esptool'] }

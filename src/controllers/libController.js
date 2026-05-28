@@ -6,7 +6,7 @@ import { logAdminAction } from './adminController.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ARDUINO_CLI_PATH = 'arduino-cli';
+const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'e:\\\\FOSSEE\\\\bin\\\\arduino-cli.exe';
 
 // Simple in-memory cache for library searches to boost performance
 const searchCache = new Map();
