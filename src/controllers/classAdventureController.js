@@ -79,7 +79,7 @@ assessment: {
   };
 };
 
-const sanitizeAdventureContent = (content = {}) => {
+export const sanitizeAdventureContent = (content = {}) => {
   const worlds = Array.isArray(content?.worlds) && content.worlds.length
     ? content.worlds.map((world, index) => ({
         id: String(world?.id || `world-${index + 1}`).trim(),
@@ -123,7 +123,7 @@ const ensureClassroomAccess = async (classId, user) => {
   return { classroom };
 };
 
-const resolveAdventureConfig = (configDoc) => sanitizeAdventureContent(configDoc?.content || {});
+export const resolveAdventureConfig = (configDoc) => sanitizeAdventureContent(configDoc?.content || {});
 
 export const getClassAdventureConfig = async (req, res) => {
   try {
