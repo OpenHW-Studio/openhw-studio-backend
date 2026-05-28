@@ -1,6 +1,11 @@
 {
-    "ignore": [
-        "temp/*",
-        "temp/**"
-    ]
+  "watch": ["src"],
+  "ext": "js,mjs,cjs,json",
+  "ignore": [
+    "builds/**",
+    "temp/**",
+    ".env",
+    "*.log"
+  ],
+  "delay": 500
 }

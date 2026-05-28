@@ -141,3 +141,7 @@ test_comp.js
 
 .env
 env
+builds/
+
+issues-report.md
+client_secret_330028772877-csjlu9u6nam4bq6i1ergcrs4oetkhnqv.apps.googleusercontent.com.jsonclient_secret_*.json
