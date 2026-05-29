@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import crypto from 'crypto';
 
 // GitHub API configuration
 const GITHUB_TOKEN = process.env.GITHUB_ADMIN_TOKEN;
@@ -151,9 +152,18 @@ let deploymentNotifications = [];
 export const notifyChange = (req, res) => {
     const { repo, prTitle, prDescription, filesChanged, secret } = req.body;
     
-    // Basic validation to prevent spamming the dashboard
-    if (WEBHOOK_SECRET && secret !== WEBHOOK_SECRET) {
-        return res.status(401).json({ error: 'Invalid webhook secret.' });
+    // Constant-time secret comparison to prevent timing oracle attacks
+    if (WEBHOOK_SECRET) {
+        const provided = Buffer.from(String(secret || ''));
+        const expected = Buffer.from(WEBHOOK_SECRET);
+        const lengthMatch = provided.length === expected.length;
+        // timingSafeEqual requires same-length buffers; use a padded compare if lengths differ
+        const paddedProvided = Buffer.alloc(expected.length, 0);
+        provided.copy(paddedProvided, 0, 0, Math.min(provided.length, expected.length));
+        const secretsMatch = lengthMatch && crypto.timingSafeEqual(paddedProvided, expected);
+        if (!secretsMatch) {
+            return res.status(401).json({ error: 'Invalid webhook secret.' });
+        }
     }
 
     if (!repo || !ALLOWED_REPOS.includes(repo)) {

@@ -15,10 +15,10 @@ import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary } from '..
 
 const router = Router();
 
-// Compile Arduino code
-router.post('/', compileArduinoCode);
-router.post('/diagnostics', compileArduinoCode);
-router.post('/flash', flashFirmware);
+// Compile Arduino code — requires authentication to prevent unauthenticated DoS
+router.post('/', protectRoute, compileArduinoCode);
+router.post('/diagnostics', protectRoute, compileArduinoCode);
+router.post('/flash', protectRoute, flashFirmware);
 router.get('/ports', listSerialPorts);
 router.get('/pico/micropython-uf2', getDefaultPicoMicroPythonUf2);
 router.get('/pico/micropython-hex', getDefaultPicoMicroPythonHex);
