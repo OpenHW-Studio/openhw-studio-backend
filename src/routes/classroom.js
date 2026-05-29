@@ -33,6 +33,8 @@ import {
   getMyClassAdventureProgress,
   postClassAdventureProgressEvent,
   getClassAdventureStudentProgress,
+  unlockAdventureComponents,
+  getAdventureUnlocks,
 } from "../controllers/classAdventureController.js";
 import { classroomUpload } from "../middleware/classroomUpload.js";
 
@@ -69,6 +71,8 @@ router.get("/:classId/adventure", protectRoute, getResolvedClassAdventure);
 router.get("/:classId/adventure/progress/me", protectRoute, getMyClassAdventureProgress);
 router.post("/:classId/adventure/progress/events", protectRoute, postClassAdventureProgressEvent);
 router.get("/:classId/adventure/progress/students", protectRoute, getClassAdventureStudentProgress);
+router.get("/:classId/adventure/unlocks", protectRoute, getAdventureUnlocks);
+router.post("/:classId/adventure/unlocks", protectRoute, unlockAdventureComponents);
 
 router.get("/:classId", protectRoute, getClassroomById);
 router.put("/:classId", protectRoute, updateClassroom);

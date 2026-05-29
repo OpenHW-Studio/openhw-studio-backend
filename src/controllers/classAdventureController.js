@@ -300,3 +300,71 @@ export const getClassAdventureStudentProgress = async (req, res) => {
     return res.status(500).json({ message: "Failed to fetch student progress.", error: error.message });
   }
 };
+
+export const unlockAdventureComponents = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { componentTypes } = req.body;
+
+    const { classroom, error } = await ensureClassroomAccess(classId, req.user);
+    if (error) return res.status(error.status).json({ message: error.message });
+
+    if (extractId(classroom.teacher) === extractId(req.user?._id)) {
+      return res.status(403).json({ message: "Teachers cannot modify student unlocks." });
+    }
+
+    if (!Array.isArray(componentTypes) || componentTypes.length === 0) {
+      return res.status(400).json({ message: "componentTypes must be a non-empty array" });
+    }
+
+    const progress = await ClassAdventureProgress.findOneAndUpdate(
+      { classId, studentId: req.user._id },
+      { $setOnInsert: { classId, studentId: req.user._id } },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    );
+
+    let allUnlocked = false;
+    for (const type of componentTypes) {
+      if (type === '*') {
+        allUnlocked = true;
+        break;
+      }
+      const componentType = String(type);
+      if (componentType && !progress.unlockedComponents.includes(componentType)) {
+        progress.unlockedComponents.push(componentType);
+      }
+    }
+
+    if (allUnlocked) {
+      progress.unlockedComponents = ['*'];
+    }
+
+    progress.lastActivityAt = new Date();
+    await progress.save();
+
+    return res.status(200).json({
+      message: "Components unlocked successfully.",
+      unlockedComponents: progress.unlockedComponents,
+    });
+  } catch (error) {
+    console.error("[unlockAdventureComponents]", error);
+    return res.status(500).json({ message: "Failed to unlock components.", error: error.message });
+  }
+};
+
+export const getAdventureUnlocks = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { error } = await ensureClassroomAccess(classId, req.user);
+    if (error) return res.status(error.status).json({ message: error.message });
+
+    const progress = await ClassAdventureProgress.findOne({ classId, studentId: req.user._id });
+
+    return res.status(200).json({
+      unlockedComponents: progress?.unlockedComponents || [],
+    });
+  } catch (error) {
+    console.error("[getAdventureUnlocks]", error);
+    return res.status(500).json({ message: "Failed to fetch unlocks.", error: error.message });
+  }
+};

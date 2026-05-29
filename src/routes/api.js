@@ -7,6 +7,8 @@ import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
+import gamificationRouter from './gamification.js'
+import projectBankRouter from './projectBank.js'
 
 import { requireAdmin } from '../middleware/authorization.js';
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
@@ -76,7 +78,9 @@ router.post('/validation/run', validateCircuitController);
 router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
-router.use('/progress', progressRouter)
+router.use('/progress', progressRouter);
+router.use('/gamification', gamificationRouter);
+router.use('/project-bank', projectBankRouter);
 
 // Public System Status (for landing page)
 router.get('/public/system-status', getPublicSystemStatus);
