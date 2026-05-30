@@ -49,6 +49,7 @@ const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
 // Simulator shim headers injected into every sketch build directory
 const SHIM_HEADERS = Object.freeze([
     { src: path.resolve(__dirname, '../utils/SimulatorBridge.h'),            dst: 'SimulatorBridge.h'    },
+    { src: path.resolve(__dirname, '../utils/SimulatorBridge.cpp'),          dst: 'SimulatorBridge.cpp'  },
     { src: path.resolve(__dirname, '../utils/SimulatorWire.h'),              dst: 'Wire.h'               },
     { src: path.resolve(__dirname, '../utils/SimulatorWire.cpp'),            dst: 'Wire.cpp'             },
     { src: path.resolve(__dirname, '../utils/SimulatorSPI.h'),               dst: 'SPI.h'                },
@@ -72,7 +73,7 @@ const MAX_SESSIONS = parseInt(process.env.MAX_SESSIONS || '10', 10);
  * Any QEMU runner that has not emitted UART output for this many ms is killed.
  */
 const SESSION_TIMEOUT_MS = parseInt(
-    process.env.SESSION_TIMEOUT_MS || String(15 * 1000), // 15 seconds
+    process.env.SESSION_TIMEOUT_MS || String(300 * 1000), // 5 minutes
     10,
 );
 
@@ -577,16 +578,6 @@ export const compileArduinoCode = (req, res) => {
                 '#define setup _sim_user_setup',
                 '#define loop  _sim_user_loop',
                 '',
-                'void sim_pinMode(uint8_t pin, uint8_t mode);',
-                'void sim_digitalWrite(uint8_t pin, uint8_t val);',
-                'uint8_t sim_digitalRead(uint8_t pin);',
-                'uint16_t sim_analogRead(uint8_t pin);',
-                '',
-                '#define pinMode sim_pinMode',
-                '#define digitalWrite sim_digitalWrite',
-                '#define digitalRead sim_digitalRead',
-                '#define analogRead sim_analogRead',
-                '',
             ].join('\n');
 
             const suffix = [
@@ -664,12 +655,14 @@ export const compileArduinoCode = (req, res) => {
     });
 
     // ── Async: compile → merge → launch QEMU ─────────────────────────────────
-    const CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
+    const CACHE_DIR = path.join(buildDir, 'cache');
     const compileArgs = [
         'compile',
+        '--clean',
         '--fqbn',             ESP32_FQBN,
         '--build-cache-path', CACHE_DIR,
         '--output-dir',       buildDir,
+        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
         sketchFile,
     ];
 

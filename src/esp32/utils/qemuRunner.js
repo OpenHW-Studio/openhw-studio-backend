@@ -78,6 +78,7 @@ const ROM_NOISE_PATTERNS = Object.freeze([
  * Format: >GPIO:<pin>:<val><
  */
 const GPIO_PATTERN = />GPIO:(\d+):([01])</;
+const TONE_PATTERN = />TONE:(\d+):(\d+):(\d+)</;
 
 /**
  * SimulatorBridge.h I2C frame.
@@ -1082,6 +1083,17 @@ export default class QemuRunner {
             } else {
                 this._sendWs({ type: 'GPIO_SYNC', pin, value });
             }
+            return;
+        }
+
+        // ── TONE shim intercept ───────────────────────────────────────────────
+        // >TONE:<pin>:<freq>:<dur>< must NEVER reach the serial monitor.
+        const toneMatch = line.match(TONE_PATTERN);
+        if (toneMatch) {
+            const pin = parseInt(toneMatch[1], 10);
+            const frequency = parseInt(toneMatch[2], 10);
+            const duration = parseInt(toneMatch[3], 10);
+            this._sendWs({ type: 'TONE', pin, frequency, duration });
             return;
         }
 

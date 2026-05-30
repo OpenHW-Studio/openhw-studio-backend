@@ -12,6 +12,7 @@ import { searchLibrary, installLibrary, listLibraries } from '../controllers/lib
 import { protectRoute } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/authorization.js';
 import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary } from '../esp32/index.js';
+import { handleSTM32Stop } from '../stm32/index.js';
 
 const router = Router();
 
@@ -28,6 +29,9 @@ router.get('/pico/circuitpython-uf2', getDefaultPicoCircuitPythonUf2);
 router.post('/esp32/stop/:buildId', handleESP32Stop);
 router.post('/esp32/direct-boot', handleESP32DirectBoot);
 router.post('/esp32/run-binary', handleESP32RunBinary);
+
+// STM32 Renode routes
+router.post('/stm32/stop/:buildId', handleSTM32Stop);
 
 // Library Management
 router.get('/lib-search', searchLibrary);
