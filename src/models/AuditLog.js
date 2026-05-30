@@ -6,7 +6,7 @@ const auditLogSchema = new mongoose.Schema({
     details: { type: String },
     timestamp: { type: Date, default: Date.now },
     ip: { type: String },
-    metadata: { type: Object } // Store relevant IDs like componentId or serviceName
+    metadata: { type: Object } // Store relevant ID's like componentID or serviceName
 });
 
 const AuditLog = mongoose.model('AuditLog', auditLogSchema);

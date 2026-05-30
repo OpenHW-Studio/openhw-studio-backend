@@ -51,6 +51,9 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       - name: Build and push Docker images
         uses: docker/build-push-action@v5
         with:
@@ -60,6 +63,8 @@ jobs:
             tags: |
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:develop
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
+            cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache
+            cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache,mode=max
 
       - name: Build and push Health Agent
         if: steps.filter.outputs.agent == 'true'
