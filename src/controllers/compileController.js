@@ -662,9 +662,9 @@ function resolveNinjaExecutable() {
     return '';
 }
 
-function execFileAsync(cmd, args) {
+function execFileAsync(cmd, args, options = {}) {
     return new Promise((resolve, reject) => {
-        execFile(cmd, args, (error, stdout, stderr) => {
+        execFile(cmd, args, options, (error, stdout, stderr) => {
             if (error) return reject(new Error(stderr || stdout || error.message));
             resolve({ stdout, stderr });
         });
@@ -894,7 +894,7 @@ async function fetchPicoCircuitPythonUf2Asset() {
     }
 }
 
-export const compileArduinoCode = (req, res) => {
+export const compileArduinoCode = async (req, res) => {
     const { code, files, sketchName, fqbn, builder, target } = req.body || {};
 
     if (target === 'esp32' || String(fqbn).includes('esp32')) {
@@ -911,6 +911,21 @@ export const compileArduinoCode = (req, res) => {
     }
 
     let targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
+    
+    if (Array.isArray(files)) {
+        const libFile = files.find(f => f.name === 'library.txt' || f.name === 'libraries.txt');
+        if (libFile && typeof libFile.content === 'string') {
+            const requestedLibraries = libFile.content.split('\n').map(l => l.trim()).filter(Boolean);
+            if (requestedLibraries.length > 0) {
+                console.log(`[Compile] Installing requested libraries: ${requestedLibraries.join(', ')}`);
+                try {
+                    await execFileAsync(ARDUINO_CLI_PATH, ['lib', 'install', ...requestedLibraries], { timeout: 60000 });
+                } catch (e) {
+                    console.error("Library install error:", e);
+                }
+            }
+        }
+    }
     
     const normalizedBuilder = String(builder || '').trim() || 'arduino-cli';
     const safeSketchName = sanitizeSketchName(sketchName || 'sketch');
