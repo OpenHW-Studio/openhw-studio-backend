@@ -30,6 +30,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -159,9 +160,22 @@ export default class RenodeRunner {
     // ── Public API ────────────────────────────────────────────────────────────
 
     start() {
-        this._writeReplFile();
-        this._writeRescScript();
-        this._spawnRenode();
+        const cost = getCost('stm32', 'sim');
+        const tag = this._isPooled ? `stm32:hotpool` : `stm32:sim:${this.buildId.substring(0, 8)}`;
+        console.log(`[Renode:${this.buildId}] Requesting ${cost} simulation points with tag "${tag}"...`);
+        acquirePoints(cost, tag).then((allocId) => {
+            this._reservedPointsKey = allocId;
+            if (this._destroyed) {
+                releasePoints(allocId);
+                return;
+            }
+            this._writeReplFile();
+            this._writeRescScript();
+            this._spawnRenode();
+        }).catch(err => {
+            console.error(`[Renode:${this.buildId}] Failed to acquire simulation points:`, err.message);
+            this.kill();
+        });
     }
 
     kill() {
@@ -176,6 +190,10 @@ export default class RenodeRunner {
             }, 2000);
         }
         console.log(`[Renode:${this.buildId}] 🛑 Killed`);
+        if (this._reservedPointsKey) {
+            releasePoints(this._reservedPointsKey);
+            this._reservedPointsKey = null;
+        }
     }
 
     reload(newElfPath) {

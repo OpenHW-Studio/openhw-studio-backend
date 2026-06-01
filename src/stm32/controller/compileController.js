@@ -28,6 +28,7 @@ import wsManager  from '../utils/websocketManager.js';
 import RenodeRunner from '../utils/renodeRunner.js';
 import { acquireStm32Runner } from '../../services/hotPoolManager.js';
 import { enqueueCompile } from '../../services/compileQueueManager.js';
+import { getCost } from '../../services/resourceManager.js';
 import { parseLibrariesTxt } from '../../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../../services/dynamicLibraryManager.js';
 import { pruneUniversalCachePool } from '../../services/compileCachePruner.js';
@@ -484,8 +485,8 @@ export const compileArduinoCode = async (req, res) => {
 
     console.log(`[STM32:Compile:${buildId}] 🔨 Queuing compile task (fqbn=${STM32_FQBN})`);
 
-    // Wrap Arduino compile in global queue (200 points)
-    enqueueCompile(200, () => {
+    // Wrap Arduino compile in global queue
+    enqueueCompile(getCost('stm32', 'compile'), () => {
         return new Promise((resolve) => {
             execFile(
                 ARDUINO_CLI_PATH,

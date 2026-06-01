@@ -16,6 +16,8 @@ import { initSTM32Module } from './stm32/index.js';
 import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
 import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
 import { initLibraryIndexService } from './services/libraryIndexService.js';
+import { runCalibration } from './services/calibrationSuite.js';
+import { reloadBudget } from './services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -217,8 +219,19 @@ const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
 initESP32Module(server);
 initSTM32Module(server);
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
+
+  const budgetFile = path.resolve(backendRoot, 'data/calibrated_budget.json');
+  if (!fs.existsSync(budgetFile)) {
+    console.log('[Boot] Calibrated budget file missing. Running calibration...');
+    try {
+      await runCalibration();
+      reloadBudget();
+    } catch (err) {
+      console.error('[Boot] Calibration failed:', err);
+    }
+  }
 
   // Hot Pool: pre-warm one idle QEMU (ESP32) and one Renode (STM32) VM.
   // Set HOT_POOL_ENABLED=false in .env to disable (e.g. very low-RAM machines).

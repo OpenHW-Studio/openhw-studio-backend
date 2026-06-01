@@ -34,7 +34,7 @@ router.get('/components/public-installed', backupInstalledComponents);
 
 
 import { getPendingDeployments, approveDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild, getWorkflowLogs } from '../controllers/deploymentController.js';
-import { getInfrastructureStatus, getSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus } from '../controllers/adminController.js';
+import { getInfrastructureStatus, getSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus, getResourceStatus, recalibrate } from '../controllers/adminController.js';
 
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
@@ -48,6 +48,8 @@ router.get('/admin/system-logs', protectRoute, requireAdmin, getSystemLogs);
 router.get('/admin/usage-analytics', protectRoute, requireAdmin, getUsageAnalytics);
 router.get('/admin/audit-history', protectRoute, requireAdmin, getAuditHistory);
 router.post('/admin/maintenance/toggle', protectRoute, requireAdmin, toggleMaintenanceMode);
+router.get('/admin/resource-status', protectRoute, requireAdmin, getResourceStatus);
+router.post('/admin/recalibrate', protectRoute, requireAdmin, recalibrate);
 
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)

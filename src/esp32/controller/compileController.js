@@ -36,6 +36,7 @@ import wsManager  from '../utils/websocketManager.js';
 import QemuRunner from '../utils/qemuRunner.js';
 import { acquireEsp32Runner } from '../../services/hotPoolManager.js';
 import { enqueueCompile } from '../../services/compileQueueManager.js';
+import { getCost } from '../../services/resourceManager.js';
 import { parseLibrariesTxt } from '../../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../../services/dynamicLibraryManager.js';
 import { pruneUniversalCachePool } from '../../services/compileCachePruner.js';
@@ -604,8 +605,8 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
             spiffs_files: req.body.spiffs_files || null
         };
 
-        // Wrap ESP-IDF compile in global queue (200 points)
-        const exitCode = await enqueueCompile(200, () => {
+        // Wrap ESP-IDF compile in global queue
+        const exitCode = await enqueueCompile(getCost('esp32', 'compile'), () => {
             return new Promise((resolve, reject) => {
                 const child = spawn(pythonCmd, [compilerScript], { env, stdio: ['pipe', 'pipe', 'pipe'] });
                 
@@ -763,8 +764,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     console.log(`[Compile:${buildId}] 🔨 Queuing compile task (fqbn=${ESP32_FQBN})`);
 
     try {
-        // Wrap Arduino compile in global queue (200 points)
-        const { error, stdout, stderr } = await enqueueCompile(200, () => {
+        // Wrap Arduino compile in global queue
+        const { error, stdout, stderr } = await enqueueCompile(getCost('esp32', 'compile'), () => {
             return new Promise((resolve) => {
                 execFile(
                     ARDUINO_CLI_PATH,

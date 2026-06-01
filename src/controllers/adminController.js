@@ -6,6 +6,8 @@ import mongoose from 'mongoose';
 import Project from '../models/Project.js';
 import LiveSimulationSession from '../models/LiveSimulationSession.js';
 import SystemConfig from '../models/systemConfig.js';
+import { getStatus as getResourcePoolStatus, reloadBudget } from '../services/resourceManager.js';
+import { runCalibration } from '../services/calibrationSuite.js';
 
 const execAsync = promisify(exec);
 
@@ -372,3 +374,43 @@ export const getMaintenanceStatus = async (req, res) => {
         res.json({ success: true, enabled: false }); // Fallback to live if DB fails
     }
 };
+
+/**
+ * Gets the current status of the unified resource manager pool (Admin Only)
+ */
+export const getResourceStatus = async (req, res) => {
+    try {
+        const status = getResourcePoolStatus();
+        res.json({ success: true, ...status });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to fetch resource pool status' });
+    }
+};
+
+/**
+ * Manually triggers calibration in the background (Admin Only)
+ */
+export const recalibrate = async (req, res) => {
+    try {
+        await logAdminAction(
+            req.user?.email || 'unknown-admin',
+            'RECALIBRATE_RESOURCES',
+            'Manually triggered budget recalibration stress-test',
+            {},
+            req.ip
+        );
+
+        // Run calibration in background to avoid blocking request timeout
+        runCalibration().then(() => {
+            reloadBudget();
+            console.log('[Admin] Background recalibration successfully completed.');
+        }).catch(err => {
+            console.error('[Admin] Background recalibration failed:', err);
+        });
+
+        res.json({ success: true, message: 'Recalibration started in the background.' });
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to start recalibration' });
+    }
+};
+

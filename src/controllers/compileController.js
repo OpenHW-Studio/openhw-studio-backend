@@ -11,6 +11,7 @@ import { parseLibrariesTxt } from '../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../services/dynamicLibraryManager.js';
 import { pruneUniversalCachePool } from '../services/compileCachePruner.js';
 import { enqueueCompile } from '../services/compileQueueManager.js';
+import { getCost } from '../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1142,7 +1143,7 @@ pico_add_extra_outputs(firmware)
             '-DPICO_BOARD=pico',
         ];
 
-          enqueueCompile(200, () => new Promise((resolve) => {
+          enqueueCompile(getCost('pico', 'compile'), () => new Promise((resolve) => {
               const doBuild = (cfgStdout = '', cfgStderr = '') => {
                   execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
                   if (buildErr) {
@@ -1255,7 +1256,7 @@ pico_add_extra_outputs(firmware)
 
     cliArgs.push(sketchDir);
 
-      enqueueCompile(100, () => new Promise((resolve) => {
+      enqueueCompile(getCost('uno', 'compile'), () => new Promise((resolve) => {
           execFile(ARDUINO_CLI_PATH, cliArgs, {
               env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
           }, (error, stdout, stderr) => {

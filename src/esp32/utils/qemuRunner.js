@@ -31,6 +31,7 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -493,52 +494,68 @@ export default class QemuRunner {
         }, 1000);
 
         const libPath = this._getSharedLibraryPath();
-        if (libPath) {
-            this._isSharedLibraryMode = true;
-            this._startSharedLibraryWorker(libPath);
-            return;
-        }
+        
+        // Dynamic Point Allocation
+        const cost = getCost('esp32', 'sim');
+        const tag = this._isPooled ? `esp32:hotpool` : `esp32:sim:${this.buildId.substring(0, 8)}`;
+        console.log(`[QEMU:${this.buildId.substring(0, 8)}] Requesting ${cost} simulation points with tag "${tag}"...`);
+        acquirePoints(cost, tag).then((allocId) => {
+            this._reservedPointsKey = allocId;
+            if (this._destroyed) {
+                // If runner was destroyed while waiting for points
+                releasePoints(allocId);
+                return;
+            }
+            if (libPath) {
+                this._isSharedLibraryMode = true;
+                this._startSharedLibraryWorker(libPath);
+                return;
+            }
 
-        this._isSharedLibraryMode = false;
-        this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-        this._nicArgs  = this._buildNicArgs();
+            this._isSharedLibraryMode = false;
+            this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
+            this._nicArgs  = this._buildNicArgs();
 
-        // Start the network proxy first
-        this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
-            this._proxyPort = proxyPort;
-            
-            // Start TCP Server for UART0
-            this._uartServer = net.createServer((socket) => {
-                this._log.info('📡 QEMU connected to UART0 TCP bridge');
-                this._uartSocket = socket;
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
+                this._proxyPort = proxyPort;
                 
-                socket.setEncoding('utf8');
-                socket.on('data', (chunk) => {
-                    this.lastActivity = Date.now();
-                    this._handleSerialData(chunk);
+                // Start TCP Server for UART0
+                this._uartServer = net.createServer((socket) => {
+                    this._log.info('📡 QEMU connected to UART0 TCP bridge');
+                    this._uartSocket = socket;
+                    
+                    socket.setEncoding('utf8');
+                    socket.on('data', (chunk) => {
+                        this.lastActivity = Date.now();
+                        this._handleSerialData(chunk);
+                    });
+                    
+                    socket.on('error', (err) => {
+                        this._log.warn('UART0 socket error:', err.message);
+                    });
+                    
+                    socket.on('close', () => {
+                        this._uartSocket = null;
+                    });
                 });
                 
-                socket.on('error', (err) => {
-                    this._log.warn('UART0 socket error:', err.message);
+                this._uartServer.on('error', (err) => {
+                    this._log.error('❌ Failed to create UART0 TCP server:', err.message);
+                    this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
                 });
                 
-                socket.on('close', () => {
-                    this._uartSocket = null;
+                this._uartServer.listen(0, '127.0.0.1', () => {
+                    this._uartPort = this._uartServer.address().port;
+                    this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
+                    this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
                 });
             });
-            
-            this._uartServer.on('error', (err) => {
-                this._log.error('❌ Failed to create UART0 TCP server:', err.message);
-                this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
-            });
-            
-            this._uartServer.listen(0, '127.0.0.1', () => {
-                this._uartPort = this._uartServer.address().port;
-                this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
-            });
+            this._proxy.start();
+        }).catch(err => {
+            this._log.error('Failed to acquire simulation points:', err.message);
+            this.kill();
         });
-        this._proxy.start();
     }
 
     /**
@@ -818,6 +835,12 @@ export default class QemuRunner {
                     this._log.error(`Failed to delete sketch build folder ${this.sketchDir}:`, e.message);
                 }
             }
+        }
+
+        // Release points
+        if (this._reservedPointsKey) {
+            releasePoints(this._reservedPointsKey);
+            this._reservedPointsKey = null;
         }
     }
 
