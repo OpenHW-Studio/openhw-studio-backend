@@ -6,9 +6,14 @@ mongoose.set('bufferCommands', false);
 const connectDB = async () => {
   try {
     if (process.env.MONGO_URI) {
-      console.log("Connecting to MongoDB...");
+      try {
+        const url = new URL(process.env.MONGO_URI);
+        console.log(`Connecting to MongoDB at: ${url.hostname}`, "ANOD");
+      } catch (e) {
+        console.log("Connecting to MongoDB...", "ANOD");
+      }
     } else {
-      console.log("Connecting to MongoDB...");
+      console.log("Connecting to MongoDB...", "ANOD");
     }
     await mongoose.connect(process.env.MONGO_URI);
     console.log("MongoDB Connected");

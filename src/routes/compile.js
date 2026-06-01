@@ -16,10 +16,10 @@ import { handleSTM32Stop } from '../stm32/index.js';
 
 const router = Router();
 
-// Compile Arduino code — requires authentication to prevent unauthenticated DoS
-router.post('/', protectRoute, compileArduinoCode);
-router.post('/diagnostics', protectRoute, compileArduinoCode);
-router.post('/flash', protectRoute, flashFirmware);
+// Compile Arduino code
+router.post('/', compileArduinoCode);
+router.post('/diagnostics', compileArduinoCode);
+router.post('/flash', flashFirmware);
 router.get('/ports', listSerialPorts);
 router.get('/pico/micropython-uf2', getDefaultPicoMicroPythonUf2);
 router.get('/pico/micropython-hex', getDefaultPicoMicroPythonHex);
