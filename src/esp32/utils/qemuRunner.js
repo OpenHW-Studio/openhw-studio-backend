@@ -211,6 +211,73 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
+     * Hot-reload a new flash image without restarting the VM process.
+     * @param {string} newFlashImage - Path to the new merged flash bin
+     */
+    reload(newFlashImage) {
+        this.flashImage = newFlashImage;
+        if (this._isSharedLibraryMode) {
+            try {
+                const firmwareB64 = fs.readFileSync(this.flashImage).toString('base64');
+                this._writeWorkerCmd({ cmd: 'reset', firmware_b64: firmwareB64 });
+                this._sendWs({
+                    type: 'SERIAL_OUTPUT',
+                    buildId: this.buildId,
+                    data: `\n[SIM-INFO] Instantly hot-reloaded new ESP32 firmware!\n`,
+                });
+            } catch (err) {
+                this._log.error('Failed to read new flash image for reload:', err.message);
+            }
+        } else {
+            this._log.info('🔄 Performing cold restart of QEMU for hot-reload...');
+            this._restartCount = 0; // reset restart count for user manual reload
+            this.phase = 'booting';
+            this._bootDetected = false;
+            this.isReady = false;
+            this._sendWs({ type: 'QEMU_BOOTING' });
+
+            this._stopHeartbeatWatchdog();
+
+            if (this._process) {
+                try {
+                    this._process.removeAllListeners();
+                    this._process.kill('SIGKILL');
+                } catch { /* already dead */ }
+                this._process = null;
+            }
+
+            this._outBuffer = '';
+            if (this._uartBuffers) {
+                this._uartBuffers = {};
+            }
+
+            // Spawn QEMU again with the new flash image
+            setTimeout(() => {
+                if (this._destroyed) return;
+                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+            }, 1000);
+        }
+    }
+
+    /**
+     * assignSession(newBuildId)
+     *
+     * Transfers this pre-warmed pool runner to a real user session.
+     * Updates the internal buildId so all subsequent WebSocket messages are
+     * routed to the correct client.
+     *
+     * @param {string} newBuildId - The real user session buildId.
+     */
+    assignSession(newBuildId) {
+        const oldId = this.buildId;
+        this.buildId       = newBuildId;
+        this._isPooled     = false;
+        this._log          = new SessionLogger(newBuildId);
+        this.lastActivity  = Date.now();
+        this._log.info(`♻️  Pool runner reassigned from ${oldId.substring(0, 8)} → ${newBuildId.substring(0, 8)}`);
+    }
+
+    /**
      * start() — Create FIFOs, boot NetworkProxy, then spawn QEMU.
      * Returns immediately; QEMU events are delivered via WebSocketManager.
      */
@@ -417,15 +484,8 @@ export default class QemuRunner {
             return;
         }
 
-        // ── Start 1-second perf diagnostic logger ────────────────────────────
+        // ── Start 1-second perf diagnostic counter reset ────────────────────────────
         this._perf.logTimer = setInterval(() => {
-            const { wsSent, gpioRaw, gpioSent, workerEvts } = this._perf;
-            this._log.info(
-                `[PERF] phase=${this.phase} | WS-sent/s=${wsSent}` +
-                ` | worker-events/s=${workerEvts}` +
-                ` | GPIO-raw/s=${gpioRaw} GPIO-forwarded/s=${gpioSent}` +
-                ` (suppressed=${gpioRaw - gpioSent})`
-            );
             this._perf.wsSent     = 0;
             this._perf.gpioRaw    = 0;
             this._perf.gpioSent   = 0;
@@ -806,36 +866,40 @@ export default class QemuRunner {
      *   -serial tcp:127.0.0.1:<port>     → UART1 (WiFi payload multiplexer)
      */
     _spawnQemu(qemuPath, nicArgs, proxyPort, uartPort) {
-        const args = [
-            '-nographic',
-            '-machine', 'esp32',
-            '-m', '4M',
-            '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
-            '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
-            '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
-            ...nicArgs,
-        ];
+        setTimeout(() => {
+            if (this._destroyed) return;
 
-        this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
+            const args = [
+                '-nographic',
+                '-machine', 'esp32',
+                '-m', '4M',
+                '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
+                '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
+                '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
+                ...nicArgs,
+            ];
 
-        this._process = spawn(qemuPath, args, {
-            // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
-            // Only pipe stderr so we can capture QEMU-level errors.
-            stdio: ['ignore', 'ignore', 'pipe'],
-        });
+            this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
 
-        // Set low scheduling priority to prevent CPU starvation
-        if (this._process && this._process.pid) {
-            try {
-                os.setPriority(this._process.pid, 10);
-                this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
-            } catch (e) {
-                this._log.warn('Failed to set QEMU process priority:', e.message);
+            this._process = spawn(qemuPath, args, {
+                // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
+                // Only pipe stderr so we can capture QEMU-level errors.
+                stdio: ['ignore', 'ignore', 'pipe'],
+            });
+
+            // Set low scheduling priority to prevent CPU starvation
+            if (this._process && this._process.pid) {
+                try {
+                    os.setPriority(this._process.pid, 10);
+                    this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
+                } catch (e) {
+                    this._log.warn('Failed to set QEMU process priority:', e.message);
+                }
             }
-        }
 
-        // Attach lifecycle handlers
-        this._attachProcessHandlers();
+            // Attach lifecycle handlers
+            this._attachProcessHandlers();
+        }, 300);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -974,6 +1038,8 @@ export default class QemuRunner {
             }, 1500);
         } else {
             // Exceeded retry count
+
+
             this._sendWs({
                 type: 'SERIAL_LOG',
                 level: 'ERROR',

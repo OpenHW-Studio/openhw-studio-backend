@@ -284,7 +284,14 @@ extern "C" uint32_t sim_digitalRead(uint32_t pin) {
 extern "C" void sim_digitalWrite(uint32_t pin, uint32_t value) {
     uint32_t flatPin = get_flat_pin(pin);
     if (flatPin == 0xFF) return;
-    SPI.flush();
+    
+    static volatile bool _in_spi_flush = false;
+    if (_sim_ready_sent && !_in_spi_flush) {
+        _in_spi_flush = true;
+        SPI.flush();
+        _in_spi_flush = false;
+    }
+    
     _process_serial_input();
 
     char dbg[64];

@@ -12,7 +12,6 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include "esp_log.h"
-#include <esp_task_wdt.h>
 
 //  Configuration 
 
@@ -20,9 +19,9 @@
 #define SIM_CMD_MAX_LEN     64
 #define SIM_UART_BAUD       115200
 #define SIM_TASK_STACK      4096
-#define SIM_TASK_PRIO       2
-#define SIM_TASK_CORE       0
-#define SIM_TASK_DELAY_MS   5
+#define SIM_TASK_PRIO       1
+#define SIM_TASK_CORE       1
+#define SIM_TASK_DELAY_MS   10
 #define SIM_HEARTBEAT_MS    5000
 #define SIM_BEAT_STACK      2048
 #define SIM_BEAT_PRIO       1

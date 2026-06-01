@@ -1,0 +1,19 @@
+{
+  "permanent": [
+    "Adafruit NeoPixel",
+    "Stepper",
+    "Servo",
+    "Adafruit GFX Library",
+    "Adafruit SSD1306",
+    "Adafruit ILI9341",
+    "LiquidCrystal I2C",
+    "PubSubClient",
+    "ArduinoJson",
+    "Adafruit MPU6050",
+    "Adafruit BusIO",
+    "Adafruit Unified Sensor",
+    "Ticker",
+    "DHT sensor library"
+  ],
+  "cached": []
+}

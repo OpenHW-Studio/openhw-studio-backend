@@ -12,13 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       agent_changed: ${{ steps.filter.outputs.agent }}
+      esp32_changed: ${{ steps.filter.outputs.esp32 }}
+      stm32_changed: ${{ steps.filter.outputs.stm32 }}
     steps:
       - name: Checkout backend code
         uses: actions/checkout@v4
         with:
           path: openhw-studio-backend
 
-      - name: Check for Health Agent changes
+      - name: Check for changes
         id: filter
         uses: dorny/paths-filter@v3
         with:
@@ -26,6 +28,16 @@ jobs:
           filters: |
             agent:
               - 'health-agent/**'
+            esp32:
+              - 'src/esp32/**'
+              - 'Dockerfile.esp32'
+              - 'package.json'
+              - 'src/utils/**'
+            stm32:
+              - 'src/stm32/**'
+              - 'Dockerfile.stm32'
+              - 'package.json'
+              - 'src/utils/**'
 
       - name: Checkout examples code
         uses: actions/checkout@v4
@@ -54,17 +66,43 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build and push Docker images
+      - name: Build and push Main Backend
         uses: docker/build-push-action@v5
         with:
             context: .
-            file: ./openhw-studio-backend/Dockerfile
+            file: ./openhw-studio-backend/Dockerfile.main
             push: true
             tags: |
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:develop
               ${{ secrets.DOCKER_USERNAME }}/openhw-backend:${{ github.sha }}
             cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache
             cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-backend:buildcache,mode=max
+
+      - name: Build and push ESP32 Worker
+        if: steps.filter.outputs.esp32 == 'true' || github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v5
+        with:
+            context: .
+            file: ./openhw-studio-backend/Dockerfile.esp32
+            push: true
+            tags: |
+              ${{ secrets.DOCKER_USERNAME }}/openhw-esp32-worker:develop
+              ${{ secrets.DOCKER_USERNAME }}/openhw-esp32-worker:${{ github.sha }}
+            cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-esp32-worker:buildcache
+            cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-esp32-worker:buildcache,mode=max
+
+      - name: Build and push STM32 Worker
+        if: steps.filter.outputs.stm32 == 'true' || github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v5
+        with:
+            context: .
+            file: ./openhw-studio-backend/Dockerfile.stm32
+            push: true
+            tags: |
+              ${{ secrets.DOCKER_USERNAME }}/openhw-stm32-worker:develop
+              ${{ secrets.DOCKER_USERNAME }}/openhw-stm32-worker:${{ github.sha }}
+            cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-stm32-worker:buildcache
+            cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/openhw-stm32-worker:buildcache,mode=max
 
       - name: Build and push Health Agent
         if: steps.filter.outputs.agent == 'true'
@@ -147,7 +185,7 @@ jobs:
           docker image prune -af
           df -h
 
-      - name: Deploy Backend
+      - name: Deploy Main Backend
         run: |
           cd /opt/openhw/backend
           
@@ -159,17 +197,62 @@ jobs:
           export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
           echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
           
-          echo "Freeing space by removing old backend container..."
-          docker compose -f docker-compose.prod.yml rm -fs backend
+          echo "Current disk usage before pulling new backend image..."
+          df -h
+          
+          echo "Pulling new backend image..."
+          docker compose -f docker-compose.prod.yml pull backend
+          
+          echo "Upgrading running backend container..."
+          docker compose -f docker-compose.prod.yml up -d backend
+          
+          echo "Cleaning up old dereferenced backend image..."
           df -h
           docker image prune -af
           df -h
+
+      - name: Deploy ESP32 Worker
+        if: needs.test_and_build.outputs.esp32_changed == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd /opt/openhw/backend
           
-          echo "Deploying Backend..."
-          docker compose -f docker-compose.prod.yml pull backend
-          docker compose -f docker-compose.prod.yml up -d backend
+          # Ensure credentials
+          export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
           
-          # Final cleanup
+          echo "Current disk usage before pulling new ESP32 worker image..."
+          df -h
+          
+          echo "Pulling new ESP32 worker image..."
+          docker compose -f docker-compose.prod.yml pull esp32-worker
+          
+          echo "Upgrading running ESP32 worker container..."
+          docker compose -f docker-compose.prod.yml up -d esp32-worker
+          
+          echo "Cleaning up old dereferenced ESP32 worker image..."
+          df -h
+          docker image prune -af
+          df -h
+
+      - name: Deploy STM32 Worker
+        if: needs.test_and_build.outputs.stm32_changed == 'true' || github.event_name == 'workflow_dispatch'
+        run: |
+          cd /opt/openhw/backend
+          
+          # Ensure credentials
+          export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+          echo "Current disk usage before pulling new STM32 worker image..."
+          df -h
+          
+          echo "Pulling new STM32 worker image..."
+          docker compose -f docker-compose.prod.yml pull stm32-worker
+          
+          echo "Upgrading running STM32 worker container..."
+          docker compose -f docker-compose.prod.yml up -d stm32-worker
+          
+          echo "Cleaning up old dereferenced STM32 worker image..."
           df -h
           docker image prune -af
           df -h

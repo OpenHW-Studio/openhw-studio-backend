@@ -29,11 +29,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
-import { execFile, execFileSync } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { fileURLToPath } from 'url';
+import fastq from 'fastq';
 
 import wsManager  from '../utils/websocketManager.js';
 import QemuRunner from '../utils/qemuRunner.js';
+import { acquireEsp32Runner } from '../../services/hotPoolManager.js';
+import { parseLibrariesTxt } from '../../services/libraryTxtParser.js';
+import { ensureLibrariesForCompile } from '../../services/dynamicLibraryManager.js';
+import { pruneUniversalCachePool } from '../../services/compileCachePruner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -45,6 +50,7 @@ const ESPTOOL_PATH     = process.env.ESPTOOL_PATH     || 'esptool.py';
 
 const TEMP_DIR    = path.resolve(__dirname, '../../../temp');
 const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
+const DATA_DIR    = path.resolve(__dirname, '../../../data');
 
 // Simulator shim headers injected into every sketch build directory
 const SHIM_HEADERS = Object.freeze([
@@ -109,6 +115,20 @@ const INJECTED_LINE_COUNT = 3;
 
 /** @type {Map<string, QemuRunner>} buildId → runner */
 const _activeRunners = new Map();
+
+// ── Compile Queue (limits concurrent arduino-cli processes) ───────────────────
+const compileQueue = fastq.promise(async (task) => {
+    return new Promise((resolve) => {
+        execFile(
+            ARDUINO_CLI_PATH,
+            task.args,
+            { timeout: COMPILE_TIMEOUT_MS },
+            (error, stdout, stderr) => {
+                resolve({ error, stdout, stderr });
+            }
+        );
+    });
+}, 4);
 
 // ─── Session GC ───────────────────────────────────────────────────────────────
 
@@ -182,6 +202,19 @@ function _sendErrorAndCleanup(buildId, output) {
     });
     _deferredCleanup(buildId);
 }
+
+function buildCodeHash(code, req) {
+    const builder = req.body.builder || req.body.compiler || 'arduino-cli';
+    const payload = {
+        code,
+        builder,
+        libraries_txt: req.body.libraries_txt || '',
+        board_options: req.body.board_options || null,
+        spiffs_files: req.body.spiffs_files || null
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
+
 
 /**
  * Shift compiler error line numbers by INJECTED_LINE_COUNT so reported lines
@@ -488,25 +521,328 @@ wsManager.onClientConnection((ws) => {
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
+// ── Asynchronous Compile Jobs Map & State ────────────────────────────────────
+const compileJobs = new Map();
+
+function getOrCreateJob(jobId) {
+    if (!compileJobs.has(jobId)) {
+        compileJobs.set(jobId, {
+            id: jobId,
+            status: 'queued', // queued, compiling, success, failed
+            progress: [],
+            error: null,
+            stdout: '',
+            stderr: '',
+            result: null,
+            createdAt: Date.now()
+        });
+    }
+    return compileJobs.get(jobId);
+}
+
+function findPython() {
+    try {
+        execFileSync('python', ['--version'], { stdio: 'ignore' });
+        return 'python';
+    } catch {
+        try {
+            execFileSync('python3', ['--version'], { stdio: 'ignore' });
+            return 'python3';
+        } catch {
+            return 'python';
+        }
+    }
+}
+
+async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir) {
+    const jobId = buildId;
+    const job = getOrCreateJob(jobId);
+    job.status = 'compiling';
+    
+    wsManager.sendToSession(buildId, { type: 'COMPILE_START', buildId });
+    
+    try {
+        const pythonCmd = findPython();
+        const compilerScript = path.resolve(__dirname, '../utils/espidf_compiler.py');
+
+        // Configure stable builds environment
+        const env = {
+            ...process.env,
+            VELXIO_BUILD_ROOT: path.resolve(BUILDS_DIR, 'esp-idf-builds'),
+            IDF_CCACHE_ENABLE: '1',
+            CCACHE_DIR: path.resolve(BUILDS_DIR, 'ccache'),
+        };
+
+        const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData/Local');
+        const mkspiffsPath = path.join(localAppData, 'Arduino15/packages/esp32/tools/mkspiffs/0.2.3/mkspiffs.exe');
+        if (fs.existsSync(mkspiffsPath)) {
+            env.MKSPIFFS_PATH = mkspiffsPath;
+        }
+
+        fs.mkdirSync(env.VELXIO_BUILD_ROOT, { recursive: true });
+        fs.mkdirSync(env.CCACHE_DIR, { recursive: true });
+
+        // Build file list
+        const files = Array.isArray(req.body.files) && req.body.files.length > 0
+            ? req.body.files
+            : [{ name: 'sketch.ino', content: code }];
+
+        const inputData = {
+            files,
+            board_fqbn: ESP32_FQBN,
+            board_options: req.body.board_options || null,
+            spiffs_files: req.body.spiffs_files || null
+        };
+
+        const child = spawn(pythonCmd, [compilerScript], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+        
+        let stdoutData = '';
+        let stderrData = '';
+
+        child.stdout.on('data', (data) => {
+            stdoutData += data.toString();
+        });
+
+        child.stderr.on('data', (data) => {
+            const chunk = data.toString();
+            stderrData += chunk;
+            
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+                if (line.includes('[PROGRESS]')) {
+                    const progressLine = line.replace('[PROGRESS]', '').trim();
+                    if (progressLine) {
+                        job.progress.push(progressLine);
+                        wsManager.sendToSession(buildId, {
+                            type: 'COMPILE_PROGRESS',
+                            buildId,
+                            output: progressLine
+                        });
+                        console.log(`[Compile:${buildId}] ${progressLine}`);
+                    }
+                }
+            }
+        });
+
+        child.stdin.write(JSON.stringify(inputData));
+        child.stdin.end();
+
+        const exitCode = await new Promise((resolve) => {
+            child.on('close', resolve);
+        });
+
+        if (exitCode !== 0) {
+            throw new Error(`Compiler process exited with code ${exitCode}\n${stderrData}`);
+        }
+
+        let result;
+        try {
+            result = JSON.parse(stdoutData.trim());
+        } catch (e) {
+            throw new Error(`Failed to parse compiler output JSON: ${e.message}\nStdout: ${stdoutData}`);
+        }
+
+        if (!result.success) {
+            throw new Error(result.error || result.stderr || 'ESP-IDF compilation failed');
+        }
+
+        job.status = 'success';
+        job.result = result;
+        job.stdout = result.stdout || '';
+        job.stderr = result.stderr || '';
+
+        const binaryB64 = result.binary_content;
+        if (!binaryB64) {
+            throw new Error('No binary content produced in compiler result.');
+        }
+
+        const mergedFlash = path.join(buildDir, 'merged-flash.bin');
+        fs.writeFileSync(mergedFlash, Buffer.from(binaryB64, 'base64'));
+        console.log(`[Compile:${buildId}] 🔨 ESP-IDF merged flash image written to ${mergedFlash}`);
+
+        try {
+            const codeHash = buildCodeHash(code, req);
+            const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
+            const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
+            fs.mkdirSync(cacheDir, { recursive: true });
+            fs.copyFileSync(mergedFlash, cachedFlash);
+            console.log(`[Compile:${buildId}] 💾 Saved ESP-IDF compiled binary to Fast-Bypass cache: ${cachedFlash}`);
+            pruneUniversalCachePool();
+        } catch (cacheErr) {
+            console.error(`[Compile:${buildId}] ⚠️ Failed to save ESP-IDF cache:`, cacheErr.message);
+        }
+
+        wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+        if (_activeRunners.has(buildId)) {
+            console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+            const existingRunner = _activeRunners.get(buildId);
+            existingRunner.reload(mergedFlash);
+        } else {
+            const pooledRunner = acquireEsp32Runner();
+            if (pooledRunner) {
+                console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                pooledRunner.assignSession(buildId);
+                _activeRunners.set(buildId, pooledRunner);
+                wsManager.createPendingSession(buildId);
+                pooledRunner.reload(mergedFlash);
+            } else {
+                console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
+                const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                _activeRunners.set(buildId, runner);
+                runner.start();
+            }
+        }
+    } catch (err) {
+        console.error(`[Compile:${buildId}] ❌ ESP-IDF compilation failed:`, err.message);
+        job.status = 'failed';
+        job.error = err.message;
+        _sendErrorAndCleanup(buildId, err.message);
+    }
+}
+
+async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir) {
+    const jobId = buildId;
+    const job = getOrCreateJob(jobId);
+    job.status = 'compiling';
+    
+    wsManager.sendToSession(buildId, { type: 'COMPILE_START', buildId });
+
+    let esptoolRunner;
+    try {
+        esptoolRunner = _requireEsptool();
+    } catch (err) {
+        job.status = 'failed';
+        job.error = err.message;
+        _sendErrorAndCleanup(buildId, err.message);
+        return;
+    }
+
+    const sketchName = buildId;
+    const sketchFile = path.join(sketchDir, `${sketchName}.ino`);
+
+    const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
+    const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
+    let isSharedLibraryMode = fs.existsSync(libPath);
+
+    const COMPILE_CACHE_DIR = path.join(DATA_DIR, 'arduino-cache');
+
+    const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
+    const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
+    const libraryFlags   = libraryPaths.flatMap(p => ['--libraries', p]);
+
+    const useCcache = process.platform !== 'win32';
+    const ccacheProps = useCcache ? [
+        '--build-property', 'compiler.c.cmd=ccache xtensa-esp32-elf-gcc',
+        '--build-property', 'compiler.cpp.cmd=ccache xtensa-esp32-elf-g++',
+    ] : [];
+
+    const compileArgs = [
+        'compile',
+        '--fqbn',             ESP32_FQBN,
+        '--build-cache-path', COMPILE_CACHE_DIR,
+        '--output-dir',       buildDir,
+        '--jobs',             '4',
+        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...ccacheProps,
+        ...libraryFlags,
+        sketchFile,
+    ];
+
+    console.log(`[Compile:${buildId}] 🔨 Queuing compile task (fqbn=${ESP32_FQBN})`);
+
+    try {
+        const { error, stdout, stderr } = await compileQueue.push({ args: compileArgs });
+        const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
+        const output    = _shiftLineNumbers(rawOutput, sketchFile, isSharedLibraryMode);
+
+        job.stdout = stdout || '';
+        job.stderr = stderr || '';
+
+        const appBin = path.join(buildDir, `${sketchName}.ino.bin`);
+
+        if (!fs.existsSync(appBin)) {
+            const reason = error?.killed
+                ? `Compilation timed out after ${COMPILE_TIMEOUT_MS / 1000}s.`
+                : 'No application binary was produced. Check that the ESP32 board core is installed:\n  arduino-cli core install esp32:esp32';
+
+            console.error(`[Compile:${buildId}] ❌ Compile failed — ${reason}\n\nCompiler Output:\n${output}\n`);
+            job.status = 'failed';
+            job.error = output || reason;
+            _sendErrorAndCleanup(buildId, output || reason);
+            return;
+        }
+
+        let mergedFlash;
+        try {
+            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
+            console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
+
+            try {
+                const codeHash = buildCodeHash(code, req);
+                const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
+                const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
+                fs.mkdirSync(cacheDir, { recursive: true });
+                fs.copyFileSync(mergedFlash, cachedFlash);
+                console.log(`[Compile:${buildId}] 💾 Saved Arduino compiled binary to Fast-Bypass cache: ${cachedFlash}`);
+                pruneUniversalCachePool();
+            } catch (cacheErr) {
+                console.error(`[Compile:${buildId}] ⚠️ Failed to save Arduino cache:`, cacheErr.message);
+            }
+        } catch (mergeErr) {
+            console.error(`[Compile:${buildId}] ❌ Flash merge failed:`, mergeErr.message);
+            job.status = 'failed';
+            job.error = `Flash image merge failed:\n${mergeErr.message}`;
+            _sendErrorAndCleanup(buildId, `Flash image merge failed:\n${mergeErr.message}`);
+            return;
+        }
+
+        job.status = 'success';
+        wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+        if (_activeRunners.has(buildId)) {
+            console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+            const existingRunner = _activeRunners.get(buildId);
+            existingRunner.reload(mergedFlash);
+        } else {
+            const pooledRunner = acquireEsp32Runner();
+            if (pooledRunner) {
+                console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                pooledRunner.assignSession(buildId);
+                _activeRunners.set(buildId, pooledRunner);
+                wsManager.createPendingSession(buildId);
+                pooledRunner.reload(mergedFlash);
+            } else {
+                console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
+                const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                _activeRunners.set(buildId, runner);
+                runner.start();
+            }
+        }
+    } catch (err) {
+        console.error(`[Compile:${buildId}] ❌ Compile failed:`, err.message);
+        job.status = 'failed';
+        job.error = err.message;
+        _sendErrorAndCleanup(buildId, err.message);
+    }
+}
+
 /**
  * POST /api/compile  { code: string, target: 'esp32' }
- *
- * Responds immediately with { success, buildId } then compiles asynchronously.
- * All build progress is delivered via WebSocket.
  */
-export const compileArduinoCode = (req, res) => {
+export const compileArduinoCode = async (req, res) => {
     const { code, target } = req.body;
 
-    // ── Input validation ──────────────────────────────────────────────────────
     if (!code || typeof code !== 'string') {
         return res.status(400).json({ error: 'Request body must include a non-empty "code" string.' });
     }
+
+    console.log('\n\n[ESP32 COMPILE] Received Code:\n', code, '\n[END CODE]\n');
 
     if (target !== 'esp32') {
         return res.status(400).json({ error: 'This handler only supports target="esp32".' });
     }
 
-    // ── Capacity check ────────────────────────────────────────────────────────
     if (_activeRunners.size >= MAX_SESSIONS) {
         return res.status(503).json({
             error: `Server at capacity (${_activeRunners.size}/${MAX_SESSIONS} active sessions). ` +
@@ -514,25 +850,71 @@ export const compileArduinoCode = (req, res) => {
         });
     }
 
-    // ── esptool check (fail fast before touching disk) ────────────────────────
-    let esptoolRunner;
-    try {
-        esptoolRunner = _requireEsptool();
-    } catch (err) {
-        return res.status(500).json({ error: err.message });
-    }
-
-    // ── Build environment setup ───────────────────────────────────────────────
-    const buildId   = crypto.randomUUID();
+    const sessionId = req.body.sessionId;
+    const buildId   = sessionId || crypto.randomUUID();
     const sketchDir = path.join(BUILDS_DIR, buildId);
     const buildDir  = path.join(sketchDir, 'build');
     const pipesDir  = path.join(os.tmpdir(), `openhw-${buildId}`);
 
-    // Sketch name MUST match the directory name (Arduino IDE rule)
     const sketchName = buildId;
     const sketchFile = path.join(sketchDir, `${sketchName}.ino`);
 
-    // Open the pending buffer BEFORE any async I/O so no QEMU output is lost
+    const codeHash = buildCodeHash(code, req);
+    const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
+    const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
+
+    if (fs.existsSync(cachedFlash)) {
+        console.log(`[Compile Cache] 🟢 Cache hit! Skipping compilation for ESP32.`);
+        wsManager.createPendingSession(buildId);
+
+        try {
+            fs.mkdirSync(sketchDir, { recursive: true });
+            fs.mkdirSync(buildDir,  { recursive: true });
+            const mergedFlash = path.join(buildDir, 'merged-flash.bin');
+            fs.copyFileSync(cachedFlash, mergedFlash);
+
+            // Update job status
+            const job = getOrCreateJob(buildId);
+            job.status = 'success';
+
+            // Respond to client
+            res.json({
+                success: true,
+                buildId,
+                cache: 'hit',
+                message: 'Compilation skipped (Cache Hit). Connect via WebSocket.',
+            });
+
+            // Start/Reload QEMU in background after a tiny delay
+            setTimeout(() => {
+                wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+                if (_activeRunners.has(buildId)) {
+                    console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                    const existingRunner = _activeRunners.get(buildId);
+                    existingRunner.reload(mergedFlash);
+                } else {
+                    const pooledRunner = acquireEsp32Runner();
+                    if (pooledRunner) {
+                        console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                        pooledRunner.assignSession(buildId);
+                        _activeRunners.set(buildId, pooledRunner);
+                        pooledRunner.reload(mergedFlash);
+                    } else {
+                        console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
+                        const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                        _activeRunners.set(buildId, runner);
+                        runner.start();
+                    }
+                }
+            }, 100);
+            return;
+        } catch (cacheErr) {
+            console.error(`[Compile:${buildId}] ⚠️ Cache bypass initialization failed:`, cacheErr.message);
+            // fallback to full compilation
+        }
+    }
+
     wsManager.createPendingSession(buildId);
 
     const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
@@ -543,98 +925,63 @@ export const compileArduinoCode = (req, res) => {
         fs.mkdirSync(sketchDir, { recursive: true });
         fs.mkdirSync(buildDir,  { recursive: true });
 
-        // ── Build the injected sketch ─────────────────────────────────────────
-        //
-        // The wrapper pattern solves the Guru Meditation Cache Error:
-        //   __attribute__((constructor)) runs before the flash cache is ready,
-        //   so calling Serial.begin() / xTaskCreatePinnedToCore() there causes
-        //   a hard crash.  Instead, we inject a real setup() that calls
-        //   _simBridgeInit() AFTER the Arduino hardware layer is fully online.
-        //
-        // The user's setup() / loop() are renamed via #define macros so the
-        // compiler sees them as _sim_user_setup() / _sim_user_loop(), and our
-        // injected setup() / loop() call them as sub-functions.
-        //
-        // Result for the blink sketch:
-        //   void setup() {                 ← injected — runs first
-        //       _simBridgeInit_Early();    ← mutex + logs off
-        //       _sim_user_setup();         ← user's pinMode, Serial.begin
-        //       _simBridgeInit_Late();     ← banner, tasks spawned here (safe!)
-        //       if (!_sim_ready_sent) sim_ready();  ← auto-handshake
-        //   }
-        //   void loop() { _sim_user_loop(); }  ← user's blink logic
-
-        const codeInput = req.body.code || '';
-        console.log('\n\n[ESP32 COMPILE] Received Code:\n', codeInput, '\n[END CODE]\n');
-        
         isSharedLibraryMode = fs.existsSync(libPath);
+        const builder = req.body.builder || req.body.compiler || 'arduino-cli';
 
-        let finalCode;
-        if (isSharedLibraryMode) {
-            finalCode = codeInput;
-            console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
-        } else {
-            const preamble = [
-                '#define setup _sim_user_setup',
-                '#define loop  _sim_user_loop',
-                '',
-            ].join('\n');
+        if (builder === 'arduino-cli') {
+            let finalCode;
+            if (isSharedLibraryMode) {
+                finalCode = code;
+                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+            } else {
+                const preamble = [
+                    '#define setup _sim_user_setup',
+                    '#define loop  _sim_user_loop',
+                    '',
+                ].join('\n');
 
-            const suffix = [
-                '',
-                '#undef setup',
-                '#undef loop',
-                '#include "SimulatorBridge.h"',
-                '',
-                'void setup() {',
-                '    _simBridgeInit_Early();',
-                '    _sim_user_setup();',
-                '    _simBridgeInit_Late();',
-                '    if (!_sim_ready_sent) sim_ready();',
-                '}',
-                '',
-                'void loop() {',
-                '    _sim_user_loop();',
-                '}',
-                '',
-            ].join('\n');
+                const suffix = [
+                    '',
+                    '#undef setup',
+                    '#undef loop',
+                    '#include "SimulatorBridge.h"',
+                    '',
+                    'void setup() {',
+                    '    _simBridgeInit_Early();',
+                    '    _sim_user_setup();',
+                    '    _simBridgeInit_Late();',
+                    '    if (!_sim_ready_sent) sim_ready();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    '',
+                ].join('\n');
 
-            finalCode = preamble + codeInput + suffix;
-        }
+                finalCode = preamble + code + suffix;
+            }
 
-        fs.writeFileSync(sketchFile, finalCode, 'utf8');
+            fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-        if (!isSharedLibraryMode) {
-            // Copy all shim headers into the sketch directory so arduino-cli finds them.
-            // Also strip any non-ASCII bytes that text editors may inject (Unicode box-drawing
-            // chars in comments cause "extended character is not valid" gcc errors).
-            for (const { src, dst } of SHIM_HEADERS) {
-                if (fs.existsSync(src)) {
-                    const destPath = path.join(sketchDir, dst);
-                    const rawBytes = fs.readFileSync(src);   // read as Buffer (bytes)
-
-                    // 1. Strip UTF-8 BOM (EF BB BF) if present
-                    const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
-
-                    // 2. Copy only ASCII bytes (0x00-0x7F), skip any byte > 0x7F
-                    const asciiBytes = [];
-                    for (let i = startIdx; i < rawBytes.length; i++) {
-                        if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
-                    }
-
-                    // 3. Safety: if the source file started with '/*' but stripping removed
-                    //    the leading '/' (a multi-byte UTF-8 sequence spanning byte 0 is
-                    //    extremely unlikely but has been observed), re-prepend it.
-                    const origStart = rawBytes.slice(startIdx, startIdx + 3).toString('latin1');
-                    if (origStart.startsWith('/**') || origStart.startsWith('/*')) {
-                        if (asciiBytes[0] !== 0x2F) { // '/'
-                            asciiBytes.unshift(0x2F);
+            if (!isSharedLibraryMode) {
+                for (const { src, dst } of SHIM_HEADERS) {
+                    if (fs.existsSync(src)) {
+                        const destPath = path.join(sketchDir, dst);
+                        const rawBytes = fs.readFileSync(src);
+                        const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
+                        const asciiBytes = [];
+                        for (let i = startIdx; i < rawBytes.length; i++) {
+                            if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
                         }
+                        const origStart = rawBytes.slice(startIdx, startIdx + 3).toString('latin1');
+                        if (origStart.startsWith('/**') || origStart.startsWith('/*')) {
+                            if (asciiBytes[0] !== 0x2F) {
+                                asciiBytes.unshift(0x2F);
+                            }
+                        }
+                        fs.writeFileSync(destPath, Buffer.from(asciiBytes));
                     }
-
-                    fs.writeFileSync(destPath, Buffer.from(asciiBytes));
-                } else {
-                    console.warn(`[Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
                 }
             }
         }
@@ -647,72 +994,223 @@ export const compileArduinoCode = (req, res) => {
         });
     }
 
-    // ── Respond immediately — compilation continues async ─────────────────────
     res.json({
         success: true,
         buildId,
         message: 'Compilation started. Connect via WebSocket and send REGISTER_SESSION.',
     });
 
-    // ── Async: compile → merge → launch QEMU ─────────────────────────────────
-    const CACHE_DIR = path.join(buildDir, 'cache');
-    const compileArgs = [
-        'compile',
-        '--clean',
-        '--fqbn',             ESP32_FQBN,
-        '--build-cache-path', CACHE_DIR,
-        '--output-dir',       buildDir,
-        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
-        sketchFile,
-    ];
+    const builder = req.body.builder || req.body.compiler || 'arduino-cli';
+    if (builder === 'esp-idf') {
+        runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir);
+    } else {
+        runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir);
+    }
+};
 
-    console.log(`[Compile:${buildId}] 🔨 arduino-cli compile (fqbn=${ESP32_FQBN})`);
+/**
+ * POST /api/compile/start
+ */
+export const compileStart = async (req, res) => {
+    const { code, target } = req.body;
 
-    execFile(
-        ARDUINO_CLI_PATH,
-        compileArgs,
-        { timeout: COMPILE_TIMEOUT_MS },
-        (error, stdout, stderr) => {
-            const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
-            const output    = _shiftLineNumbers(rawOutput, sketchFile, isSharedLibraryMode);
+    if (!code || typeof code !== 'string') {
+        return res.status(400).json({ error: 'Request body must include a non-empty "code" string.' });
+    }
 
-            // arduino-cli may exit with an error code but still produce usable
-            // artifacts (e.g. warnings-as-errors disabled). We use artifact
-            // existence as the true success indicator.
-            const appBin = path.join(buildDir, `${sketchName}.ino.bin`);
+    console.log('\n\n[ESP32 COMPILE START] Received Code:\n', code, '\n[END CODE]\n');
 
-            if (!fs.existsSync(appBin)) {
-                const reason = error?.killed
-                    ? `Compilation timed out after ${COMPILE_TIMEOUT_MS / 1000}s.`
-                    : 'No application binary was produced. Check that the ESP32 board core is installed:\n  arduino-cli core install esp32:esp32';
+    if (target !== 'esp32') {
+        return res.status(400).json({ error: 'This handler only supports target="esp32".' });
+    }
 
-                console.error(`[Compile:${buildId}] ❌ Compile failed — ${reason}\n\nCompiler Output:\n${output}\n`);
-                _sendErrorAndCleanup(buildId, output || reason);
-                return;
+    if (_activeRunners.size >= MAX_SESSIONS) {
+        return res.status(503).json({
+            error: `Server at capacity. Please try again in a moment.`,
+        });
+    }
+
+    const sessionId = req.body.sessionId;
+    const buildId   = sessionId || crypto.randomUUID();
+    const sketchDir = path.join(BUILDS_DIR, buildId);
+    const buildDir  = path.join(sketchDir, 'build');
+    const pipesDir  = path.join(os.tmpdir(), `openhw-${buildId}`);
+
+    const sketchName = buildId;
+    const sketchFile = path.join(sketchDir, `${sketchName}.ino`);
+
+    const codeHash = buildCodeHash(code, req);
+    const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
+    const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
+
+    if (fs.existsSync(cachedFlash)) {
+        console.log(`[Compile Cache] 🟢 Cache hit! Skipping compilation for ESP32.`);
+        wsManager.createPendingSession(buildId);
+
+        try {
+            fs.mkdirSync(sketchDir, { recursive: true });
+            fs.mkdirSync(buildDir,  { recursive: true });
+            const mergedFlash = path.join(buildDir, 'merged-flash.bin');
+            fs.copyFileSync(cachedFlash, mergedFlash);
+
+            // Initialize job state as success
+            const job = getOrCreateJob(buildId);
+            job.status = 'success';
+
+            // Respond immediately with jobId
+            res.json({
+                success: true,
+                jobId: buildId,
+                buildId,
+                cache: 'hit'
+            });
+
+            // Start/Reload QEMU in background after a tiny delay
+            setTimeout(() => {
+                wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+                if (_activeRunners.has(buildId)) {
+                    console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                    const existingRunner = _activeRunners.get(buildId);
+                    existingRunner.reload(mergedFlash);
+                } else {
+                    const pooledRunner = acquireEsp32Runner();
+                    if (pooledRunner) {
+                        console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                        pooledRunner.assignSession(buildId);
+                        _activeRunners.set(buildId, pooledRunner);
+                        pooledRunner.reload(mergedFlash);
+                    } else {
+                        console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
+                        const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                        _activeRunners.set(buildId, runner);
+                        runner.start();
+                    }
+                }
+            }, 100);
+            return;
+        } catch (cacheErr) {
+            console.error(`[Compile:${buildId}] ⚠️ Cache bypass initialization failed:`, cacheErr.message);
+            // fallback to full compilation
+        }
+    }
+
+    wsManager.createPendingSession(buildId);
+
+    const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
+    const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
+    let isSharedLibraryMode = false;
+
+    try {
+        fs.mkdirSync(sketchDir, { recursive: true });
+        fs.mkdirSync(buildDir,  { recursive: true });
+
+        isSharedLibraryMode = fs.existsSync(libPath);
+        const builder = req.body.builder || req.body.compiler || 'arduino-cli';
+
+        if (builder === 'arduino-cli') {
+            let finalCode;
+            if (isSharedLibraryMode) {
+                finalCode = code;
+                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+            } else {
+                const preamble = [
+                    '#define setup _sim_user_setup',
+                    '#define loop  _sim_user_loop',
+                    '',
+                ].join('\n');
+
+                const suffix = [
+                    '',
+                    '#undef setup',
+                    '#undef loop',
+                    '#include "SimulatorBridge.h"',
+                    '',
+                    'void setup() {',
+                    '    _simBridgeInit_Early();',
+                    '    _sim_user_setup();',
+                    '    _simBridgeInit_Late();',
+                    '    if (!_sim_ready_sent) sim_ready();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    '',
+                ].join('\n');
+
+                finalCode = preamble + code + suffix;
             }
 
-            // ── Flash merge ───────────────────────────────────────────────────
-            let mergedFlash;
-            try {
-                mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
-                console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
-            } catch (mergeErr) {
-                console.error(`[Compile:${buildId}] ❌ Flash merge failed:`, mergeErr.message);
-                _sendErrorAndCleanup(buildId, `Flash image merge failed:\n${mergeErr.message}`);
-                return;
+            fs.writeFileSync(sketchFile, finalCode, 'utf8');
+
+            if (!isSharedLibraryMode) {
+                for (const { src, dst } of SHIM_HEADERS) {
+                    if (fs.existsSync(src)) {
+                        const destPath = path.join(sketchDir, dst);
+                        const rawBytes = fs.readFileSync(src);
+                        const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
+                        const asciiBytes = [];
+                        for (let i = startIdx; i < rawBytes.length; i++) {
+                            if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                        }
+                        const origStart = rawBytes.slice(startIdx, startIdx + 3).toString('latin1');
+                        if (origStart.startsWith('/**') || origStart.startsWith('/*')) {
+                            if (asciiBytes[0] !== 0x2F) {
+                                asciiBytes.unshift(0x2F);
+                            }
+                        }
+                        fs.writeFileSync(destPath, Buffer.from(asciiBytes));
+                    }
+                }
             }
+        }
+    } catch (err) {
+        wsManager.unregisterSession(buildId);
+        _cleanup(buildId);
+        return res.status(500).json({
+            error:  'Failed to create build environment.',
+            detail: err.message,
+        });
+    }
 
-            // ── Notify client that compilation succeeded ───────────────────────
-            wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+    // Initialize job state
+    getOrCreateJob(buildId);
+    
+    // Start compilation in background
+    const builder = req.body.builder || req.body.compiler || 'arduino-cli';
+    if (builder === 'esp-idf') {
+        runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir);
+    } else {
+        runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, pipesDir);
+    }
 
-            // ── Launch QEMU ───────────────────────────────────────────────────
-            const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
-            _activeRunners.set(buildId, runner);
-            runner.start();
+    return res.json({
+        success: true,
+        jobId: buildId,
+        buildId
+    });
+};
 
-            console.log(`[Compile:${buildId}] 🚀 QEMU runner started`);
-        },
-    );
+/**
+ * GET /api/compile/status/:jobId
+ */
+export const compileStatus = (req, res) => {
+    const { jobId } = req.params;
+    const job = compileJobs.get(jobId);
+    
+    if (!job) {
+        return res.status(404).json({ error: 'Compile job not found.' });
+    }
+
+    return res.json({
+        jobId: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        stdout: job.stdout,
+        stderr: job.stderr
+    });
 };
 
 /**

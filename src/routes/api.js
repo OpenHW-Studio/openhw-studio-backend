@@ -1,7 +1,7 @@
 import express from 'express';
 const router = express.Router();
 import { compileArduinoCode } from '../controllers/compileController.js';
-import { searchLibrary, installLibrary, listLibraries, uninstallLibrary } from '../controllers/libController.js';
+import { searchLibrary, installLibrary, listLibraries, uninstallLibrary, getLibrariesInfo } from '../controllers/libController.js';
 import { protectRoute } from '../middleware/authMiddleware.js';
 import userRoutes from './user.js';
 import compileRoutes from './compile.js';
@@ -14,6 +14,7 @@ import { createLiveSimulation, getLiveSimulation } from '../controllers/liveSimu
 
 // Library Management
 router.get('/lib-search', searchLibrary);
+router.get('/lib-info', getLibrariesInfo);
 router.post('/lib-install', protectRoute, requireAdmin, installLibrary);
 router.post('/lib-uninstall', protectRoute, requireAdmin, uninstallLibrary);
 router.get('/lib-list', listLibraries);

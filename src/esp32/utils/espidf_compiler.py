@@ -1897,3 +1897,53 @@ class ESPIDFCompiler:
 
 # Singleton instance
 espidf_compiler = ESPIDFCompiler()
+
+if __name__ == '__main__':
+    import sys
+    import json
+    
+    # Configure root logging to write to stderr so it doesn't pollute stdout
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+    
+    try:
+        input_data = json.loads(sys.stdin.read())
+    except Exception as e:
+        sys.stderr.write(f"Failed to parse stdin JSON: {e}\n")
+        sys.exit(1)
+        
+    files = input_data.get('files', [])
+    board_fqbn = input_data.get('board_fqbn', '')
+    board_options = input_data.get('board_options', None)
+    spiffs_files = input_data.get('spiffs_files', None)
+    
+    def progress_cb(line):
+        sys.stderr.write(f"[PROGRESS] {line.strip()}\n")
+        sys.stderr.flush()
+        
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = loop.run_until_complete(
+            espidf_compiler.compile(
+                files=files,
+                board_fqbn=board_fqbn,
+                progress_callback=progress_cb,
+                board_options=board_options,
+                spiffs_files=spiffs_files
+            )
+        )
+        sys.stdout.write(json.dumps(result) + '\n')
+        sys.stdout.flush()
+    except Exception as e:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
+        sys.stdout.write(json.dumps({
+            'success': False,
+            'error': str(e),
+            'stdout': '',
+            'stderr': traceback.format_exc()
+        }) + '\n')
+        sys.stdout.flush()
+    finally:
+        loop.close()
+

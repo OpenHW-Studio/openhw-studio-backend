@@ -291,6 +291,13 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
     except AttributeError:
         _shutdown_request = None
 
+    try:
+        _reset_request = lib.qemu_system_reset_request
+        _reset_request.restype  = None
+        _reset_request.argtypes = [ctypes.c_int]
+    except AttributeError:
+        _reset_request = None
+
     # ── ESP32-CAM frame injection ─────────────────────────────────────────
     # Exported by hw/misc/esp32_i2s_cam.c (the OV2640+I²S patch). When the
     # symbol is absent (= stock library, no camera patch yet), we keep a
@@ -1814,6 +1821,21 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
 
         elif c == 'camera_detach':
             _push_camera_frame(b'')   # NULL/0 detaches in the C side
+
+        elif c == 'reset':
+            firmware_b64 = cmd.get('firmware_b64')
+            if firmware_b64:
+                try:
+                    fw_bytes = pad_to_flash_size(base64.b64decode(firmware_b64))
+                    with open(firmware_path, 'wb') as f:
+                        f.write(fw_bytes)
+                except Exception as exc:
+                    _log(f'reset: failed to write firmware: {exc}')
+            if _reset_request:
+                _log('Triggering QEMU system reset...')
+                _reset_request(3)  # SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET
+            else:
+                _log('qemu_system_reset_request not available in this lib')
 
         elif c == 'stop':
             _stopped.set()
