@@ -65,7 +65,7 @@ if(DEFINED ENV{ARDUINO_ESP32_PATH})
     endif()
 
     # arduino-esp32 v2.x's generic `esp32` variant pins_arduino.h does NOT
-    # define LED_BUILTIN, so the default Arduino Blink sketch (which Velxio
+    # define LED_BUILTIN, so the default Arduino Blink sketch (which OpenHW
     # ships in every new project) fails to compile with
     #   error: 'LED_BUILTIN' was not declared in this scope
     # Provide a fallback so sketches "just compile". GPIO 2 is the

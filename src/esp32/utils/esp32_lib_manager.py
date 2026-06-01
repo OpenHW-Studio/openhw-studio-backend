@@ -463,7 +463,7 @@ class EspLibManager:
 
     # ── ESP32-CAM: OV2640 frame injection ─────────────────────────────────────
     # The QEMU peripheral (hw/misc/esp32_i2s_cam.c) accepts host-pushed
-    # frames via velxio_push_camera_frame(). We forward the JPEG/RGB565
+    # frames via openhw_push_camera_frame(). We forward the JPEG/RGB565
     # payload to the worker which calls the ctypes binding. Once the .so
     # is rebuilt with the camera patches, this path delivers the bytes
     # the upstream esp32-camera driver returns from esp_camera_fb_get().

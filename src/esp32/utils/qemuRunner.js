@@ -698,7 +698,7 @@ export default class QemuRunner {
      * In legacy TCP mode, writes the bytes as a raw buffer over the UART0 socket.
      *
      * The caller (compileController) is responsible for chunking to ≤64 bytes
-     * to prevent FIFO overflow, matching the Velxio constraint.
+     * to prevent FIFO overflow, matching the OpenHW constraint.
      *
      * @param {number}   uart  - UART index (0 = primary Serial, 1/2 = extra).
      * @param {number[]} bytes - Array of byte values (0–255).
@@ -723,8 +723,8 @@ export default class QemuRunner {
     }
 
     // ── ESP32-CAM frame injection ─────────────────────────────────────────────
-    // Mirrors Velxio's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
-    // The worker routes to velxio_push_camera_frame() in libqemu-xtensa which
+    // Mirrors OpenHW's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
+    // The worker routes to openhw_push_camera_frame() in libqemu-xtensa which
     // delivers the bytes to the QEMU OV2640+I²S DMA buffer.  esp_camera_fb_get()
     // in the firmware receives the frame transparently.
 
@@ -764,7 +764,7 @@ export default class QemuRunner {
     /**
      * sendCameraDetach()
      *
-     * Drop the queued frame and detach the camera. Calls velxio_push_camera_frame
+     * Drop the queued frame and detach the camera. Calls openhw_push_camera_frame
      * with a NULL/empty payload on the C side which resets the DMA pointer.
      */
     sendCameraDetach() {

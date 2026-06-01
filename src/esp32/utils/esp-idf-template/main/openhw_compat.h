@@ -1,5 +1,5 @@
-#ifndef VELXIO_COMPAT_H
-#define VELXIO_COMPAT_H
+#ifndef OPENHW_COMPAT_H
+#define OPENHW_COMPAT_H
 
 // Compatibility shims for sketches written against arduino-esp32 3.x running
 // on the toolchain pinned to 2.0.17. Only kept until we bump the toolchain.
@@ -25,7 +25,7 @@
 #include "Arduino.h"
 
 // ESP32 / S2 / S3 / C3 all have <40 usable GPIOs. Sentinel 0xFF = unmapped.
-static uint8_t _velxio_pin_to_channel[40] = {
+static uint8_t _openhw_pin_to_channel[40] = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
@@ -33,12 +33,12 @@ static uint8_t _velxio_pin_to_channel[40] = {
 };
 
 static inline bool ledcAttach(uint8_t pin, uint32_t freq, uint8_t resolution) {
-    static uint8_t _velxio_next_channel = 0;
-    if (_velxio_next_channel >= 16) return false;
-    uint8_t ch = _velxio_next_channel++;
+    static uint8_t _openhw_next_channel = 0;
+    if (_openhw_next_channel >= 16) return false;
+    uint8_t ch = _openhw_next_channel++;
     ledcSetup(ch, freq, resolution);
     ledcAttachPin(pin, ch);
-    if (pin < 40) _velxio_pin_to_channel[pin] = ch;
+    if (pin < 40) _openhw_pin_to_channel[pin] = ch;
     return true;
 }
 
@@ -46,16 +46,16 @@ static inline bool ledcAttachChannel(uint8_t pin, uint32_t freq, uint8_t resolut
     if (channel >= 16) return false;
     ledcSetup(channel, freq, resolution);
     ledcAttachPin(pin, channel);
-    if (pin < 40) _velxio_pin_to_channel[pin] = channel;
+    if (pin < 40) _openhw_pin_to_channel[pin] = channel;
     return true;
 }
 
 // 3.x-style ledcWrite(pin, duty). Translate pin→channel via the table if
 // we know about this pin; otherwise fall through to 2.x channel semantics
 // so plain 2.x sketches keep working unchanged.
-static inline void _velxio_ledc_write(uint32_t pin_or_channel, uint32_t duty) {
+static inline void _openhw_ledc_write(uint32_t pin_or_channel, uint32_t duty) {
     if (pin_or_channel < 40) {
-        uint8_t ch = _velxio_pin_to_channel[pin_or_channel];
+        uint8_t ch = _openhw_pin_to_channel[pin_or_channel];
         if (ch != 0xFF) {
             // The extra parentheses around `ledcWrite` block macro expansion
             // (function-like macros only expand when followed by `(`), so
@@ -67,7 +67,7 @@ static inline void _velxio_ledc_write(uint32_t pin_or_channel, uint32_t duty) {
     (ledcWrite)((uint8_t)pin_or_channel, duty);
 }
 
-#define ledcWrite(pin_or_channel, duty) _velxio_ledc_write((pin_or_channel), (duty))
+#define ledcWrite(pin_or_channel, duty) _openhw_ledc_write((pin_or_channel), (duty))
 #endif
 
-#endif // VELXIO_COMPAT_H
+#endif // OPENHW_COMPAT_H

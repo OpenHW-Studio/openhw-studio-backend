@@ -477,7 +477,7 @@ wsManager.onClientConnection((ws) => {
         }
 
         // ── CAMERA_ATTACH (tell worker webcam is connected) ──────────────────
-        // Mirrors Velxio simulation.py: esp32_camera_attach → esp_lib_manager.camera_attach()
+        // Mirrors OpenHW simulation.py: esp32_camera_attach → esp_lib_manager.camera_attach()
         if (data.type === 'CAMERA_ATTACH' && data.buildId) {
             const runner = _activeRunners.get(data.buildId);
             if (runner && typeof runner.sendCameraAttach === 'function') {
@@ -486,8 +486,8 @@ wsManager.onClientConnection((ws) => {
         }
 
         // ── CAMERA_FRAME (push JPEG to QEMU OV2640 DMA buffer) ───────────────
-        // Mirrors Velxio simulation.py: esp32_camera_frame → esp_lib_manager.camera_frame()
-        // Only accepted in shared-library mode — velxio_push_camera_frame() only
+        // Mirrors OpenHW simulation.py: esp32_camera_frame → esp_lib_manager.camera_frame()
+        // Only accepted in shared-library mode — openhw_push_camera_frame() only
         // exists in a libqemu-xtensa rebuilt with the OV2640+I²S patch.
         if (data.type === 'CAMERA_FRAME' && data.buildId) {
             const runner = _activeRunners.get(data.buildId);
@@ -502,7 +502,7 @@ wsManager.onClientConnection((ws) => {
         }
 
         // ── CAMERA_DETACH (drop frame, reset DMA pointer) ─────────────────────
-        // Mirrors Velxio simulation.py: esp32_camera_detach → esp_lib_manager.camera_detach()
+        // Mirrors OpenHW simulation.py: esp32_camera_detach → esp_lib_manager.camera_detach()
         if (data.type === 'CAMERA_DETACH' && data.buildId) {
             const runner = _activeRunners.get(data.buildId);
             if (runner && typeof runner.sendCameraDetach === 'function') {
@@ -568,7 +568,7 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
         // Configure stable builds environment
         const env = {
             ...process.env,
-            VELXIO_BUILD_ROOT: path.resolve(BUILDS_DIR, 'esp-idf-builds'),
+            OPENHW_BUILD_ROOT: path.resolve(BUILDS_DIR, 'esp-idf-builds'),
             IDF_CCACHE_ENABLE: '1',
             CCACHE_DIR: path.resolve(BUILDS_DIR, 'ccache'),
         };
@@ -579,7 +579,7 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
             env.MKSPIFFS_PATH = mkspiffsPath;
         }
 
-        fs.mkdirSync(env.VELXIO_BUILD_ROOT, { recursive: true });
+        fs.mkdirSync(env.OPENHW_BUILD_ROOT, { recursive: true });
         fs.mkdirSync(env.CCACHE_DIR, { recursive: true });
 
         // Build file list

@@ -11,4 +11,4 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/user_libs")
 endif()
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(velxio-sketch)
+project(openhw-sketch)
