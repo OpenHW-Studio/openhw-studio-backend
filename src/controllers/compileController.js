@@ -10,6 +10,7 @@ import { handleSTM32Compile } from '../stm32/index.js';
 import { parseLibrariesTxt } from '../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../services/dynamicLibraryManager.js';
 import { pruneUniversalCachePool } from '../services/compileCachePruner.js';
+import { enqueueCompile } from '../services/compileQueueManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1141,8 +1142,9 @@ pico_add_extra_outputs(firmware)
             '-DPICO_BOARD=pico',
         ];
 
-          const doBuild = (cfgStdout = '', cfgStderr = '') => {
-              execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
+          enqueueCompile(200, () => new Promise((resolve) => {
+              const doBuild = (cfgStdout = '', cfgStderr = '') => {
+                  execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
                   if (buildErr) {
                       console.error('Pico SDK build error:', buildStderr || buildStdout);
                       return sendCompileFailure(
@@ -1195,6 +1197,8 @@ pico_add_extra_outputs(firmware)
                           { error: 'Failed to extract UF2.', details: err?.message || 'UF2 extraction failed.' },
                           { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'artifact' }
                       );
+                  } finally {
+                      resolve();
                   }
               });
           };
@@ -1206,7 +1210,7 @@ pico_add_extra_outputs(firmware)
           execFile('cmake', configureArgs, { cwd: sketchDir, env: cmakeEnv }, (cfgErr, cfgStdout, cfgStderr) => {
               if (cfgErr) {
                   console.error('Pico SDK configure error:', cfgStderr || cfgStdout);
-                  return sendCompileFailure(
+                  sendCompileFailure(
                       res,
                       400,
                       {
@@ -1215,9 +1219,11 @@ pico_add_extra_outputs(firmware)
                       },
                       { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'configure' }
                   );
+                  return resolve();
               }
               doBuild(cfgStdout, cfgStderr);
           });
+          }));
           return;
     }
 
@@ -1249,9 +1255,10 @@ pico_add_extra_outputs(firmware)
 
     cliArgs.push(sketchDir);
 
-      execFile(ARDUINO_CLI_PATH, cliArgs, {
-          env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
-      }, (error, stdout, stderr) => {
+      enqueueCompile(100, () => new Promise((resolve) => {
+          execFile(ARDUINO_CLI_PATH, cliArgs, {
+              env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
+          }, (error, stdout, stderr) => {
         // Read produced firmware artifact regardless of warnings, but handle hard errors.
         let compiledArtifact = {
             payload: '',
@@ -1327,8 +1334,10 @@ pico_add_extra_outputs(firmware)
         };
 
         setCompileResultCache(requestHash, responsePayload);
-        return res.json({ ...responsePayload, cache: 'miss' });
-    });
+        res.json({ ...responsePayload, cache: 'miss' });
+        resolve();
+      });
+      }));
 };
 
 export const flashFirmware = (req, res) => {

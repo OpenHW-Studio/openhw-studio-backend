@@ -23,11 +23,11 @@ import os from 'os';
 import crypto from 'crypto';
 import { execFile } from 'child_process';
 import { fileURLToPath } from 'url';
-import fastq from 'fastq';
 
 import wsManager  from '../utils/websocketManager.js';
 import RenodeRunner from '../utils/renodeRunner.js';
 import { acquireStm32Runner } from '../../services/hotPoolManager.js';
+import { enqueueCompile } from '../../services/compileQueueManager.js';
 import { parseLibrariesTxt } from '../../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../../services/dynamicLibraryManager.js';
 import { pruneUniversalCachePool } from '../../services/compileCachePruner.js';
@@ -56,10 +56,11 @@ const SHIM_HEADERS = Object.freeze([
 
 const MAX_SESSIONS = parseInt(process.env.STM32_MAX_SESSIONS || process.env.MAX_SESSIONS || '5', 10);
 
-const SESSION_TIMEOUT_MS = parseInt(
-    process.env.STM32_SESSION_TIMEOUT_MS || String(300 * 1000),
-    10,
-);
+/** Hard limit for simulation execution (10 minutes). */
+const SIMULATION_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Session inactivity timeout (1 minute). Any simulation with no user interaction is killed. */
+const SIMULATION_INACTIVITY_MS = 60 * 1000;
 
 const COMPILE_TIMEOUT_MS = parseInt(process.env.COMPILE_TIMEOUT_MS || '180000', 10);
 
@@ -82,19 +83,9 @@ const INJECTED_LINE_COUNT = 13;
 /** @type {Map<string, RenodeRunner>} buildId → runner */
 const _activeRunners = new Map();
 
-// ── Compile Queue (limits concurrent arduino-cli processes) ───────────────────
-const compileQueue = fastq.promise(async (task) => {
-    return new Promise((resolve) => {
-        execFile(
-            ARDUINO_CLI_PATH,
-            task.args,
-            { timeout: COMPILE_TIMEOUT_MS },
-            (error, stdout, stderr) => {
-                resolve({ error, stdout, stderr });
-            }
-        );
-    });
-}, 4);
+// ── Compile Queue ───────────────────────────────────────────────────────────────
+// Concurrency is now globally managed by compileQueueManager.js.
+
 
 // ─── Session GC ───────────────────────────────────────────────────────────────
 
@@ -109,10 +100,20 @@ const _gcTimer = setInterval(() => {
             runner.disconnectedAt = now;
         }
 
+        const runTime = now - (runner.createdAt || runner.lastActivity);
+        const inactiveTime = now - (runner.lastUserActivity || runner.lastActivity);
         const disconnectedTime = runner.disconnectedAt ? (now - runner.disconnectedAt) : 0;
 
-        if (now - runner.lastActivity > SESSION_TIMEOUT_MS || disconnectedTime > SESSION_TIMEOUT_MS) {
-            console.log(`[STM32:Compile] 🧹  Session ${buildId} timed out — killing Renode`);
+        if (runTime > SIMULATION_HARD_TIMEOUT_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} reached 10-minute hard limit — killing Renode`);
+            runner.kill();
+            _cleanup(buildId);
+        } else if (inactiveTime > SIMULATION_INACTIVITY_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} inactive for 1 minute — killing Renode`);
+            runner.kill();
+            _cleanup(buildId);
+        } else if (disconnectedTime > SIMULATION_INACTIVITY_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} disconnected for 1 minute — killing Renode`);
             runner.kill();
             _cleanup(buildId);
         }
@@ -173,6 +174,15 @@ wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
         try { data = JSON.parse(rawMsg.toString()); } catch { return; }
+
+        // Track user activity for the inactivity monitor
+        if (data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) runner.lastUserActivity = Date.now();
+        }
+
+        // Ignore pure keep-alive pings beyond updating activity
+        if (data.type === 'PING') return;
 
         // ── REGISTER_SESSION ─────────────────────────────────────────────────
         if (data.type === 'REGISTER_SESSION' && data.buildId) {
@@ -474,7 +484,19 @@ export const compileArduinoCode = async (req, res) => {
 
     console.log(`[STM32:Compile:${buildId}] 🔨 Queuing compile task (fqbn=${STM32_FQBN})`);
 
-    compileQueue.push({ args: compileArgs }).then(({ error, stdout, stderr }) => {
+    // Wrap Arduino compile in global queue (200 points)
+    enqueueCompile(200, () => {
+        return new Promise((resolve) => {
+            execFile(
+                ARDUINO_CLI_PATH,
+                compileArgs,
+                { timeout: COMPILE_TIMEOUT_MS },
+                (error, stdout, stderr) => {
+                    resolve({ error, stdout, stderr });
+                }
+            );
+        });
+    }, COMPILE_TIMEOUT_MS).then(({ error, stdout, stderr }) => {
         const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
             const output    = _shiftLineNumbers(rawOutput, sketchFile);
 
