@@ -27,7 +27,7 @@ router.post('/admin/components/approve', protectRoute, requireAdmin, approveComp
 router.delete('/admin/components/reject/:submissionId', protectRoute, requireAdmin, rejectComponent);
 router.get('/admin/components/installed', protectRoute, requireAdmin, getInstalledComponents);
 router.delete('/admin/components/installed/:id', protectRoute, requireAdmin, deleteInstalledComponent);
-router.get('/admin/components/backup', backupInstalledComponents);
+router.get('/admin/components/backup', protectRoute, requireAdmin, backupInstalledComponents);
 
 // Public routes for the frontend to check/fetch custom components at runtime
 router.get('/components/version', getComponentsVersion);        // tiny hash — no auth needed

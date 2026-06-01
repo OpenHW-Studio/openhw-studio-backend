@@ -16,7 +16,8 @@ function normalizeSharedProject(body = {}) {
     code: typeof body.code === "string" ? body.code : "",
     projectFiles: Array.isArray(body.projectFiles) ? body.projectFiles : [],
     openCodeTabs: Array.isArray(body.openCodeTabs) ? body.openCodeTabs : [],
-    activeCodeFileId: typeof body.activeCodeFileId === "string" ? body.activeCodeFileId : "",
+    activeCodeFileId:
+      typeof body.activeCodeFileId === "string" ? body.activeCodeFileId : "",
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -33,7 +34,7 @@ async function resolveRequestUser(req) {
     const jwtCookie = cookieHeader
       .split(";")
       .find((cookie) => cookie.trim().startsWith("jwt="));
-    const cookieToken = jwtCookie ? (jwtCookie.split("=")[1] || null) : null;
+    const cookieToken = jwtCookie ? jwtCookie.split("=")[1] || null : null;
 
     const token = bearerToken || cookieToken;
     if (!token) return null;
@@ -47,30 +48,52 @@ async function resolveRequestUser(req) {
 }
 
 export async function createSharedSimulation(req, res) {
-  console.log("[createSharedSimulation] Request user:", req.user);
   try {
     if (req.user?.role === "student") {
       const { classId, assignmentId } = req.body || {};
 
-      if (!mongoose.isValidObjectId(classId) || !mongoose.isValidObjectId(assignmentId)) {
-        return res.status(400).json({ message: "Invalid classId or assignmentId." });
+      if (
+        !mongoose.isValidObjectId(classId) ||
+        !mongoose.isValidObjectId(assignmentId)
+      ) {
+        return res
+          .status(400)
+          .json({ message: "Invalid classId or assignmentId." });
       }
 
       const classroom = await Class.findById(classId).select("students");
-      const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select("_id dueDate");
+      const assignment = await Assignment.findOne({
+        _id: assignmentId,
+        classId,
+      }).select("_id dueDate");
       const isClassStudent = classroom?.students?.some(
-        (studentId) => String(studentId) === String(req.user._id)
+        (studentId) => String(studentId) === String(req.user._id),
       );
 
       if (!classroom || !assignment || !isClassStudent) {
-        return res.status(403).json({ message: "Students can only share assignment submissions for their classes." });
+        return res
+          .status(403)
+          .json({
+            message:
+              "Students can only share assignment submissions for their classes.",
+          });
       }
 
       if (assignment.dueDate && new Date(assignment.dueDate) < new Date()) {
-        return res.status(400).json({ message: "This assignment is closed. Submissions are no longer accepted." });
+        return res
+          .status(400)
+          .json({
+            message:
+              "This assignment is closed. Submissions are no longer accepted.",
+          });
       }
     } else if (!["teacher", "user", "admin"].includes(req.user?.role)) {
-      return res.status(403).json({ message: "Only teachers, users and admins can share simulator templates." });
+      return res
+        .status(403)
+        .json({
+          message:
+            "Only teachers, users and admins can share simulator templates.",
+        });
     }
 
     const nextProject = normalizeSharedProject(req.body);
@@ -87,7 +110,7 @@ export async function createSharedSimulation(req, res) {
             $position: 0,
           },
         },
-      }
+      },
     );
 
     return res.status(201).json({
@@ -110,7 +133,7 @@ export async function getSharedSimulation(req, res) {
 
     const owner = await User.findOne(
       { "projects.shareId": shareId },
-      { projects: { $elemMatch: { shareId } }, name: 1 }
+      { projects: { $elemMatch: { shareId } }, name: 1 },
     ).lean();
 
     const project = owner?.projects?.[0];
@@ -121,7 +144,9 @@ export async function getSharedSimulation(req, res) {
     if (!project.isPublic) {
       const requestUser = await resolveRequestUser(req);
       if (!requestUser || String(requestUser._id) !== String(owner._id)) {
-        return res.status(403).json({ message: "This shared simulation is private." });
+        return res
+          .status(403)
+          .json({ message: "This shared simulation is private." });
       }
     }
 
@@ -133,6 +158,8 @@ export async function getSharedSimulation(req, res) {
     });
   } catch (error) {
     console.error("[getSharedSimulation]", error);
-    return res.status(500).json({ message: "Failed to load shared simulation" });
+    return res
+      .status(500)
+      .json({ message: "Failed to load shared simulation" });
   }
 }

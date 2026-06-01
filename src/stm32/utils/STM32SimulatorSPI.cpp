@@ -1,9 +1,7 @@
 #include "SPI.h"
 #include <Arduino.h>
 
-#if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_SPI)
-SPIClass SPI(VSPI);
-#endif
+SPIClass SPI;
 
 static inline char _nibble(uint8_t n) {
     n &= 0x0F;
@@ -18,19 +16,6 @@ void SPIClass::flush() {
     _tx_len = 0;
 }
 
-bool SPIClass::begin(int8_t sck, int8_t miso, int8_t mosi, int8_t ss) {
-    _sck = sck;
-    _miso = miso;
-    _mosi = mosi;
-    _ss = ss;
-    _tx_len = 0;
-    return true;
-}
-
-void SPIClass::end() {
-    flush();
-}
-
 void SPIClass::write(uint8_t data) {
     _tx_buf[_tx_len++] = data;
     if (_tx_len >= 64) {
@@ -39,13 +24,6 @@ void SPIClass::write(uint8_t data) {
 }
 
 void SPIClass::write16(uint16_t data) {
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
-}
-
-void SPIClass::write32(uint32_t data) {
-    write((uint8_t)(data >> 24));
-    write((uint8_t)(data >> 16));
     write((uint8_t)(data >> 8));
     write((uint8_t)data);
 }
@@ -61,25 +39,17 @@ uint16_t SPIClass::transfer16(uint16_t data) {
     return 0xFFFF;
 }
 
-uint32_t SPIClass::transfer32(uint32_t data) {
-    write((uint8_t)(data >> 24));
-    write((uint8_t)(data >> 16));
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
-    return 0xFFFFFFFF;
-}
-
 static void _write_bulk(const uint8_t* data, uint32_t size) {
     if (!data || size == 0) return;
-    
+
     uint32_t offset = 0;
     while (offset < size) {
         uint32_t chunk_size = size - offset;
         if (chunk_size > 128) chunk_size = 128;
-        
+
         char frame[280];
         int pos = 0;
-        
+
         frame[pos++] = '>';
         frame[pos++] = 'S';
         frame[pos++] = 'P';
@@ -88,16 +58,16 @@ static void _write_bulk(const uint8_t* data, uint32_t size) {
         frame[pos++] = 'U';
         frame[pos++] = 'F';
         frame[pos++] = ':';
-        
+
         for (uint32_t i = 0; i < chunk_size; i++) {
             uint8_t b = data[offset + i];
             frame[pos++] = _nibble(b >> 4);
             frame[pos++] = _nibble(b);
         }
-        
+
         frame[pos++] = '<';
         frame[pos] = '\0';
-        
+
         sim_wire_emit(frame);
         offset += chunk_size;
     }
@@ -116,35 +86,18 @@ void SPIClass::transferBytes(const uint8_t *data, uint8_t *out, uint32_t size) {
     }
 }
 
-void SPIClass::transferBits(uint32_t data, uint32_t *out, uint8_t bits) {
-    flush();
-    uint8_t bytes = (bits + 7) / 8;
-    for (uint8_t i = 0; i < bytes; i++) {
-        write((uint8_t)(data >> (8 * (bytes - 1 - i))));
-    }
-    flush();
-    if (out) {
-        *out = 0xFFFFFFFF;
-    }
-}
-
 void SPIClass::writeBytes(const uint8_t *data, uint32_t size) {
     flush();
     _write_bulk(data, size);
 }
 
-void SPIClass::writePixels(const void *data, uint32_t size) {
-    flush();
-    _write_bulk((const uint8_t*)data, size);
-}
-
 void SPIClass::writePattern(const uint8_t *data, uint8_t size, uint32_t repeat) {
     flush();
     if (!data || size == 0 || repeat == 0) return;
-    
+
     uint8_t buf[128];
     uint32_t buf_pos = 0;
-    
+
     for (uint32_t r = 0; r < repeat; r++) {
         for (uint8_t i = 0; i < size; i++) {
             buf[buf_pos++] = data[i];
@@ -154,7 +107,7 @@ void SPIClass::writePattern(const uint8_t *data, uint8_t size, uint32_t repeat) 
             }
         }
     }
-    
+
     if (buf_pos > 0) {
         _write_bulk(buf, buf_pos);
     }
