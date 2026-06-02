@@ -94,7 +94,6 @@ const signinUser = async (req, res) => {
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -185,7 +184,6 @@ const token = generateToken(user, selectedRole);
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -210,8 +208,8 @@ const logoutController = async (req, res) => {
     res.cookie("jwt", "", { httpOnly: true, sameSite: "strict", maxAge: 1 });
     res.status(200).json({ message: "User logged out successfully" });
   } catch (error) {
-    console.error("Error in logoutController:", error.message);
-    res.status(500).json({ message: "Logout failed. Please try again." });
+    console.log("Error in logoutController: ", error);
+    res.status(500).json({ error });
   }
 };
 
@@ -394,7 +392,6 @@ const googleLogin = async (req, res) => {
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
-      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -412,8 +409,8 @@ const googleLogin = async (req, res) => {
     });
 
   } catch (error) {
-    console.error("Google Auth Error:", error.message);
-    res.status(500).json({ message: "Google Authentication Failed" });
+    console.error("Google Auth Error:", error);
+    res.status(500).json({ message: "Google Authentication Failed", error: error.message });
   }
 };
 
@@ -423,9 +420,7 @@ const forgotPassword = async (req, res) => {
     const user = await User.findOne({ email: normalizeEmail(email) });
 
     if (!user) {
-      // Return the same response regardless of whether the email exists
-      // to prevent email enumeration attacks.
-      return res.status(200).json({ success: true, data: 'If an account with that email exists, a reset link has been sent.' });
+      return res.status(404).json({ message: "User not found" });
     }
 
     // Create reset token
@@ -453,7 +448,7 @@ const forgotPassword = async (req, res) => {
         message,
       });
 
-      res.status(200).json({ success: true, data: 'If an account with that email exists, a reset link has been sent.' });
+      res.status(200).json({ success: true, data: 'Email sent' });
     } catch (err) {
       console.error(err);
       user.resetPasswordToken = undefined;
