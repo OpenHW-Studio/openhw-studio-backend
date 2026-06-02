@@ -303,7 +303,10 @@ export const getProjectById = async (req, res) => {
 export const getProjectBySlug = async (req, res) => {
   try {
     const { slug } = req.params;
-    const project = await ProjectBank.findOne({ slug }).lean();
+    const userId = req.user?._id;
+    const project =
+      (userId ? await ProjectBank.findOne({ owner: userId, slug }).lean() : null) ||
+      await ProjectBank.findOne({ slug, visibility: "published" }).lean();
 
     if (!project) {
       return res.status(404).json({ message: "Project not found." });

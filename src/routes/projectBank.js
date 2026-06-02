@@ -18,7 +18,7 @@ const router = Router();
 
 router.get("/", protectRoute, getMyProjectBank);
 router.get("/shared", protectRoute, getSharedProjectBank);
-router.get("/slug/:slug", getProjectBySlug);
+router.get("/slug/:slug", protectRoute, getProjectBySlug);
 router.get("/:projectId", protectRoute, getProjectById);
 router.post("/", protectRoute, createProjectBankEntry);
 router.post("/import", protectRoute, importToProjectBank);
