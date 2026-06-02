@@ -65,3 +65,5 @@ ENV ROLE=stm32-worker
 
 # Start the application
 CMD ["npm", "start"]
+
+# Trigger Rebuild 2
