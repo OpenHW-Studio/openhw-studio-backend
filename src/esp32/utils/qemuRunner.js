@@ -31,6 +31,7 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -209,6 +210,73 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
     // Public API
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Hot-reload a new flash image without restarting the VM process.
+     * @param {string} newFlashImage - Path to the new merged flash bin
+     */
+    reload(newFlashImage) {
+        this.flashImage = newFlashImage;
+        if (this._isSharedLibraryMode) {
+            try {
+                const firmwareB64 = fs.readFileSync(this.flashImage).toString('base64');
+                this._writeWorkerCmd({ cmd: 'reset', firmware_b64: firmwareB64 });
+                this._sendWs({
+                    type: 'SERIAL_OUTPUT',
+                    buildId: this.buildId,
+                    data: `\n[SIM-INFO] Instantly hot-reloaded new ESP32 firmware!\n`,
+                });
+            } catch (err) {
+                this._log.error('Failed to read new flash image for reload:', err.message);
+            }
+        } else {
+            this._log.info('🔄 Performing cold restart of QEMU for hot-reload...');
+            this._restartCount = 0; // reset restart count for user manual reload
+            this.phase = 'booting';
+            this._bootDetected = false;
+            this.isReady = false;
+            this._sendWs({ type: 'QEMU_BOOTING' });
+
+            this._stopHeartbeatWatchdog();
+
+            if (this._process) {
+                try {
+                    this._process.removeAllListeners();
+                    this._process.kill('SIGKILL');
+                } catch { /* already dead */ }
+                this._process = null;
+            }
+
+            this._outBuffer = '';
+            if (this._uartBuffers) {
+                this._uartBuffers = {};
+            }
+
+            // Spawn QEMU again with the new flash image
+            setTimeout(() => {
+                if (this._destroyed) return;
+                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+            }, 1000);
+        }
+    }
+
+    /**
+     * assignSession(newBuildId)
+     *
+     * Transfers this pre-warmed pool runner to a real user session.
+     * Updates the internal buildId so all subsequent WebSocket messages are
+     * routed to the correct client.
+     *
+     * @param {string} newBuildId - The real user session buildId.
+     */
+    assignSession(newBuildId) {
+        const oldId = this.buildId;
+        this.buildId       = newBuildId;
+        this._isPooled     = false;
+        this._log          = new SessionLogger(newBuildId);
+        this.lastActivity  = Date.now();
+        this._log.info(`♻️  Pool runner reassigned from ${oldId.substring(0, 8)} → ${newBuildId.substring(0, 8)}`);
+    }
 
     /**
      * start() — Create FIFOs, boot NetworkProxy, then spawn QEMU.
@@ -417,15 +485,8 @@ export default class QemuRunner {
             return;
         }
 
-        // ── Start 1-second perf diagnostic logger ────────────────────────────
+        // ── Start 1-second perf diagnostic counter reset ────────────────────────────
         this._perf.logTimer = setInterval(() => {
-            const { wsSent, gpioRaw, gpioSent, workerEvts } = this._perf;
-            this._log.info(
-                `[PERF] phase=${this.phase} | WS-sent/s=${wsSent}` +
-                ` | worker-events/s=${workerEvts}` +
-                ` | GPIO-raw/s=${gpioRaw} GPIO-forwarded/s=${gpioSent}` +
-                ` (suppressed=${gpioRaw - gpioSent})`
-            );
             this._perf.wsSent     = 0;
             this._perf.gpioRaw    = 0;
             this._perf.gpioSent   = 0;
@@ -433,52 +494,68 @@ export default class QemuRunner {
         }, 1000);
 
         const libPath = this._getSharedLibraryPath();
-        if (libPath) {
-            this._isSharedLibraryMode = true;
-            this._startSharedLibraryWorker(libPath);
-            return;
-        }
+        
+        // Dynamic Point Allocation
+        const cost = getCost('esp32', 'sim');
+        const tag = this._isPooled ? `esp32:hotpool` : `esp32:sim:${this.buildId.substring(0, 8)}`;
+        console.log(`[QEMU:${this.buildId.substring(0, 8)}] Requesting ${cost} simulation points with tag "${tag}"...`);
+        acquirePoints(cost, tag).then((allocId) => {
+            this._reservedPointsKey = allocId;
+            if (this._destroyed) {
+                // If runner was destroyed while waiting for points
+                releasePoints(allocId);
+                return;
+            }
+            if (libPath) {
+                this._isSharedLibraryMode = true;
+                this._startSharedLibraryWorker(libPath);
+                return;
+            }
 
-        this._isSharedLibraryMode = false;
-        this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-        this._nicArgs  = this._buildNicArgs();
+            this._isSharedLibraryMode = false;
+            this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
+            this._nicArgs  = this._buildNicArgs();
 
-        // Start the network proxy first
-        this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
-            this._proxyPort = proxyPort;
-            
-            // Start TCP Server for UART0
-            this._uartServer = net.createServer((socket) => {
-                this._log.info('📡 QEMU connected to UART0 TCP bridge');
-                this._uartSocket = socket;
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
+                this._proxyPort = proxyPort;
                 
-                socket.setEncoding('utf8');
-                socket.on('data', (chunk) => {
-                    this.lastActivity = Date.now();
-                    this._handleSerialData(chunk);
+                // Start TCP Server for UART0
+                this._uartServer = net.createServer((socket) => {
+                    this._log.info('📡 QEMU connected to UART0 TCP bridge');
+                    this._uartSocket = socket;
+                    
+                    socket.setEncoding('utf8');
+                    socket.on('data', (chunk) => {
+                        this.lastActivity = Date.now();
+                        this._handleSerialData(chunk);
+                    });
+                    
+                    socket.on('error', (err) => {
+                        this._log.warn('UART0 socket error:', err.message);
+                    });
+                    
+                    socket.on('close', () => {
+                        this._uartSocket = null;
+                    });
                 });
                 
-                socket.on('error', (err) => {
-                    this._log.warn('UART0 socket error:', err.message);
+                this._uartServer.on('error', (err) => {
+                    this._log.error('❌ Failed to create UART0 TCP server:', err.message);
+                    this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
                 });
                 
-                socket.on('close', () => {
-                    this._uartSocket = null;
+                this._uartServer.listen(0, '127.0.0.1', () => {
+                    this._uartPort = this._uartServer.address().port;
+                    this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
+                    this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
                 });
             });
-            
-            this._uartServer.on('error', (err) => {
-                this._log.error('❌ Failed to create UART0 TCP server:', err.message);
-                this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
-            });
-            
-            this._uartServer.listen(0, '127.0.0.1', () => {
-                this._uartPort = this._uartServer.address().port;
-                this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
-            });
+            this._proxy.start();
+        }).catch(err => {
+            this._log.error('Failed to acquire simulation points:', err.message);
+            this.kill();
         });
-        this._proxy.start();
     }
 
     /**
@@ -638,7 +715,7 @@ export default class QemuRunner {
      * In legacy TCP mode, writes the bytes as a raw buffer over the UART0 socket.
      *
      * The caller (compileController) is responsible for chunking to ≤64 bytes
-     * to prevent FIFO overflow, matching the Velxio constraint.
+     * to prevent FIFO overflow, matching the OpenHW constraint.
      *
      * @param {number}   uart  - UART index (0 = primary Serial, 1/2 = extra).
      * @param {number[]} bytes - Array of byte values (0–255).
@@ -663,8 +740,8 @@ export default class QemuRunner {
     }
 
     // ── ESP32-CAM frame injection ─────────────────────────────────────────────
-    // Mirrors Velxio's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
-    // The worker routes to velxio_push_camera_frame() in libqemu-xtensa which
+    // Mirrors OpenHW's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
+    // The worker routes to openhw_push_camera_frame() in libqemu-xtensa which
     // delivers the bytes to the QEMU OV2640+I²S DMA buffer.  esp_camera_fb_get()
     // in the firmware receives the frame transparently.
 
@@ -704,7 +781,7 @@ export default class QemuRunner {
     /**
      * sendCameraDetach()
      *
-     * Drop the queued frame and detach the camera. Calls velxio_push_camera_frame
+     * Drop the queued frame and detach the camera. Calls openhw_push_camera_frame
      * with a NULL/empty payload on the C side which resets the DMA pointer.
      */
     sendCameraDetach() {
@@ -759,6 +836,12 @@ export default class QemuRunner {
                 }
             }
         }
+
+        // Release points
+        if (this._reservedPointsKey) {
+            releasePoints(this._reservedPointsKey);
+            this._reservedPointsKey = null;
+        }
     }
 
     _stopHeartbeatWatchdog() {
@@ -806,36 +889,40 @@ export default class QemuRunner {
      *   -serial tcp:127.0.0.1:<port>     → UART1 (WiFi payload multiplexer)
      */
     _spawnQemu(qemuPath, nicArgs, proxyPort, uartPort) {
-        const args = [
-            '-nographic',
-            '-machine', 'esp32',
-            '-m', '4M',
-            '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
-            '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
-            '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
-            ...nicArgs,
-        ];
+        setTimeout(() => {
+            if (this._destroyed) return;
 
-        this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
+            const args = [
+                '-nographic',
+                '-machine', 'esp32',
+                '-m', '4M',
+                '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
+                '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
+                '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
+                ...nicArgs,
+            ];
 
-        this._process = spawn(qemuPath, args, {
-            // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
-            // Only pipe stderr so we can capture QEMU-level errors.
-            stdio: ['ignore', 'ignore', 'pipe'],
-        });
+            this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
 
-        // Set low scheduling priority to prevent CPU starvation
-        if (this._process && this._process.pid) {
-            try {
-                os.setPriority(this._process.pid, 10);
-                this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
-            } catch (e) {
-                this._log.warn('Failed to set QEMU process priority:', e.message);
+            this._process = spawn(qemuPath, args, {
+                // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
+                // Only pipe stderr so we can capture QEMU-level errors.
+                stdio: ['ignore', 'ignore', 'pipe'],
+            });
+
+            // Set low scheduling priority to prevent CPU starvation
+            if (this._process && this._process.pid) {
+                try {
+                    os.setPriority(this._process.pid, 10);
+                    this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
+                } catch (e) {
+                    this._log.warn('Failed to set QEMU process priority:', e.message);
+                }
             }
-        }
 
-        // Attach lifecycle handlers
-        this._attachProcessHandlers();
+            // Attach lifecycle handlers
+            this._attachProcessHandlers();
+        }, 300);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -974,6 +1061,8 @@ export default class QemuRunner {
             }, 1500);
         } else {
             // Exceeded retry count
+
+
             this._sendWs({
                 type: 'SERIAL_LOG',
                 level: 'ERROR',

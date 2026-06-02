@@ -2,6 +2,7 @@ import { execFile } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { logAdminAction } from './adminController.js';
+import { searchLibrariesLocal, getLibraryMetadata } from '../services/libraryIndexService.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +17,16 @@ export const searchLibrary = (req, res) => {
     const query = req.query.q?.toLowerCase().trim();
     if (!query) {
         return res.status(400).json({ error: 'Search query "q" is required.' });
+    }
+
+    // Try fast local search first
+    try {
+        const localResults = searchLibrariesLocal(query);
+        if (localResults && localResults.length > 0) {
+            return res.json({ libraries: localResults });
+        }
+    } catch (err) {
+        console.error('[LibrarySearch] Local fast search failed, falling back to cache/CLI:', err.message);
     }
 
     // Check Cache
@@ -75,6 +86,8 @@ export const listLibraries = (req, res) => {
     });
 };
 
+import { fetchAndExtractLibrary } from '../services/dynamicLibraryManager.js';
+
 export const installLibrary = async (req, res) => {
     const { name } = req.body;
     if (!name) {
@@ -90,14 +103,13 @@ export const installLibrary = async (req, res) => {
         req.ip
     );
 
-    // Run: arduino-cli lib install "name"
-    execFile(ARDUINO_CLI_PATH, ['lib', 'install', name], (error, stdout, stderr) => {
-        if (error) {
-            console.error('Library install error:', stderr || stdout);
-            return res.status(500).json({ error: 'Failed to install library.' });
-        }
-        return res.json({ success: true, message: `Successfully installed ${name}` });
-    });
+    try {
+        await fetchAndExtractLibrary(name);
+        return res.json({ success: true, message: `Successfully installed ${name} to cache.` });
+    } catch (error) {
+        console.error('Library install error:', error);
+        return res.status(500).json({ error: 'Failed to install library: ' + error.message });
+    }
 };
 
 export const uninstallLibrary = async (req, res) => {
@@ -123,4 +135,30 @@ export const uninstallLibrary = async (req, res) => {
         }
         return res.json({ success: true, message: `Successfully uninstalled ${name}` });
     });
+};
+
+export const getLibrariesInfo = (req, res) => {
+    const namesQuery = req.query.names;
+    if (!namesQuery) {
+        return res.status(400).json({ error: 'Query parameter "names" is required.' });
+    }
+    const names = namesQuery.split(',').map(n => n.trim()).filter(Boolean);
+    const libraries = {};
+    for (const name of names) {
+        try {
+            const meta = getLibraryMetadata(name);
+            if (meta) {
+                libraries[name.toLowerCase()] = {
+                    name: meta.name,
+                    sentence: meta.sentence,
+                    author: meta.author,
+                    website: meta.website,
+                    version: meta.latest?.version
+                };
+            }
+        } catch (err) {
+            console.error(`[LibraryInfo] Failed to resolve metadata for "${name}":`, err.message);
+        }
+    }
+    return res.json({ libraries });
 };

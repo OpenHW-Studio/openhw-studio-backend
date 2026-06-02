@@ -5,7 +5,8 @@
 #include <freertos/task.h>
 #include <freertos/semphr.h>
 #include "esp_log.h"
-#include <esp_task_wdt.h>
+#include "soc/timer_group_struct.h"
+#include "soc/timer_group_reg.h"
 
 volatile uint8_t sim_gpio_state[SIM_GPIO_COUNT] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -249,7 +250,13 @@ uint8_t sim_digitalRead(uint8_t pin) {
 
 void sim_digitalWrite(uint8_t pin, uint8_t value) {
     if (pin >= SIM_GPIO_COUNT) return;
-    SPI.flush();
+    
+    static volatile bool _in_spi_flush = false;
+    if (_sim_ready_sent && !_in_spi_flush) {
+        _in_spi_flush = true;
+        SPI.flush();
+        _in_spi_flush = false;
+    }
     
     if (sim_dht_enabled[pin]) {
         if (value == 0) {
@@ -299,10 +306,22 @@ void sim_noTone(uint8_t pin) {
 }
 
 void _simBridgeInit_Early() {
+    // 1. Disable software task watchdogs
     disableCore0WDT();
 #ifndef CONFIG_FREERTOS_UNICORE
     disableCore1WDT();
 #endif
+
+    // 2. Disable hardware watchdog timers (TG0 and TG1) via direct register writes
+    TIMERG0.wdtwprotect.val = TIMG_WDT_WKEY_V; // Unlock write-protection
+    TIMERG0.wdtfeed.val     = 1;                // Reset the countdown
+    TIMERG0.wdtconfig0.val  = 0;               // Disable WDT entirely
+    TIMERG0.wdtwprotect.val = 0;               // Re-lock
+
+    TIMERG1.wdtwprotect.val = TIMG_WDT_WKEY_V;
+    TIMERG1.wdtfeed.val     = 1;
+    TIMERG1.wdtconfig0.val  = 0;
+    TIMERG1.wdtwprotect.val = 0;
 
     if (!_sim_serial_mtx) {
         _sim_serial_mtx = xSemaphoreCreateMutex();
@@ -310,6 +329,18 @@ void _simBridgeInit_Early() {
 
     esp_log_level_set("*", ESP_LOG_NONE);
     Serial.begin(SIM_UART_BAUD);
+}
+
+static void _simCore0Spinner(void*) {
+    for (;;) {
+        taskYIELD();
+    }
+}
+
+static void _simCore1Spinner(void*) {
+    for (;;) {
+        taskYIELD();
+    }
 }
 
 void _simBridgeInit_Late() {
@@ -322,6 +353,15 @@ void _simBridgeInit_Late() {
     Serial.println(F(""));
     Serial.println();
     Serial.flush();
+
+    xTaskCreatePinnedToCore(
+        _simCore0Spinner, "SimCore0Spin",
+        1024, nullptr, 1, nullptr, 0
+    );
+    xTaskCreatePinnedToCore(
+        _simCore1Spinner, "SimCore1Spin",
+        1024, nullptr, 1, nullptr, 1
+    );
 
     xTaskCreatePinnedToCore(
         _simulatorUARTTask, "SimBridgeUART",
