@@ -1228,14 +1228,28 @@ export const compileStatus = (req, res) => {
         return res.status(404).json({ error: 'Compile job not found.' });
     }
 
-    return res.json({
+    const responseData = {
         jobId: job.id,
         status: job.status,
         progress: job.progress,
         error: job.error,
         stdout: job.stdout,
         stderr: job.stderr
-    });
+    };
+
+    if (job.status === 'success') {
+        const buildDir = path.join(BUILDS_DIR, jobId, 'build');
+        const mergedFlash = path.join(buildDir, 'merged-flash.bin');
+        if (fs.existsSync(mergedFlash)) {
+            try {
+                responseData.binary_content = fs.readFileSync(mergedFlash).toString('base64');
+            } catch (err) {
+                console.error(`[compileStatus] Failed to read merged-flash.bin:`, err.message);
+            }
+        }
+    }
+
+    return res.json(responseData);
 };
 
 /**
