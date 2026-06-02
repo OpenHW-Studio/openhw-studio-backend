@@ -157,7 +157,8 @@ jobs:
       - name: Sync Infrastructure Files
         run: |
           cd /opt/openhw/backend
-          git pull origin develop
+          git fetch origin develop
+          git reset --hard origin/develop
           
       - name: Deploy Health Agent
         if: needs.test_and_build.outputs.agent_changed == 'true'
@@ -174,15 +175,20 @@ jobs:
           
           echo "Deploying Health Agent..."
           df -h
-          docker image prune -af
+          docker image prune -af --filter "until=1h"
           df -h
           docker compose -f docker-compose.prod.yml pull health-agent
           docker compose -f docker-compose.prod.yml up -d health-agent
           
-          # Post-deployment cleanup
+          sleep 10
+          if [ -z "$(docker ps -q -f name=health-agent)" ]; then
+            echo "Health Agent container crashed after startup!"
+            exit 1
+          fi
+          
           # Post-deployment cleanup
           df -h
-          docker image prune -af
+          docker image prune -af --filter "until=1h"
           df -h
 
       - name: Deploy Main Backend
@@ -206,15 +212,25 @@ jobs:
           echo "Upgrading running backend container..."
           docker compose -f docker-compose.prod.yml up -d backend
           
+          sleep 10
+          if [ -z "$(docker ps -q -f name=backend)" ]; then
+            echo "Backend container crashed after startup!"
+            exit 1
+          fi
+          
           echo "Cleaning up old dereferenced backend image..."
           df -h
-          docker image prune -af
+          docker image prune -af --filter "until=1h"
           df -h
 
       - name: Deploy ESP32 Worker
         if: needs.test_and_build.outputs.esp32_changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           cd /opt/openhw/backend
+          
+          # Update tag in .env
+          sed -i '/^ESP32_WORKER_TAG=/d' .env || true
+          echo "ESP32_WORKER_TAG=${{ github.sha }}" >> .env
           
           # Ensure credentials
           export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
@@ -229,15 +245,25 @@ jobs:
           echo "Upgrading running ESP32 worker container..."
           docker compose -f docker-compose.prod.yml up -d esp32-worker
           
+          sleep 10
+          if [ -z "$(docker ps -q -f name=esp32-worker)" ]; then
+            echo "ESP32 worker container crashed after startup!"
+            exit 1
+          fi
+          
           echo "Cleaning up old dereferenced ESP32 worker image..."
           df -h
-          docker image prune -af
+          docker image prune -af --filter "until=1h"
           df -h
 
       - name: Deploy STM32 Worker
         if: needs.test_and_build.outputs.stm32_changed == 'true' || github.event_name == 'workflow_dispatch'
         run: |
           cd /opt/openhw/backend
+          
+          # Update tag in .env
+          sed -i '/^STM32_WORKER_TAG=/d' .env || true
+          echo "STM32_WORKER_TAG=${{ github.sha }}" >> .env
           
           # Ensure credentials
           export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
@@ -252,9 +278,15 @@ jobs:
           echo "Upgrading running STM32 worker container..."
           docker compose -f docker-compose.prod.yml up -d stm32-worker
           
+          sleep 10
+          if [ -z "$(docker ps -q -f name=stm32-worker)" ]; then
+            echo "STM32 worker container crashed after startup!"
+            exit 1
+          fi
+          
           echo "Cleaning up old dereferenced STM32 worker image..."
           df -h
-          docker image prune -af
+          docker image prune -af --filter "until=1h"
           df -h
 
   agent_deployed:
