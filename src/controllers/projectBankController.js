@@ -39,6 +39,7 @@ export const createProjectBankEntry = async (req, res) => {
       slug,
       title,
       description = "",
+      visibility = "personal",
       difficulty = "beginner",
       tags = [],
       estimatedTime = "30 min",
@@ -66,6 +67,7 @@ export const createProjectBankEntry = async (req, res) => {
       slug,
       title,
       description,
+      visibility,
       difficulty,
       tags,
       estimatedTime,
@@ -188,7 +190,7 @@ export const updateProjectBankEntry = async (req, res) => {
     }
 
     const allowedFields = [
-      "title", "description", "difficulty", "tags", "estimatedTime", "board",
+      "title", "description", "visibility", "difficulty", "tags", "estimatedTime", "board",
       "theory", "quizQuestions", "guidedSteps", "assessment", "rewardComponents",
       "components", "starterCode"
     ];
@@ -203,6 +205,12 @@ export const updateProjectBankEntry = async (req, res) => {
 
     return res.status(200).json({ message: "Project updated.", project });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({ message: "Project slug conflicts with another project." });
+    }
+    if (error.name === "ValidationError") {
+      return res.status(400).json({ message: "Project update failed validation.", details: error.message });
+    }
     return res.status(500).json({ message: "Failed to update project.", error: error.message });
   }
 };
@@ -270,6 +278,25 @@ export const unpublishProjectBankEntry = async (req, res) => {
     return res.status(200).json({ message: "Project unpublished.", project });
   } catch (error) {
     return res.status(500).json({ message: "Failed to unpublish project.", error: error.message });
+  }
+};
+
+export const getProjectById = async (req, res) => {
+  try {
+    const { projectId } = req.params;
+
+    if (!isValidObjectId(projectId)) {
+      return res.status(400).json({ message: "Invalid projectId." });
+    }
+
+    const project = await ProjectBank.findById(projectId).lean();
+    if (!project) {
+      return res.status(404).json({ message: "Project not found." });
+    }
+
+    return res.status(200).json({ project });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to fetch project.", error: error.message });
   }
 };
 

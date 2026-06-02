@@ -2,9 +2,11 @@ import mongoose from "mongoose";
 
 const rewardComponentSchema = new mongoose.Schema(
   {
+    id: { type: String, trim: true },
     type: { type: String, required: true, trim: true },
     name: { type: String, trim: true, maxlength: 140 },
     icon: { type: String, trim: true, maxlength: 16 },
+    color: { type: String, trim: true, maxlength: 40 },
     description: { type: String, trim: true, maxlength: 500 },
   },
   { _id: false }
@@ -23,6 +25,11 @@ const componentSchema = new mongoose.Schema(
 const theoryItemSchema = new mongoose.Schema(
   {
     id: { type: String, trim: true },
+    emoji: { type: String, trim: true, maxlength: 6 },
+    front: { type: String, trim: true, maxlength: 1000 },
+    simple: { type: String, trim: true, maxlength: 2000 },
+    detail: { type: String, trim: true, maxlength: 5000 },
+    funFact: { type: String, trim: true, maxlength: 1000 },
     title: { type: String, trim: true },
     content: { type: String, trim: true },
   },
