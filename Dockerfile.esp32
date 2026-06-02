@@ -62,3 +62,5 @@ ENV ROLE=esp32-worker
 
 # Start the application
 CMD ["npm", "start"]
+
+# Trigger Rebuild
