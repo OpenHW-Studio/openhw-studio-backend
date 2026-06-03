@@ -1027,29 +1027,37 @@ export default class QemuRunner {
                 if (this._destroyed) return;
                 this._log.info(`Rebooting QEMU ESP32 instance (Attempt ${this._restartCount}/${this._maxRestarts})...`);
 
-                // On Windows, force-kill any process still listening on the UART
-                // port left behind by the crashed QEMU (zombie TCP server).
+                // Force-kill any zombie process still holding the UART port
+                // left behind by the crashed QEMU instance.
                 if (this._uartPort) {
                     try {
                         const { execSync } = await import('child_process');
-                        // netstat -ano shows PID; find the one on our port and kill it
-                        const out = execSync(
-                            `netstat -ano | findstr ":${this._uartPort} "`,
-                            { encoding: 'utf8', timeout: 3000 }
-                        );
-                        const pids = new Set();
-                        for (const line of out.split('\n')) {
-                            const m = line.trim().split(/\s+/);
-                            const pid = parseInt(m[m.length - 1], 10);
-                            if (pid > 4 && pid !== process.pid) pids.add(pid);  // skip System (PID 4) and ourselves
-                        }
-                        for (const pid of pids) {
+                        if (process.platform === 'win32') {
+                            // Windows: use netstat + taskkill
+                            const out = execSync(
+                                `netstat -ano | findstr ":${this._uartPort} "`,
+                                { encoding: 'utf8', timeout: 3000 }
+                            );
+                            const pids = new Set();
+                            for (const line of out.split('\n')) {
+                                const m = line.trim().split(/\s+/);
+                                const pid = parseInt(m[m.length - 1], 10);
+                                if (pid > 4 && pid !== process.pid) pids.add(pid);
+                            }
+                            for (const pid of pids) {
+                                try {
+                                    execSync(`taskkill /PID ${pid} /F`, { timeout: 2000 });
+                                    this._log.info(`🧹 Killed zombie QEMU process PID ${pid} holding port ${this._uartPort}`);
+                                } catch { /* already dead */ }
+                            }
+                        } else {
+                            // Linux/macOS: use fuser (part of psmisc package)
                             try {
-                                execSync(`taskkill /PID ${pid} /F`, { timeout: 2000 });
-                                this._log.info(`🧹 Killed zombie QEMU process PID ${pid} holding port ${this._uartPort}`);
-                            } catch { /* already dead */ }
+                                execSync(`fuser -k ${this._uartPort}/tcp`, { timeout: 3000 });
+                                this._log.info(`🧹 Killed zombie process holding port ${this._uartPort}`);
+                            } catch { /* no zombie on that port — that's fine */ }
                         }
-                    } catch { /* netstat failed or no zombie — proceed anyway */ }
+                    } catch { /* cleanup failed — proceed anyway */ }
                 }
 
                 if (this._isSharedLibraryMode) {

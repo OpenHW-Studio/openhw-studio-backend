@@ -14,8 +14,14 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     ca-certificates \
     ccache \
+    psmisc \
+    iproute2 \
     libsdl2-2.0-0 \
-    net-tools \
+    libslirp0 \
+    libglib2.0-0 \
+    libpixman-1-0 \
+    libfdt1 \
+    zlib1g \
     && pip3 install --break-system-packages esptool \
     && rm -rf /var/lib/apt/lists/*
 
@@ -23,6 +29,8 @@ RUN apt-get update && apt-get install -y \
 RUN mkdir -p /opt/qemu && \
     wget -qO- https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz | tar xJ -C /opt/qemu --strip-components=1
 ENV QEMU_ESP32_PATH=/opt/qemu/bin/qemu-system-xtensa
+# Verify all QEMU shared libraries are present at build time
+RUN ldd /opt/qemu/bin/qemu-system-xtensa | grep 'not found' && echo "❌ Missing QEMU libraries!" && exit 1 || echo "✅ All QEMU libraries present"
 # ccache stores compiled objects on the persistent data volume
 ENV CCACHE_DIR=/app/data/ccache
 ENV CCACHE_MAXSIZE=2G
