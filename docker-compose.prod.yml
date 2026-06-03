@@ -34,10 +34,10 @@ services:
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
       - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
-      - ESP32_WORKER_HTTP_URL=http://esp32-worker:5001
-      - ESP32_WORKER_WS_URL=ws://esp32-worker:5001
-      - STM32_WORKER_HTTP_URL=http://stm32-worker:5002
-      - STM32_WORKER_WS_URL=ws://stm32-worker:5002
+      - ESP32_WORKER_HTTP_URL=http://openhw-esp32-worker:5001
+      - ESP32_WORKER_WS_URL=ws://openhw-esp32-worker:5001
+      - STM32_WORKER_HTTP_URL=http://openhw-stm32-worker:5002
+      - STM32_WORKER_WS_URL=ws://openhw-stm32-worker:5002
     volumes:
       - ./persistent-data/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock

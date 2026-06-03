@@ -1241,9 +1241,9 @@ pico_add_extra_outputs(firmware)
     // Determine target
     const isAVR  = String(targetFqbn).includes('avr');
 
-    // ccache wraps the compiler on Linux/Docker; skipped silently on Windows
-    // Disabled for AVR because its platform.txt prepends compiler.path directly, which breaks the ccache command.
-    const useCcache = process.platform !== 'win32' && !isAVR;
+    // Disabled for AVR and RP2040 because their platform.txt prepends compiler.path directly, which breaks the ccache command.
+    const isRP2040 = String(targetFqbn).includes('rp2040');
+    const useCcache = process.platform !== 'win32' && !isAVR && !isRP2040;
 
     const ccacheC   = 'arm-none-eabi-gcc';
     const ccacheCpp = 'arm-none-eabi-g++';
@@ -1257,7 +1257,6 @@ pico_add_extra_outputs(firmware)
     const cliArgs = [
         'compile',
         '--fqbn', targetFqbn,
-        '--build-cache-path', COMPILE_CACHE_DIR,
         '--build-path', buildDir,
         '--jobs', '4',
         ...ccacheProps,
