@@ -64,29 +64,44 @@ export const searchLibrary = (req, res) => {
 };
 
 export const listLibraries = (req, res) => {
-    // Run: arduino-cli lib list --format json
-    execFile(ARDUINO_CLI_PATH, ['lib', 'list', '--format', 'json'], (error, stdout, stderr) => {
-        if (error) {
-            console.error('Library list error:', stderr || stdout);
-            return res.status(500).json({ error: 'Failed to list installed libraries.' });
+    try {
+        const PERM_DIR = path.resolve(__dirname, '../../../data/libraries/permanent');
+        if (!fs.existsSync(PERM_DIR)) {
+            return res.json({ libraries: [] });
         }
-
-        try {
-            const jsonStr = stdout.substring(stdout.indexOf('['), stdout.lastIndexOf(']') + 1);
-            if (!jsonStr) {
-                // If no brackets found, it might mean 0 libraries are installed. Let's return empty.
-                return res.json({ libraries: [] });
+        
+        // Scan PERM_DIR for folders and try to read library.properties to get the exact version
+        const libs = [];
+        for (const entry of fs.readdirSync(PERM_DIR, { withFileTypes: true })) {
+            if (entry.isDirectory()) {
+                const name = entry.name;
+                let version = 'unknown';
+                
+                // Try reading library.properties for actual version
+                const propPath = path.join(PERM_DIR, name, 'library.properties');
+                if (fs.existsSync(propPath)) {
+                    const props = fs.readFileSync(propPath, 'utf8');
+                    const verMatch = props.match(/^version=(.*)/m);
+                    if (verMatch) version = verMatch[1].trim();
+                }
+                
+                libs.push({
+                    library: {
+                        name: name.replace(/@.*/, ''), // Strip version from folder name if present
+                        version: version
+                    }
+                });
             }
-            const data = JSON.parse(jsonStr);
-            return res.json({ libraries: data || [] });
-        } catch (parseErr) {
-            console.error('Failed to parse list results', parseErr);
-            return res.status(500).json({ error: 'Failed to parse installed libraries list.' });
         }
-    });
+        
+        return res.json({ libraries: libs });
+    } catch (err) {
+        console.error('Failed to list permanent libraries:', err);
+        return res.status(500).json({ error: 'Failed to list installed libraries.' });
+    }
 };
 
-import { fetchAndExtractLibrary, syncPermanentLibraries } from '../services/dynamicLibraryManager.js';
+import { fetchAndExtractLibrary, syncPermanentLibraries, syncLibrariesIndexFile } from '../services/dynamicLibraryManager.js';
 import fs from 'fs';
 
 const CONFIG_FILE = path.resolve(__dirname, '../config/libraries.json');
@@ -160,12 +175,14 @@ export const clearCache = (req, res) => {
             if (fs.existsSync(target)) {
                 fs.rmSync(target, { recursive: true, force: true });
             }
+            syncLibrariesIndexFile();
             return res.json({ success: true, message: `Cleared cached library: ${name}` });
         } else {
             if (fs.existsSync(CACHE_DIR)) {
                 fs.rmSync(CACHE_DIR, { recursive: true, force: true });
                 fs.mkdirSync(CACHE_DIR, { recursive: true });
             }
+            syncLibrariesIndexFile();
             return res.json({ success: true, message: 'Cleared all cached libraries.' });
         }
     } catch (err) {
@@ -208,6 +225,7 @@ export const installLibrary = async (req, res) => {
         }
 
         await fetchAndExtractLibrary(baseName, PERM_DIR, version);
+        syncLibrariesIndexFile();
         return res.json({ success: true, message: `Successfully installed ${name} to permanent pool.` });
     } catch (error) {
         console.error('Library install error:', error);
@@ -246,10 +264,11 @@ export const uninstallLibrary = async (req, res) => {
             fs.rmSync(libPath, { recursive: true, force: true });
         }
         
-        return res.json({ success: true, message: `Successfully uninstalled ${name}` });
-    } catch (err) {
-        console.error('Library uninstall error:', err);
-        return res.status(500).json({ error: 'Failed to uninstall library.' });
+        syncLibrariesIndexFile();
+        return res.json({ success: true, message: `Successfully uninstalled ${name}.` });
+    } catch (error) {
+        console.error('Library uninstall error:', error);
+        return res.status(500).json({ error: 'Failed to uninstall library: ' + error.message });
     }
 };
 

@@ -5,6 +5,7 @@ import os
 import datetime
 import re
 import json
+import subprocess
 from report_template import HTML_TEMPLATE
 
 # Configuration
@@ -136,6 +137,13 @@ def generate_html():
     current, history = collect_stats()
     vm = get_vm_stats()
     
+    try:
+        docker_df_output = subprocess.run(["docker", "system", "df"], capture_output=True, text=True).stdout
+        docker_images_output = subprocess.run(["docker", "image", "ls"], capture_output=True, text=True).stdout
+    except Exception as e:
+        docker_df_output = f"Error fetching docker storage: {e}"
+        docker_images_output = ""
+
     sidebar_html = ""
     container_cards = ""
     service_data_js = {}
@@ -202,7 +210,9 @@ def generate_html():
         load_avg=vm['load_avg'],
         network_io="Monitoring Active",
         host_disk_detailed=f"{vm['free_disk']} GB / {vm['total_disk']} GB",
-        service_data_js=json.dumps(service_data_js)
+        service_data_js=json.dumps(service_data_js).replace("</", "<\\/"),
+        docker_df=docker_df_output.strip(),
+        docker_images=docker_images_output.strip()
     )
 
     filename = f"report_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.html"

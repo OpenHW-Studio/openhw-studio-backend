@@ -79,6 +79,41 @@ function pruneCache() {
             console.error(`[LibraryCache] Error pruning ${lib.name}:`, err.message);
         }
     }
+    
+    syncLibrariesIndexFile();
+}
+
+// ─── Sync Index File ─────────────────────────────────────────────────────────
+
+/**
+ * Updates src/config/libraries.json to reflect the current state of both
+ * permanent and cached libraries, serving as a live index for the UI.
+ */
+export function syncLibrariesIndexFile() {
+    try {
+        let config = { permanent: [] };
+        if (fs.existsSync(CONFIG_FILE)) {
+            config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+        }
+
+        const cached = [];
+        if (fs.existsSync(CACHE_DIR)) {
+            for (const entry of fs.readdirSync(CACHE_DIR, { withFileTypes: true })) {
+                if (entry.isDirectory()) {
+                    cached.push(entry.name);
+                }
+            }
+        }
+
+        const newConfig = {
+            permanent: config.permanent || [],
+            cached
+        };
+
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 4));
+    } catch (err) {
+        console.error('[LibrarySync] Failed to sync libraries.json index:', err.message);
+    }
 }
 
 // ─── Core fetch + extract ─────────────────────────────────────────────────────
@@ -179,6 +214,7 @@ export async function fetchAndExtractLibrary(libraryName, targetDir = CACHE_DIR,
     }
 
     pruneCache();
+    syncLibrariesIndexFile();
     return true;
 }
 
