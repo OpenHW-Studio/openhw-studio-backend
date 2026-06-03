@@ -608,6 +608,8 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
         // Wrap ESP-IDF compile in global queue
         const exitCode = await enqueueCompile(getCost('esp32', 'compile'), () => {
             return new Promise((resolve, reject) => {
+                let stdoutData = '';
+                let stderrData = '';
                 const child = spawn(pythonCmd, [compilerScript], { env, stdio: ['pipe', 'pipe', 'pipe'] });
                 
                 child.stdout.on('data', (data) => {
