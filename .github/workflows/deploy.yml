@@ -175,7 +175,7 @@ jobs:
           
           echo "Deploying Health Agent..."
           df -h
-          docker image prune -af --filter "until=1h"
+          docker image prune -af --filter "until=5m"
           df -h
           docker compose -f docker-compose.prod.yml pull health-agent
           docker compose -f docker-compose.prod.yml up -d health-agent
@@ -188,7 +188,7 @@ jobs:
           
           # Post-deployment cleanup
           df -h
-          docker image prune -af --filter "until=1h"
+          docker image prune -af --filter "until=5m"
           df -h
 
       - name: Deploy Main Backend
@@ -220,7 +220,7 @@ jobs:
           
           echo "Cleaning up old dereferenced backend image..."
           df -h
-          docker image prune -af --filter "until=1h"
+          docker image prune -af --filter "until=5m"
           df -h
 
       - name: Deploy ESP32 Worker
@@ -253,7 +253,7 @@ jobs:
           
           echo "Cleaning up old dereferenced ESP32 worker image..."
           df -h
-          docker image prune -af --filter "until=1h"
+          docker image prune -af --filter "until=5m"
           df -h
 
       - name: Deploy STM32 Worker
@@ -286,7 +286,7 @@ jobs:
           
           echo "Cleaning up old dereferenced STM32 worker image..."
           df -h
-          docker image prune -af --filter "until=1h"
+          docker image prune -af --filter "until=5m"
           df -h
 
   agent_deployed:
