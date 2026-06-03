@@ -464,12 +464,8 @@ export const compileArduinoCode = async (req, res) => {
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
     const libraryFlags   = libraryPaths.flatMap(p => ['--libraries', p]);
 
-    // ccache wraps arm-none-eabi-gcc on Linux/Docker; skipped on Windows
-    const useCcache = process.platform !== 'win32';
-    const ccacheProps = useCcache ? [
-        '--build-property', 'compiler.c.cmd=ccache arm-none-eabi-gcc',
-        '--build-property', 'compiler.cpp.cmd=ccache arm-none-eabi-g++',
-    ] : [];
+    // ccache is disabled for arduino-cli here because platform.txt prepends {compiler.path}, breaking it.
+    const ccacheProps = [];
 
     const compileArgs = [
         'compile',

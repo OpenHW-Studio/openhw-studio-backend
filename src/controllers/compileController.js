@@ -1143,6 +1143,11 @@ pico_add_extra_outputs(firmware)
             '-DPICO_BOARD=pico',
         ];
 
+        if (process.platform !== 'win32') {
+            configureArgs.push('-DCMAKE_C_COMPILER_LAUNCHER=ccache');
+            configureArgs.push('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache');
+        }
+
           enqueueCompile(getCost('pico', 'compile'), () => new Promise((resolve) => {
               const doBuild = (cfgStdout = '', cfgStderr = '') => {
                   execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
@@ -1233,21 +1238,26 @@ pico_add_extra_outputs(firmware)
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
     const libraryFlags   = libraryPaths.flatMap(p => ['--libraries', p]);
 
-    // ccache wraps the compiler on Linux/Docker; skipped silently on Windows
-    const useCcache = process.platform !== 'win32';
-
-    // Determine ccache compiler names per target
+    // Determine target
     const isAVR  = String(targetFqbn).includes('avr');
-    const ccacheC   = isAVR ? 'avr-gcc'         : 'arm-none-eabi-gcc';
-    const ccacheCpp = isAVR ? 'avr-g++'         : 'arm-none-eabi-g++';
+
+    // ccache wraps the compiler on Linux/Docker; skipped silently on Windows
+    // Disabled for AVR because its platform.txt prepends compiler.path directly, which breaks the ccache command.
+    const useCcache = process.platform !== 'win32' && !isAVR;
+
+    const ccacheC   = 'arm-none-eabi-gcc';
+    const ccacheCpp = 'arm-none-eabi-g++';
     const ccacheProps = useCcache ? [
         '--build-property', `compiler.c.cmd=ccache ${ccacheC}`,
         '--build-property', `compiler.cpp.cmd=ccache ${ccacheCpp}`,
     ] : [];
 
+    const COMPILE_CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
+    
     const cliArgs = [
         'compile',
         '--fqbn', targetFqbn,
+        '--build-cache-path', COMPILE_CACHE_DIR,
         '--build-path', buildDir,
         '--jobs', '4',
         ...ccacheProps,

@@ -201,11 +201,19 @@ export async function syncPermanentLibraries() {
     if (!Array.isArray(config.permanent)) return;
 
     for (const lib of config.permanent) {
-        const libPath = path.join(PERM_DIR, lib);
+        let name = lib;
+        let version = null;
+        if (lib.includes('@')) {
+            const parts = lib.split('@');
+            name = parts[0];
+            version = parts[1];
+        }
+
+        const libPath = path.join(PERM_DIR, name);
         if (!fs.existsSync(libPath)) {
             console.log(`[LibrarySync] Fetching permanent library: ${lib}`);
             try {
-                await fetchAndExtractLibrary(lib, PERM_DIR, null);
+                await fetchAndExtractLibrary(name, PERM_DIR, version);
             } catch (err) {
                 console.error(`[LibrarySync] Failed to fetch ${lib}:`, err.message);
             }

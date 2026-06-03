@@ -743,11 +743,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
     const libraryFlags   = libraryPaths.flatMap(p => ['--libraries', p]);
 
-    const useCcache = process.platform !== 'win32';
-    const ccacheProps = useCcache ? [
-        '--build-property', 'compiler.c.cmd=ccache xtensa-esp32-elf-gcc',
-        '--build-property', 'compiler.cpp.cmd=ccache xtensa-esp32-elf-g++',
-    ] : [];
+    // ccache is disabled for arduino-cli here because platform.txt prepends {compiler.path}, breaking it.
+    const ccacheProps = [];
 
     const compileArgs = [
         'compile',

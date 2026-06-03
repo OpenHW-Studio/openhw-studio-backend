@@ -1,7 +1,12 @@
-import { exec } from 'child_process';
+import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import AuditLog from '../models/AuditLog.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import mongoose from 'mongoose';
 import Project from '../models/Project.js';
 import LiveSimulationSession from '../models/LiveSimulationSession.js';
@@ -61,10 +66,13 @@ export const getInfrastructureStatus = async (req, res) => {
         });
 
         // Ensure we include the requested services even if not found in docker ps
-        const targetServices = ['frontend', 'backend', 'mongodb'];
+        const targetServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
         const services = targetServices.map(target => {
             const found = containers.find(c => c.name.includes(target));
-            if (found) return found;
+            if (found) {
+                found.name = target; // Normalize name to service name for restart/logs
+                return found;
+            }
             return {
                 name: target,
                 status: 'offline',
@@ -118,6 +126,30 @@ export const getInfrastructureStatus = async (req, res) => {
                 hash: 'N/A',
                 uptime: 'N/A',
                 resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            },
+            {
+                name: 'esp32-worker',
+                status: 'offline (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: 'N/A',
+                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            },
+            {
+                name: 'stm32-worker',
+                status: 'offline (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: 'N/A',
+                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
+            },
+            {
+                name: 'health-agent',
+                status: 'offline (local)',
+                version: 'local-dev',
+                hash: 'N/A',
+                uptime: 'N/A',
+                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
             }
         ];
 
@@ -145,7 +177,8 @@ export const getSystemLogs = async (req, res) => {
         // Fetch last 50 lines from docker-compose if available
         let stdout = '';
         try {
-            const result = await execAsync('docker compose logs --tail=50 --no-log-prefix');
+            const projectDir = path.resolve(__dirname, '../../../');
+            const result = await execAsync('docker compose logs --tail=50 --no-log-prefix', { cwd: projectDir });
             stdout = result.stdout;
         } catch (e) {
             // Docker not available, use system logs fallback
@@ -172,13 +205,76 @@ export const getSystemLogs = async (req, res) => {
     }
 };
 
+const redactSensitiveData = (text) => {
+    let redacted = text;
+    // Replace typical tokens, passwords, JWT secrets.
+    redacted = redacted.replace(/(password|secret|token|key|pwd)\s*[:=]\s*['"]?[^\s'"]+['"]?/gi, '$1=[REDACTED]');
+    // Hide Bearer tokens
+    redacted = redacted.replace(/Bearer\s+[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*/gi, 'Bearer [REDACTED]');
+    return redacted;
+};
+
+/**
+ * Streams live system and docker logs using Server-Sent Events (SSE)
+ */
+export const streamSystemLogs = (req, res) => {
+    const { service } = req.query; // 'all', 'backend', 'esp32-worker', 'stm32-worker'
+    
+    // Set headers for Server-Sent Events
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+
+    res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Connected to live log stream for ${service || 'all services'}` })}\n\n`);
+
+    const args = ['compose', 'logs', '--follow', '--tail=100', '--no-log-prefix'];
+    if (service && service !== 'all') {
+        args.push(service);
+    }
+
+    const projectDir = path.resolve(__dirname, '../../../');
+    const child = spawn('docker', args, { cwd: projectDir });
+
+    const handleData = (data, type) => {
+        const lines = data.toString().split('\n').filter(Boolean);
+        for (const line of lines) {
+            const safeLine = redactSensitiveData(line);
+            const msgObj = {
+                time: new Date().toISOString(),
+                msg: safeLine.trim(),
+                type: safeLine.toLowerCase().includes('error') ? 'error' : (type === 'stderr' ? 'error' : 'docker')
+            };
+            res.write(`data: ${JSON.stringify(msgObj)}\n\n`);
+        }
+    };
+
+    child.stdout.on('data', (data) => handleData(data, 'stdout'));
+    child.stderr.on('data', (data) => handleData(data, 'stderr'));
+
+    child.on('error', (err) => {
+        console.error('Docker log stream error:', err);
+        const safeError = redactSensitiveData(err.message);
+        res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'error', msg: 'Docker logs stream error: ' + safeError })}\n\n`);
+        res.end();
+    });
+
+    child.on('close', () => {
+        res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Log stream closed' })}\n\n`);
+        res.end();
+    });
+
+    req.on('close', () => {
+        child.kill();
+    });
+};
+
 /**
  * Restarts a specific Docker service
  * SECURITY: Uses strict whitelisting to prevent shell injection.
  */
 export const restartService = async (req, res) => {
     const { name } = req.body;
-    const allowedServices = ['frontend', 'backend', 'mongodb'];
+    const allowedServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
     
     if (!name || !allowedServices.includes(name)) {
         return res.status(403).json({ error: 'Invalid or restricted service name.' });
@@ -196,7 +292,8 @@ export const restartService = async (req, res) => {
 
         // SECURITY: Using execAsync with a whitelisted name is safe, 
         // but ideally we'd use a more direct docker-api in production.
-        await execAsync(`docker compose restart ${name}`);
+        const projectDir = path.resolve(__dirname, '../../../');
+        await execAsync(`docker compose restart ${name}`, { cwd: projectDir });
         res.json({ success: true, message: `${name} restarted successfully.` });
     } catch (error) {
         console.error(`Failed to restart ${name}:`, error);
@@ -204,55 +301,89 @@ export const restartService = async (req, res) => {
     }
 };
 
+import SystemTelemetry from '../models/SystemTelemetry.js';
+import VisitorPing from '../models/VisitorPing.js';
+
 /**
  * Fetches global usage analytics for the dashboard
  */
 export const getUsageAnalytics = async (req, res) => {
     try {
         const totalSimulations = await Project.countDocuments();
-        const activeSessions = await LiveSimulationSession.countDocuments({
-            updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) } // Sessions updated in last 30 mins
+        
+        // Fetch active sessions from the new VisitorPing model
+        const activeSessions = await VisitorPing.countDocuments({
+            lastSeen: { $gte: new Date(Date.now() - 15 * 60 * 1000) } // Last 15 minutes
         });
 
-        // Top Boards used (since I don't have library tracking yet)
+        // Top Boards used
         const boardUsage = await Project.aggregate([
             { $group: { _id: "$board", count: { $sum: 1 } } },
             { $sort: { count: -1 } }
         ]);
 
         const topLibraries = boardUsage.map(b => ({
-            name: b._id.toUpperCase(),
+            name: b._id ? b._id.toUpperCase() : 'UNKNOWN',
             count: b.count
         }));
 
-        // Compilation success/fail real data would go here.
-        // For now, we return an empty history if no logs exist.
-        const compilationHistory = [];
+        // Fetch last 7 days of compilation telemetry
+        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const rawTelemetry = await SystemTelemetry.find({
+            date: { $gte: sevenDaysAgo }
+        }).sort({ date: 1 }).lean();
 
-        const sessions = await LiveSimulationSession.find({
-            updatedAt: { $gte: new Date(Date.now() - 30 * 60 * 1000) }
-        }).select('lat lng teacherName').lean();
+        // Calculate average compile time across the 7 days
+        let totalSuccess = 0;
+        let totalFail = 0;
+        let grandTotalCompileTime = 0;
 
-        const regions = sessions
-            .filter(s => s.lat && s.lng)
-            .map(s => ({
-                lat: s.lat,
-                lng: s.lng,
-                label: s.teacherName || 'Anonymous',
-                count: 1
-            }));
+        const compilationHistory = rawTelemetry.map(t => {
+            totalSuccess += (t.compileSuccess || 0);
+            totalFail += (t.compileFail || 0);
+            grandTotalCompileTime += (t.totalCompileTimeMs || 0);
+            
+            return {
+                date: t.date,
+                success: t.compileSuccess || 0,
+                fail: t.compileFail || 0
+            };
+        });
+        
+        const totalCompiles = totalSuccess + totalFail;
+        const avgCompileTimeMs = totalCompiles > 0 ? (grandTotalCompileTime / totalCompiles) : 0;
+        const avgCompileTime = avgCompileTimeMs > 0 ? (avgCompileTimeMs / 1000).toFixed(2) + 's' : 'N/A';
+
+        // Extract geographic regions from active pings
+        const activePings = await VisitorPing.find({
+            lastSeen: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
+            lat: { $exists: true, $ne: null },
+            lng: { $exists: true, $ne: null }
+        }).lean();
+
+        // Group regions by roughly similar lat/lng to show counts on the map
+        const regionMap = {};
+        activePings.forEach(p => {
+            const key = `${Math.round(p.lat)},${Math.round(p.lng)}`;
+            if (!regionMap[key]) {
+                regionMap[key] = { lat: p.lat, lng: p.lng, label: p.ip || 'Anonymous', count: 0 };
+            }
+            regionMap[key].count += 1;
+        });
+
+        const regions = Object.values(regionMap);
 
         res.json({
             success: true,
             stats: {
                 totalSimulations,
                 activeSessions,
-                avgCompileTime: 'N/A',
-                storageUsed: 'N/A',
-                peakConcurrency: 'N/A',
+                avgCompileTime,
+                storageUsed: 'N/A', // Cloud storage is handled externally for now
+                peakConcurrency: activeSessions, // Approximation
                 topLibraries: topLibraries.length > 0 ? topLibraries : [],
                 compilationHistory,
-                regions: regions.length > 0 ? regions : []
+                regions
             }
         });
     } catch (error) {
