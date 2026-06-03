@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
+EXPOSE 8080
+
 CMD ["python", "health_agent.py"]
 
 # Trigger Rebuild 2
