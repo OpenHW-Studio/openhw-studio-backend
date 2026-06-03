@@ -18,8 +18,9 @@ export const protectRoute = async (req, res, next) => {
       ? authHeader.split(" ")[1]
       : null;
     const cookieToken = parseCookieToken(req.headers.cookie || "");
+    const queryToken = req.query?.token || null;
 
-    const token = bearerToken || cookieToken;
+    const token = bearerToken || cookieToken || queryToken;
     if (!token) {
       console.log("[Auth] No token provided");
       return res.status(401).json({ message: "Unauthorized: No token provided" });
