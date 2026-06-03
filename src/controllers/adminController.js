@@ -32,6 +32,11 @@ const getComposeArgs = (...extraArgs) => {
         baseArgs.push('-f', 'docker-compose.prod.yml');
     }
     
+    // We don't know the exact project name on the host (could be 'backend', 'app', etc).
+    // But since docker-compose.prod.yml explicitly sets container_names, we can use those names 
+    // to find the project name if we query Docker directly. However, it's easier to just let docker-compose 
+    // figure it out if we pass the right project name, or we can just fetch logs manually.
+    
     return [...baseArgs, ...extraArgs];
 };
 
@@ -193,12 +198,33 @@ export const getSystemLogs = async (req, res) => {
         let stdout = '';
         try {
             const projectDir = path.resolve(__dirname, '../../');
-            const composeCmd = getComposeArgs('logs', '--tail=50').join(' ');
-            const result = await execAsync(`docker ${composeCmd}`, { cwd: projectDir });
-            stdout = result.stdout;
+            
+            // Try to discover the exact project name used to deploy the stack
+            let projectName = '';
+            try {
+                const { stdout: projOut } = await execAsync(`docker inspect openhw-backend -f '{{ index .Config.Labels "com.docker.compose.project" }}'`);
+                projectName = projOut.trim();
+            } catch (err) {
+                // Ignore if container not found
+            }
+
+            let composeArgs = [];
+            if (projectName) {
+                composeArgs = getComposeArgs('-p', projectName, 'logs', '--no-color', '--tail=50');
+            } else {
+                composeArgs = getComposeArgs('logs', '--no-color', '--tail=50');
+            }
+            
+            // execAsync throws on non-zero exit, so we must handle it, but we also want stderr if it succeeds.
+            const result = await execAsync(`docker ${composeArgs.join(' ')}`, { cwd: projectDir });
+            stdout = (result.stdout + '\n' + result.stderr).trim();
         } catch (e) {
-            // Docker not available, use system logs fallback
-            stdout = 'Infrastructure monitoring inactive (Local Dev Mode)\nBackend: Active\nFrontend: Active\nMongoDB: Active';
+            // If docker compose logs exits with error, it might still have partial output in e.stdout/e.stderr
+            if (e.stdout || e.stderr) {
+                stdout = ((e.stdout || '') + '\n' + (e.stderr || '')).trim();
+            } else {
+                stdout = 'Infrastructure monitoring inactive (Local Dev Mode)\nBackend: Active\nFrontend: Active\nMongoDB: Active';
+            }
         }
         
         const isDocker = stdout.includes('Active') || stdout.includes('|') || stdout.toLowerCase().includes('docker');

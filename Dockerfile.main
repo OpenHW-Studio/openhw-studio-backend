@@ -34,6 +34,10 @@ RUN arduino-cli config init && \
     arduino-cli core update-index && \
     arduino-cli core install arduino:avr && \
     arduino-cli core install rp2040:rp2040 && \
+    mkdir -p /tmp/dummy_rp2040/dummy_rp2040 && \
+    echo 'void setup(){} void loop(){}' > /tmp/dummy_rp2040/dummy_rp2040/dummy_rp2040.ino && \
+    arduino-cli compile --fqbn rp2040:rp2040:rpipico /tmp/dummy_rp2040/dummy_rp2040 || true && \
+    rm -rf /tmp/dummy_rp2040 && \
     rm -rf /root/.arduino15/staging/*
 
 # Install Raspberry Pi Pico SDK
