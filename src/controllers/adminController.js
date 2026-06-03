@@ -266,8 +266,17 @@ export const streamSystemLogs = (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Important for NGINX to allow SSE
+    res.flushHeaders();
 
     res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Connected to live log stream for ${service || 'all services'}` })}\n\n`);
+
+    let streamClosed = false;
+    const safeWrite = (data) => {
+        if (!streamClosed && !res.writableEnded) {
+            res.write(data);
+        }
+    };
 
     const extraArgs = ['logs', '--follow', '--tail=100'];
     if (service && service !== 'all') {
@@ -282,74 +291,79 @@ export const streamSystemLogs = (req, res) => {
         const child = spawn('docker', args, { cwd: projectDir });
 
         const handleData = (data, type) => {
-        const lines = data.toString().split('\n').filter(Boolean);
-        for (const line of lines) {
-            const safeLine = redactSensitiveData(line);
-            let msgType = type === 'stderr' ? 'error' : 'docker';
-            let cleanMsg = safeLine;
-            
-            // Try to extract container prefix (e.g., "frontend-1  | message")
-            const match = safeLine.match(/^([a-zA-Z0-9-_]+)\s+\|\s+(.*)/);
-            if (match) {
-                const containerName = match[1].toLowerCase();
-                cleanMsg = match[2];
-                if (containerName.includes('frontend')) msgType = 'frontend';
-                else if (containerName.includes('backend')) msgType = 'backend';
-                else if (containerName.includes('mongo')) msgType = 'mongodb';
-                else if (containerName.includes('stm32')) msgType = 'stm32-worker';
-                else if (containerName.includes('esp32')) msgType = 'esp32-worker';
-                else if (containerName.includes('health')) msgType = 'health-agent';
-                else msgType = containerName;
+            const lines = data.toString().split('\n').filter(Boolean);
+            for (const line of lines) {
+                const safeLine = redactSensitiveData(line);
+                let msgType = type === 'stderr' ? 'error' : 'docker';
+                let cleanMsg = safeLine;
+                
+                // Try to extract container prefix (e.g., "frontend-1  | message")
+                const match = safeLine.match(/^([a-zA-Z0-9-_]+)\s+\|\s+(.*)/);
+                if (match) {
+                    const containerName = match[1].toLowerCase();
+                    cleanMsg = match[2];
+                    if (containerName.includes('frontend')) msgType = 'frontend';
+                    else if (containerName.includes('backend')) msgType = 'backend';
+                    else if (containerName.includes('mongo')) msgType = 'mongodb';
+                    else if (containerName.includes('stm32')) msgType = 'stm32-worker';
+                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
+                    else if (containerName.includes('health')) msgType = 'health-agent';
+                    else msgType = containerName;
+                }
+                
+                if (cleanMsg.toLowerCase().includes('error')) {
+                    msgType = 'error';
+                }
+
+                const msgObj = {
+                    time: new Date().toISOString(),
+                    msg: cleanMsg.trim(),
+                    type: msgType
+                };
+                safeWrite(`data: ${JSON.stringify(msgObj)}\n\n`);
             }
-            
-            if (cleanMsg.toLowerCase().includes('error')) {
-                msgType = 'error';
-            }
+        };
 
-            const msgObj = {
-                time: new Date().toISOString(),
-                msg: cleanMsg.trim(),
-                type: msgType
-            };
-            res.write(`data: ${JSON.stringify(msgObj)}\n\n`);
-        }
-    };
+        child.stdout.on('data', (data) => handleData(data, 'stdout'));
+        child.stderr.on('data', (data) => handleData(data, 'stderr'));
 
-    child.stdout.on('data', (data) => handleData(data, 'stdout'));
-    child.stderr.on('data', (data) => handleData(data, 'stderr'));
-
-    child.on('error', (err) => {
-        console.error('Docker log stream error:', err);
-        const safeError = redactSensitiveData(err.message);
-        res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'error', msg: 'Docker logs stream error: ' + safeError })}\n\n`);
-        res.end();
-    });
+        child.on('error', (err) => {
+            console.error('Docker log stream error:', err);
+            const safeError = redactSensitiveData(err.message);
+            safeWrite(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'error', msg: 'Docker logs stream error: ' + safeError })}\n\n`);
+            streamClosed = true;
+            res.end();
+        });
 
         child.on('close', (code) => {
-            res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Log stream closed (exit code: ${code})` })}\n\n`);
+            if (streamClosed) return;
+            safeWrite(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Log stream closed (exit code: ${code})` })}\n\n`);
             // Do NOT call res.end() here! If we close the connection, the browser's EventSource 
             // will immediately try to reconnect, causing an infinite SSE Error loop in the console.
             // Instead, just keep the connection alive with a periodic heartbeat.
             const idleInterval = setInterval(() => {
-                res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Stream idle' })}\n\n`);
+                safeWrite(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Stream idle' })}\n\n`);
             }, 10000);
 
             req.on('close', () => {
                 clearInterval(idleInterval);
+                streamClosed = true;
             });
         });
 
         req.on('close', () => {
+            streamClosed = true;
             child.kill();
         });
     }).catch((err) => {
         // Fallback for Local Dev Mode (No Docker) or if docker command is missing
         const mockInterval = setInterval(() => {
-            res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Infrastructure monitoring inactive (Local Dev Mode)' })}\n\n`);
+            safeWrite(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Infrastructure monitoring inactive (Local Dev Mode)' })}\n\n`);
         }, 10000); // Ping every 10 seconds to keep connection alive
 
         req.on('close', () => {
             clearInterval(mockInterval);
+            streamClosed = true;
         });
     });
 };

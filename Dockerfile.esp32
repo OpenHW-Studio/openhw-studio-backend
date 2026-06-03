@@ -64,3 +64,4 @@ ENV ROLE=esp32-worker
 CMD ["npm", "start"]
 
 # Trigger Rebuild
+# Force rebuild for SESSION_SECRET fix

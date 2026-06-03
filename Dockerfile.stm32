@@ -67,3 +67,4 @@ ENV ROLE=stm32-worker
 CMD ["npm", "start"]
 
 # Trigger Rebuild 2
+# Force rebuild for SESSION_SECRET fix
