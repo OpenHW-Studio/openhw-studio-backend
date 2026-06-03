@@ -20,6 +20,21 @@ let cachedInfraStatus = null;
 let lastInfraFetch = 0;
 const CACHE_TTL = 10000; // 10 seconds
 
+import fs from 'fs';
+
+// Helper to reliably construct docker compose command based on environment
+const getComposeArgs = (...extraArgs) => {
+    const projectDir = path.resolve(__dirname, '../../');
+    const isDev = fs.existsSync(path.resolve(projectDir, 'docker-compose.yml'));
+    
+    const baseArgs = ['compose'];
+    if (!isDev) {
+        baseArgs.push('-f', 'docker-compose.prod.yml');
+    }
+    
+    return [...baseArgs, ...extraArgs];
+};
+
 /**
  * Fetches the status of core Docker services (frontend, backend, mongodb)
  * Implements a 10s cache to prevent Docker daemon overhead.
@@ -177,8 +192,9 @@ export const getSystemLogs = async (req, res) => {
         // Fetch last 50 lines from docker-compose if available
         let stdout = '';
         try {
-            const projectDir = path.resolve(__dirname, '../../../');
-            const result = await execAsync('docker compose logs --tail=50 --no-log-prefix', { cwd: projectDir });
+            const projectDir = path.resolve(__dirname, '../../');
+            const composeCmd = getComposeArgs('logs', '--tail=50').join(' ');
+            const result = await execAsync(`docker ${composeCmd}`, { cwd: projectDir });
             stdout = result.stdout;
         } catch (e) {
             // Docker not available, use system logs fallback
@@ -187,11 +203,37 @@ export const getSystemLogs = async (req, res) => {
         
         const isDocker = stdout.includes('Active') || stdout.includes('|') || stdout.toLowerCase().includes('docker');
         
-        const logs = stdout.split('\n').filter(Boolean).map(line => ({
-            time: new Date().toISOString(),
-            msg: line.trim(),
-            type: line.toLowerCase().includes('error') ? 'error' : (isDocker ? 'docker' : 'info')
-        }));
+        const logs = stdout.split('\n').filter(Boolean).map(line => {
+            let msgType = 'info';
+            let cleanMsg = line.trim();
+            
+            if (isDocker) {
+                const match = line.match(/^([a-zA-Z0-9-_]+)\s+\|\s+(.*)/);
+                if (match) {
+                    const containerName = match[1].toLowerCase();
+                    cleanMsg = match[2].trim();
+                    if (containerName.includes('frontend')) msgType = 'frontend';
+                    else if (containerName.includes('backend')) msgType = 'backend';
+                    else if (containerName.includes('mongo')) msgType = 'mongodb';
+                    else if (containerName.includes('stm32')) msgType = 'stm32-worker';
+                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
+                    else if (containerName.includes('health')) msgType = 'health-agent';
+                    else msgType = containerName;
+                } else {
+                    msgType = 'docker';
+                }
+            }
+
+            if (cleanMsg.toLowerCase().includes('error')) {
+                msgType = 'error';
+            }
+
+            return {
+                time: new Date().toISOString(),
+                msg: cleanMsg,
+                type: msgType
+            };
+        });
 
         cachedLogs = logs;
         lastLogFetch = now;
@@ -227,22 +269,47 @@ export const streamSystemLogs = (req, res) => {
 
     res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Connected to live log stream for ${service || 'all services'}` })}\n\n`);
 
-    const args = ['compose', 'logs', '--follow', '--tail=100', '--no-log-prefix'];
+    const extraArgs = ['logs', '--follow', '--tail=100'];
     if (service && service !== 'all') {
-        args.push(service);
+        extraArgs.push(service);
     }
+    
+    const args = getComposeArgs(...extraArgs);
+    const projectDir = path.resolve(__dirname, '../../');
 
-    const projectDir = path.resolve(__dirname, '../../../');
-    const child = spawn('docker', args, { cwd: projectDir });
+    // Check if docker is installed
+    execPromise('docker -v').then(() => {
+        const child = spawn('docker', args, { cwd: projectDir });
 
-    const handleData = (data, type) => {
+        const handleData = (data, type) => {
         const lines = data.toString().split('\n').filter(Boolean);
         for (const line of lines) {
             const safeLine = redactSensitiveData(line);
+            let msgType = type === 'stderr' ? 'error' : 'docker';
+            let cleanMsg = safeLine;
+            
+            // Try to extract container prefix (e.g., "frontend-1  | message")
+            const match = safeLine.match(/^([a-zA-Z0-9-_]+)\s+\|\s+(.*)/);
+            if (match) {
+                const containerName = match[1].toLowerCase();
+                cleanMsg = match[2];
+                if (containerName.includes('frontend')) msgType = 'frontend';
+                else if (containerName.includes('backend')) msgType = 'backend';
+                else if (containerName.includes('mongo')) msgType = 'mongodb';
+                else if (containerName.includes('stm32')) msgType = 'stm32-worker';
+                else if (containerName.includes('esp32')) msgType = 'esp32-worker';
+                else if (containerName.includes('health')) msgType = 'health-agent';
+                else msgType = containerName;
+            }
+            
+            if (cleanMsg.toLowerCase().includes('error')) {
+                msgType = 'error';
+            }
+
             const msgObj = {
                 time: new Date().toISOString(),
-                msg: safeLine.trim(),
-                type: safeLine.toLowerCase().includes('error') ? 'error' : (type === 'stderr' ? 'error' : 'docker')
+                msg: cleanMsg.trim(),
+                type: msgType
             };
             res.write(`data: ${JSON.stringify(msgObj)}\n\n`);
         }
@@ -258,13 +325,32 @@ export const streamSystemLogs = (req, res) => {
         res.end();
     });
 
-    child.on('close', () => {
-        res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Log stream closed' })}\n\n`);
-        res.end();
-    });
+        child.on('close', (code) => {
+            res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: `Log stream closed (exit code: ${code})` })}\n\n`);
+            // Do NOT call res.end() here! If we close the connection, the browser's EventSource 
+            // will immediately try to reconnect, causing an infinite SSE Error loop in the console.
+            // Instead, just keep the connection alive with a periodic heartbeat.
+            const idleInterval = setInterval(() => {
+                res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Stream idle' })}\n\n`);
+            }, 10000);
 
-    req.on('close', () => {
-        child.kill();
+            req.on('close', () => {
+                clearInterval(idleInterval);
+            });
+        });
+
+        req.on('close', () => {
+            child.kill();
+        });
+    }).catch((err) => {
+        // Fallback for Local Dev Mode (No Docker) or if docker command is missing
+        const mockInterval = setInterval(() => {
+            res.write(`data: ${JSON.stringify({ time: new Date().toISOString(), type: 'info', msg: 'Infrastructure monitoring inactive (Local Dev Mode)' })}\n\n`);
+        }, 10000); // Ping every 10 seconds to keep connection alive
+
+        req.on('close', () => {
+            clearInterval(mockInterval);
+        });
     });
 };
 
@@ -292,8 +378,9 @@ export const restartService = async (req, res) => {
 
         // SECURITY: Using execAsync with a whitelisted name is safe, 
         // but ideally we'd use a more direct docker-api in production.
-        const projectDir = path.resolve(__dirname, '../../../');
-        await execAsync(`docker compose restart ${name}`, { cwd: projectDir });
+        const projectDir = path.resolve(__dirname, '../../');
+        const composeCmd = getComposeArgs('restart', name).join(' ');
+        await execAsync(`docker ${composeCmd}`, { cwd: projectDir });
         res.json({ success: true, message: `${name} restarted successfully.` });
     } catch (error) {
         console.error(`Failed to restart ${name}:`, error);

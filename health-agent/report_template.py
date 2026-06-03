@@ -76,6 +76,7 @@ HTML_TEMPLATE = """
         <div class="nav-tabs">
             <button class="nav-btn active" id="btn-dashboard" onclick="showTab('dashboard')">Dashboard</button>
             <button class="nav-btn" id="btn-system" onclick="showTab('system')">System View</button>
+            <button class="nav-btn" id="btn-storage" onclick="showTab('storage')">Storage</button>
         </div>
     </nav>
     <div class="layout">
@@ -133,6 +134,21 @@ HTML_TEMPLATE = """
                     <pre class="log-content" id="log-content">Select a container to view logs...</pre>
                 </div>
             </div>
+            <div id="view-storage" class="tab-view">
+                <h1 style="margin-bottom: 25px;">Storage & Infrastructure</h1>
+                <div class="metrics-grid">
+                    <div class="card"><div class="card-title">Total Disk Space</div><div class="card-value">{host_disk_detailed}</div></div>
+                    <div class="card"><div class="card-title">Free Disk Space</div><div class="card-value">{host_disk}</div></div>
+                </div>
+                <h3 style="margin-bottom: 15px;">Docker Storage Usage (System DF)</h3>
+                <div class="log-section" style="margin-top: 0; margin-bottom: 20px;">
+                    <pre class="log-content expanded" style="display: block; max-height: none; overflow-x: auto; font-family: monospace;">{docker_df}</pre>
+                </div>
+                <h3 style="margin-bottom: 15px;">Docker Images</h3>
+                <div class="log-section" style="margin-top: 0; margin-bottom: 20px;">
+                    <pre class="log-content expanded" style="display: block; max-height: 500px; overflow-y: auto; overflow-x: auto; font-family: monospace;">{docker_images}</pre>
+                </div>
+            </div>
         </div>
     </div>
     <script>
@@ -166,7 +182,6 @@ HTML_TEMPLATE = """
             document.getElementById('sys-mem').innerText = data.mem;
             document.getElementById('sys-image-id').innerText = data.image_id;
             document.getElementById('sys-version').innerText = data.version;
-            document.getElementById('sys-uptime-pct').innerText = data.uptime_pct + '%';
             document.getElementById('log-content').innerText = data.logs;
             document.getElementById('sys-status-badge').innerText = data.status_text;
             renderMainBar(data.status_pills);
