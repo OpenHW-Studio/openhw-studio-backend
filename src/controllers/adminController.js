@@ -287,7 +287,7 @@ export const streamSystemLogs = (req, res) => {
     const projectDir = path.resolve(__dirname, '../../');
 
     // Check if docker is installed
-    execPromise('docker -v').then(() => {
+    execAsync('docker -v').then(() => {
         const child = spawn('docker', args, { cwd: projectDir });
 
         const handleData = (data, type) => {
