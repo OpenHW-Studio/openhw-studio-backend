@@ -688,24 +688,28 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
 
         wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-        if (_activeRunners.has(buildId)) {
-            console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
-            const existingRunner = _activeRunners.get(buildId);
-            existingRunner.reload(mergedFlash);
-        } else {
-            const pooledRunner = acquireEsp32Runner();
-            if (pooledRunner) {
-                console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
-                pooledRunner.assignSession(buildId);
-                _activeRunners.set(buildId, pooledRunner);
-                wsManager.createPendingSession(buildId);
-                pooledRunner.reload(mergedFlash);
+        if (req.body.targetEngine !== 'frontend') {
+            if (_activeRunners.has(buildId)) {
+                console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+                const existingRunner = _activeRunners.get(buildId);
+                existingRunner.reload(mergedFlash);
             } else {
-                console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
-                const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
-                _activeRunners.set(buildId, runner);
-                runner.start();
+                const pooledRunner = acquireEsp32Runner();
+                if (pooledRunner) {
+                    console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                    pooledRunner.assignSession(buildId);
+                    _activeRunners.set(buildId, pooledRunner);
+                    wsManager.createPendingSession(buildId);
+                    pooledRunner.reload(mergedFlash);
+                } else {
+                    console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
+                    const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                    _activeRunners.set(buildId, runner);
+                    runner.start();
+                }
             }
+        } else {
+            console.log(`[Compile:${buildId}] ⚡ Target is frontend, skipping QEMU start`);
         }
     } catch (err) {
         console.error(`[Compile:${buildId}] ❌ ESP-IDF compilation failed:`, err.message);
@@ -824,24 +828,28 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         job.status = 'success';
         wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-        if (_activeRunners.has(buildId)) {
-            console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
-            const existingRunner = _activeRunners.get(buildId);
-            existingRunner.reload(mergedFlash);
-        } else {
-            const pooledRunner = acquireEsp32Runner();
-            if (pooledRunner) {
-                console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
-                pooledRunner.assignSession(buildId);
-                _activeRunners.set(buildId, pooledRunner);
-                wsManager.createPendingSession(buildId);
-                pooledRunner.reload(mergedFlash);
+        if (req.body.targetEngine !== 'frontend') {
+            if (_activeRunners.has(buildId)) {
+                console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+                const existingRunner = _activeRunners.get(buildId);
+                existingRunner.reload(mergedFlash);
             } else {
-                console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
-                const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
-                _activeRunners.set(buildId, runner);
-                runner.start();
+                const pooledRunner = acquireEsp32Runner();
+                if (pooledRunner) {
+                    console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                    pooledRunner.assignSession(buildId);
+                    _activeRunners.set(buildId, pooledRunner);
+                    wsManager.createPendingSession(buildId);
+                    pooledRunner.reload(mergedFlash);
+                } else {
+                    console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty)`);
+                    const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                    _activeRunners.set(buildId, runner);
+                    runner.start();
+                }
             }
+        } else {
+            console.log(`[Compile:${buildId}] ⚡ Target is frontend, skipping QEMU start`);
         }
     } catch (err) {
         console.error(`[Compile:${buildId}] ❌ Compile failed:`, err.message);
@@ -913,23 +921,27 @@ export const compileArduinoCode = async (req, res) => {
             setTimeout(() => {
                 wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-                if (_activeRunners.has(buildId)) {
-                    console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
-                    const existingRunner = _activeRunners.get(buildId);
-                    existingRunner.reload(mergedFlash);
-                } else {
-                    const pooledRunner = acquireEsp32Runner();
-                    if (pooledRunner) {
-                        console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
-                        pooledRunner.assignSession(buildId);
-                        _activeRunners.set(buildId, pooledRunner);
-                        pooledRunner.reload(mergedFlash);
+                if (req.body.targetEngine !== 'frontend') {
+                    if (_activeRunners.has(buildId)) {
+                        console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                        const existingRunner = _activeRunners.get(buildId);
+                        existingRunner.reload(mergedFlash);
                     } else {
-                        console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
-                        const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
-                        _activeRunners.set(buildId, runner);
-                        runner.start();
+                        const pooledRunner = acquireEsp32Runner();
+                        if (pooledRunner) {
+                            console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                            pooledRunner.assignSession(buildId);
+                            _activeRunners.set(buildId, pooledRunner);
+                            pooledRunner.reload(mergedFlash);
+                        } else {
+                            console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
+                            const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                            _activeRunners.set(buildId, runner);
+                            runner.start();
+                        }
                     }
+                } else {
+                    console.log(`[Compile:${buildId}] ⚡ Target is frontend, skipping QEMU start for Cache Hit`);
                 }
             }, 100);
             return;
@@ -1093,23 +1105,27 @@ export const compileStart = async (req, res) => {
             setTimeout(() => {
                 wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-                if (_activeRunners.has(buildId)) {
-                    console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
-                    const existingRunner = _activeRunners.get(buildId);
-                    existingRunner.reload(mergedFlash);
-                } else {
-                    const pooledRunner = acquireEsp32Runner();
-                    if (pooledRunner) {
-                        console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
-                        pooledRunner.assignSession(buildId);
-                        _activeRunners.set(buildId, pooledRunner);
-                        pooledRunner.reload(mergedFlash);
+                if (req.body.targetEngine !== 'frontend') {
+                    if (_activeRunners.has(buildId)) {
+                        console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                        const existingRunner = _activeRunners.get(buildId);
+                        existingRunner.reload(mergedFlash);
                     } else {
-                        console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
-                        const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
-                        _activeRunners.set(buildId, runner);
-                        runner.start();
+                        const pooledRunner = acquireEsp32Runner();
+                        if (pooledRunner) {
+                            console.log(`[Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                            pooledRunner.assignSession(buildId);
+                            _activeRunners.set(buildId, pooledRunner);
+                            pooledRunner.reload(mergedFlash);
+                        } else {
+                            console.log(`[Compile:${buildId}] 🚀 Cold-starting QEMU (pool empty - Cache Hit)`);
+                            const runner = new QemuRunner(buildId, mergedFlash, pipesDir, sketchDir);
+                            _activeRunners.set(buildId, runner);
+                            runner.start();
+                        }
                     }
+                } else {
+                    console.log(`[Compile:${buildId}] ⚡ Target is frontend, skipping QEMU start for Cache Hit`);
                 }
             }, 100);
             return;
