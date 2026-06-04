@@ -16,7 +16,6 @@ import { initSTM32Module } from './stm32/index.js';
 import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
 import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
 import { initLibraryIndexService } from './services/libraryIndexService.js';
-import { runCalibration } from './services/calibrationSuite.js';
 import { reloadBudget } from './services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -224,12 +223,13 @@ server.listen(PORT, async () => {
 
   const budgetFile = path.resolve(backendRoot, 'data/calibrated_budget.json');
   if (!fs.existsSync(budgetFile)) {
-    console.log('[Boot] Calibrated budget file missing. Running calibration...');
+    console.log('[Boot] Calibrated budget file missing. Triggering calibration via Health Agent...');
     try {
-      await runCalibration();
-      reloadBudget();
+      fetch('http://openhw-health-agent:8080/api/calibrate', { method: 'POST' })
+        .then(() => console.log('[Boot] Calibration triggered successfully.'))
+        .catch(err => console.error('[Boot] Failed to trigger calibration:', err.message));
     } catch (err) {
-      console.error('[Boot] Calibration failed:', err);
+      console.error('[Boot] Calibration fetch failed:', err);
     }
   }
 

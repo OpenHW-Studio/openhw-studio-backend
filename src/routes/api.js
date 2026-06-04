@@ -39,7 +39,7 @@ router.get('/components/public-installed', backupInstalledComponents);
 
 
 import { getPendingDeployments, approveDeployment, rejectDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild, getWorkflowLogs, dismissNotification } from '../controllers/deploymentController.js';
-import { getInfrastructureStatus, getSystemLogs, streamSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus, getResourceStatus, recalibrate } from '../controllers/adminController.js';
+import { getInfrastructureStatus, getSystemLogs, streamSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus, getResourceStatus, recalibrate, getCalibrationScripts, updateCalibrationScripts, getHostStatus } from '../controllers/adminController.js';
 import { handleVisitorPingExpress } from '../services/telemetryService.js';
 
 // Public Telemetry
@@ -60,8 +60,10 @@ router.get('/admin/usage-analytics', protectRoute, requireAdmin, getUsageAnalyti
 router.get('/admin/audit-history', protectRoute, requireAdmin, getAuditHistory);
 router.post('/admin/maintenance/toggle', protectRoute, requireAdmin, toggleMaintenanceMode);
 router.get('/admin/resource-status', protectRoute, requireAdmin, getResourceStatus);
+router.get('/admin/host-status', protectRoute, requireAdmin, getHostStatus);
 router.post('/admin/recalibrate', protectRoute, requireAdmin, recalibrate);
-
+router.get('/admin/recalibrate/scripts', protectRoute, requireAdmin, getCalibrationScripts);
+router.put('/admin/recalibrate/scripts', protectRoute, requireAdmin, updateCalibrationScripts);
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
 router.get('/admin/deployments/notifications', protectRoute, requireAdmin, getNotifications);

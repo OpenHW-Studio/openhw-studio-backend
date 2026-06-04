@@ -5,7 +5,26 @@
  */
 
 import os from 'os';
-import { loadCalibratedBudget } from './calibrationSuite.js';
+import fs from 'fs';
+import path from 'path';
+
+const BUDGET_FILE = path.join('/app/data', 'calibrated_budget.json');
+
+const DEFAULT_BUDGET = {
+    uno_compile: 150, uno_sim: 50,
+    pico_compile: 300, pico_sim: 100,
+    esp32_compile: 800, esp32_sim: 250,
+    stm32_compile: 400, stm32_sim: 150
+};
+
+export function loadCalibratedBudget() {
+    if (fs.existsSync(BUDGET_FILE)) {
+        try {
+            return JSON.parse(fs.readFileSync(BUDGET_FILE, 'utf8'));
+        } catch (_) {}
+    }
+    return DEFAULT_BUDGET;
+}
 
 // Calculate global points pool (Total memory minus 2000MB system reserve)
 const SYSTEM_RESERVE_MB = 2000;

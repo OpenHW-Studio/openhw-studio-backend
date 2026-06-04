@@ -293,19 +293,222 @@ uint16_t sim_analogRead(uint8_t pin) {
     return val;
 }
 
-void sim_tone(uint8_t pin, unsigned int frequency, unsigned long duration) {
+void sim_analogWrite(uint8_t pin, uint32_t value) {
     char frame[48];
-    snprintf(frame, sizeof(frame), ">TONE:%d:%u:%lu<", pin, frequency, duration);
+    snprintf(frame, sizeof(frame), ">PWM:%d:%u<", pin, value);
+    _sim_send(frame);
+}
+
+void sim_tone(uint8_t pin, unsigned int frequency, unsigned long duration) {
+    // Emit as a SIM control frame — handled by _handleSimFrame TONE case in qemuRunner.js
+    // This ensures TONE never leaks into the serial monitor as raw text
+    char frame[64];
+    snprintf(frame, sizeof(frame), ">SIM:TONE:%d:%u:%lu<", pin, frequency, duration);
     _sim_send(frame);
 }
 
 void sim_noTone(uint8_t pin) {
+    // frequency=0, duration=0 signals stop
     char frame[48];
-    snprintf(frame, sizeof(frame), ">TONE:%d:0:0<", pin);
+    snprintf(frame, sizeof(frame), ">SIM:TONE:%d:0:0<", pin);
     _sim_send(frame);
 }
 
+void sim_dacWrite(uint8_t pin, uint8_t value) {
+    // DAC on ESP32: pins 25 and 26 only
+    char frame[48];
+    snprintf(frame, sizeof(frame), ">DAC:%d:%u<", pin, value);
+    _sim_send(frame);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  LEDC (LED Controller PWM)
+// ─────────────────────────────────────────────────────────────────────────────
+static uint8_t  _ledc_channel_pin[16]  = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+                                           0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static uint8_t  _ledc_resolution[16]   = {8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8};
+static uint32_t _ledc_duty[16]         = {0};
+
+void sim_ledcSetup(uint8_t channel, double freq, uint8_t resolution_bits) {
+    if (channel >= 16) return;
+    _ledc_resolution[channel] = resolution_bits;
+    // freq is informational in simulation; we just record the resolution
+}
+
+void sim_ledcAttachPin(uint8_t pin, uint8_t channel) {
+    if (channel >= 16) return;
+    _ledc_channel_pin[channel] = pin;
+    // Inform the frontend about the channel→pin mapping via SIM frame
+    char frame[64];
+    snprintf(frame, sizeof(frame), ">LEDC_ATTACH:%d:%d<", channel, pin);
+    _sim_send(frame);
+}
+
+void sim_ledcWrite(uint8_t channel, uint32_t duty) {
+    if (channel >= 16) return;
+    _ledc_duty[channel] = duty;
+    char frame[64];
+    snprintf(frame, sizeof(frame), ">LEDC:%d:%u<", channel, duty);
+    _sim_send(frame);
+}
+
+uint32_t sim_ledcRead(uint8_t channel) {
+    if (channel >= 16) return 0;
+    return _ledc_duty[channel];
+}
+
+void sim_ledcDetachPin(uint8_t pin) {
+    for (int i = 0; i < 16; i++) {
+        if (_ledc_channel_pin[i] == pin) {
+            _ledc_channel_pin[i] = 0xFF;
+            break;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PCNT (Pulse Counter)
+// ─────────────────────────────────────────────────────────────────────────────
+static uint8_t  _pcnt_unit_pin[8]   = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+static int16_t  _pcnt_counts[8]     = {0};
+
+void sim_pcntInit(uint8_t unit, uint8_t pin) {
+    if (unit >= 8) return;
+    _pcnt_unit_pin[unit] = pin;
+    char frame[48];
+    snprintf(frame, sizeof(frame), ">PCNT_INIT:%d:%d<", unit, pin);
+    _sim_send(frame);
+}
+
+int16_t sim_pcntGetCount(uint8_t unit) {
+    if (unit >= 8) return 0;
+    return _pcnt_counts[unit];
+}
+
+void sim_pcntClear(uint8_t unit) {
+    if (unit >= 8) return;
+    _pcnt_counts[unit] = 0;
+    char frame[32];
+    snprintf(frame, sizeof(frame), ">PCNT:%d:0<", unit);
+    _sim_send(frame);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  TWAI / CAN Bus
+// ─────────────────────────────────────────────────────────────────────────────
+void sim_twaiTransmit(uint32_t id, uint8_t dlc, const uint8_t* data) {
+    // >TWAI:<id_hex>:<dlc_hex>:<data_hex><
+    char frame[128];
+    char hexdata[17] = {0};
+    for (int i = 0; i < dlc && i < 8; i++) {
+        snprintf(hexdata + i * 2, 3, "%02x", data[i]);
+    }
+    snprintf(frame, sizeof(frame), ">TWAI:%08lx:%02x:%s<",
+             (unsigned long)id, dlc, hexdata);
+    _sim_send(frame);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  RMT (Remote Control Transceiver / IR)
+// ─────────────────────────────────────────────────────────────────────────────
+void sim_rmtTx(uint8_t channel, const uint32_t* items, uint16_t num_items) {
+    // Encode RMT items as hex string: each uint32 = 2 pulse+level pairs
+    // Max 64 items * 8 hex chars each = 512 chars; keep header small
+    char frame[600];
+    int pos = snprintf(frame, sizeof(frame), ">RMT:%d:", channel);
+    for (int i = 0; i < num_items && pos + 8 < (int)sizeof(frame) - 2; i++) {
+        pos += snprintf(frame + pos, sizeof(frame) - pos, "%08lx", (unsigned long)items[i]);
+    }
+    frame[pos++] = '<';
+    frame[pos]   = '\0';
+    _sim_send(frame);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Deep Sleep / Light Sleep
+// ─────────────────────────────────────────────────────────────────────────────
+void sim_deepSleep(uint64_t time_us) {
+    char frame[64];
+    snprintf(frame, sizeof(frame), ">SIM:SLEEP:%llu<", (unsigned long long)time_us);
+    _sim_send(frame);
+    // In simulation: block the task briefly then yield — QEMU/WASM will handle actual timing
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+void sim_lightSleep(uint64_t time_us) {
+    // Light sleep: same as deep sleep in simulation (no register state difference)
+    sim_deepSleep(time_us);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  I2S Audio Output / Input
+// ─────────────────────────────────────────────────────────────────────────────
+// Base64 alphabet (standard)
+static const char _b64tab[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+// Encode up to 256 bytes → ~344 chars.  Returns number of chars written (no NUL).
+static int _b64encode(const uint8_t* src, size_t len, char* dst, size_t dst_max) {
+    int out = 0;
+    for (size_t i = 0; i < len && out + 5 < (int)dst_max; i += 3) {
+        const uint32_t b0 = src[i];
+        const uint32_t b1 = (i + 1 < len) ? src[i + 1] : 0;
+        const uint32_t b2 = (i + 2 < len) ? src[i + 2] : 0;
+        const uint32_t v  = (b0 << 16) | (b1 << 8) | b2;
+        dst[out++] = _b64tab[(v >> 18) & 0x3F];
+        dst[out++] = _b64tab[(v >> 12) & 0x3F];
+        dst[out++] = (i + 1 < len) ? _b64tab[(v >>  6) & 0x3F] : '=';
+        dst[out++] = (i + 2 < len) ? _b64tab[(v      ) & 0x3F] : '=';
+    }
+    dst[out] = '\0';
+    return out;
+}
+
+// Maximum PCM bytes per SIM frame (keeps UART line < ~700 chars)
+#define I2S_CHUNK_BYTES  192   // 192 raw bytes → 256 base64 chars
+
+void sim_i2s_write(uint8_t port_num, const void* src, size_t size,
+                   size_t* bytes_written, uint32_t /*ticks*/,
+                   uint32_t sample_rate, uint8_t bits) {
+    if (bytes_written) *bytes_written = size;
+    if (!src || size == 0) return;
+
+    const uint8_t* data = reinterpret_cast<const uint8_t*>(src);
+    size_t offset = 0;
+
+    // Send in chunks so a single UART line never becomes too long
+    while (offset < size) {
+        const size_t chunk = (size - offset > I2S_CHUNK_BYTES)
+                            ? I2S_CHUNK_BYTES : (size - offset);
+
+        // Header: >SIM:I2S:port:sampleRate:bits:<  then b64 payload then >
+        // Max header length: ~30 chars, b64 payload: chunk*4/3 ≈ 260 chars
+        char frame[350];
+        int  hdr = snprintf(frame, sizeof(frame),
+                            ">SIM:I2S:%d:%lu:%d:", (int)port_num,
+                            (unsigned long)sample_rate, (int)bits);
+        if (hdr < 0 || hdr >= (int)(sizeof(frame) - 10)) break;
+
+        const int b64len = _b64encode(data + offset, chunk,
+                                      frame + hdr, sizeof(frame) - hdr - 2);
+        frame[hdr + b64len]     = '<';
+        frame[hdr + b64len + 1] = '\0';
+        _sim_send(frame);
+
+        offset += chunk;
+    }
+}
+
+void sim_i2s_read(uint8_t /*port_num*/, void* dest, size_t size,
+                  size_t* bytes_read, uint32_t /*ticks*/) {
+    // In simulation there is no real mic; return silence (zeros)
+    if (dest && size > 0) memset(dest, 0, size);
+    if (bytes_read) *bytes_read = size;
+}
+
+
 void _simBridgeInit_Early() {
+
     // 1. Disable software task watchdogs
     disableCore0WDT();
 #ifndef CONFIG_FREERTOS_UNICORE
@@ -331,18 +534,6 @@ void _simBridgeInit_Early() {
     Serial.begin(SIM_UART_BAUD);
 }
 
-static void _simCore0Spinner(void*) {
-    for (;;) {
-        taskYIELD();
-    }
-}
-
-static void _simCore1Spinner(void*) {
-    for (;;) {
-        taskYIELD();
-    }
-}
-
 void _simBridgeInit_Late() {
     Serial.println();
     Serial.println(F(""));
@@ -353,15 +544,6 @@ void _simBridgeInit_Late() {
     Serial.println(F(""));
     Serial.println();
     Serial.flush();
-
-    xTaskCreatePinnedToCore(
-        _simCore0Spinner, "SimCore0Spin",
-        1024, nullptr, 1, nullptr, 0
-    );
-    xTaskCreatePinnedToCore(
-        _simCore1Spinner, "SimCore1Spin",
-        1024, nullptr, 1, nullptr, 1
-    );
 
     xTaskCreatePinnedToCore(
         _simulatorUARTTask, "SimBridgeUART",
