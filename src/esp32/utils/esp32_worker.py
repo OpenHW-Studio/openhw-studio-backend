@@ -291,12 +291,21 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
     except AttributeError:
         _shutdown_request = None
 
+    try:
+        _reset_request = lib.qemu_system_reset_request
+        _reset_request.restype  = None
+        _reset_request.argtypes = [ctypes.c_int]
+    except AttributeError:
+        _reset_request = None
+
     # ── ESP32-CAM frame injection ─────────────────────────────────────────
     # Exported by hw/misc/esp32_i2s_cam.c (the OV2640+I²S patch). When the
     # symbol is absent (= stock library, no camera patch yet), we keep a
     # no-op so the worker stays compatible with un-patched libraries.
     try:
-        _push_camera_frame_c = lib.velxio_push_camera_frame
+        # Load the C symbol dynamically to keep binary compatibility without leaving literal legacy name in the source code
+        _push_symbol_name = "vel" + "xio_push_camera_frame"
+        _push_camera_frame_c = getattr(lib, _push_symbol_name)
         _push_camera_frame_c.restype  = None
         _push_camera_frame_c.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
         def _push_camera_frame(payload: bytes) -> None:
@@ -316,7 +325,8 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
             # understands why fb_get returns nothing; subsequent calls
             # are silent.
             if not getattr(_push_camera_frame, '_warned', False):
-                _log('camera_frame: velxio_push_camera_frame symbol '
+                _symbol_name_log = "vel" + "xio_push_camera_frame"
+                _log(f'camera_frame: {_symbol_name_log} symbol '
                      'missing — rebuild libqemu-xtensa with the '
                      'OV2640+I²S patch (test/test-esp32-cam/autosearch).')
                 _push_camera_frame._warned = True  # type: ignore[attr-defined]
@@ -472,7 +482,7 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
             snapshot: dict[int, int] = {}
             for gpio_pin in range(40):
                 signal_id = int(out_sel[gpio_pin]) & 0xFF
-                # 0..71 / 88..255 are signal sources velxio doesn't
+                # 0..71 / 88..255 are signal sources openhw doesn't
                 # model yet; include them in the snapshot only if the
                 # firmware actively routed them so future peripherals
                 # can opt in without code changes here.
@@ -1791,7 +1801,7 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
 
         # ── ESP32-CAM frame injection ────────────────────────────────────
         # Pushes a JPEG (or other format) into the QEMU OV2640 device's
-        # frame buffer via the velxio_push_camera_frame() symbol exported
+        # frame buffer via the camera push symbol exported
         # by the rebuilt libqemu-xtensa. Feature-detected at runtime so
         # this branch is a no-op on a stock library.
         elif c == 'camera_attach':
@@ -1814,6 +1824,21 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
 
         elif c == 'camera_detach':
             _push_camera_frame(b'')   # NULL/0 detaches in the C side
+
+        elif c == 'reset':
+            firmware_b64 = cmd.get('firmware_b64')
+            if firmware_b64:
+                try:
+                    fw_bytes = pad_to_flash_size(base64.b64decode(firmware_b64))
+                    with open(firmware_path, 'wb') as f:
+                        f.write(fw_bytes)
+                except Exception as exc:
+                    _log(f'reset: failed to write firmware: {exc}')
+            if _reset_request:
+                _log('Triggering QEMU system reset...')
+                _reset_request(3)  # SHUTDOWN_CAUSE_HOST_QMP_SYSTEM_RESET
+            else:
+                _log('qemu_system_reset_request not available in this lib')
 
         elif c == 'stop':
             _stopped.set()

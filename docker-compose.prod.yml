@@ -23,6 +23,7 @@ services:
         condition: service_healthy
     environment:
       - PORT=5000
+      - ROLE=main
       - MONGO_URI=mongodb://mongodb:27017/openhw-studio-production
       - JWT_SECRET=${JWT_SECRET}
       - SESSION_SECRET=${SESSION_SECRET}
@@ -33,15 +34,64 @@ services:
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
       - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
+      - ESP32_WORKER_HTTP_URL=http://openhw-esp32-worker:5001
+      - ESP32_WORKER_WS_URL=ws://openhw-esp32-worker:5001
+      - STM32_WORKER_HTTP_URL=http://openhw-stm32-worker:5002
+      - STM32_WORKER_WS_URL=ws://openhw-stm32-worker:5002
     volumes:
-      - backend-temp:/app/temp
-      - backend-data:/app/data
+      - ./persistent-data/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
+    tmpfs:
+      - /app/temp:size=512M
+      - /app/builds:size=256M
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/lib-list"]
       interval: 15s
       timeout: 5s
       retries: 5
+
+  esp32-worker:
+    image: ${DOCKER_USERNAME}/openhw-esp32-worker:${BACKEND_TAG:-develop}
+    container_name: openhw-esp32-worker
+    restart: on-failure
+    environment:
+      - PORT=5001
+      - ROLE=esp32-worker
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      - ./persistent-data/data:/app/data
+    tmpfs:
+      - /app/temp:size=1G
+      - /app/builds:size=512M
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 3.5G
+
+  stm32-worker:
+    image: ${DOCKER_USERNAME}/openhw-stm32-worker:${BACKEND_TAG:-develop}
+    container_name: openhw-stm32-worker
+    restart: on-failure
+    environment:
+      - PORT=5002
+      - ROLE=stm32-worker
+      - SESSION_SECRET=${SESSION_SECRET}
+    volumes:
+      - ./persistent-data/data:/app/data
+    tmpfs:
+      - /app/temp:size=1G
+      - /app/builds:size=512M
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2.5G
 
   frontend:
     image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}
@@ -61,11 +111,10 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/proc:ro
       - /:/host_root:ro
+      - ./persistent-data/data:/app/data
 
 volumes:
   mongodb_data:
-  backend-temp:
-  backend-data:
