@@ -31,6 +31,7 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import GatewayProxy from './gatewayProxy.js';
 import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -521,10 +522,8 @@ export default class QemuRunner {
 
             this._isSharedLibraryMode = false;
             this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-            this._nicArgs  = this._buildNicArgs();
 
-            // Start the network proxy first
-            this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
+            const startQemu = (proxyPort) => {
                 this._proxyPort = proxyPort;
                 
                 // Start TCP Server for UART0
@@ -555,9 +554,15 @@ export default class QemuRunner {
                 this._uartServer.listen(0, '127.0.0.1', () => {
                     this._uartPort = this._uartServer.address().port;
                     this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                    this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    });
                 });
-            });
+            };
+            
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, startQemu);
             this._proxy.start();
         }).catch(err => {
             this._log.error('Failed to acquire simulation points:', err.message);
@@ -865,23 +870,50 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Returns the -nic args for QEMU based on the WIFI_MODE env var.
-     *
-     *  slirp (default) — userspace NAT, no root needed, macOS + Linux.
-     *  tap             — kernel-level tap0, Linux production only.
+     * Returns the -nic or -netdev args for QEMU.
+     * Uses GatewayProxy if WOKWI_WSS_URL is set, otherwise SLIRP/TAP.
      */
-    _buildNicArgs() {
+    async _buildNicArgs() {
+        // Resolve paths for PCAP dump
+        const pcapDir = path.resolve(__dirname, '../../../../data');
+        const pcapFile = path.resolve(pcapDir, `qemu_${this.buildId}.pcap`);
+        
+        // Ensure the data directory exists
+        try {
+            if (!require('fs').existsSync(pcapDir)) {
+                require('fs').mkdirSync(pcapDir, { recursive: true });
+            }
+        } catch (err) {
+            this._log.error('Failed to create pcap directory:', err.message);
+        }
+
+        const filterDumpArgs = ['-object', `filter-dump,id=f0,netdev=net0,file=${pcapFile}`];
+
+        if (process.env.WOKWI_WSS_URL) {
+            return new Promise((resolve) => {
+                this._log.info(`🌐 Routing QEMU ethernet to Gateway: ${process.env.WOKWI_WSS_URL}`);
+                this._gatewayProxy = new GatewayProxy(this.buildId, this.buildId, process.env.WOKWI_WSS_URL, (gwPort) => {
+                    resolve([
+                        '-netdev', `socket,id=net0,connect=127.0.0.1:${gwPort}`,
+                        '-device', 'open_eth,netdev=net0',
+                        ...filterDumpArgs
+                    ]);
+                });
+                this._gatewayProxy.start();
+            });
+        }
+
         const wifiMode = (process.env.WIFI_MODE || 'slirp').toLowerCase();
 
         if (wifiMode === 'tap') {
             const tapIface = process.env.TAP_INTERFACE || 'tap0';
             this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
             // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-nic', `tap,ifname=${tapIface},script=no,downscript=no,model=open_eth`];
+            return ['-netdev', `tap,id=net0,ifname=${tapIface},script=no,downscript=no`, '-device', 'open_eth,netdev=net0', ...filterDumpArgs];
         }
 
         this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-nic', 'user,model=open_eth'];
+        return ['-netdev', 'user,id=net0', '-device', 'open_eth,netdev=net0', ...filterDumpArgs];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1039,7 +1071,10 @@ export default class QemuRunner {
                     const libPath = this._getSharedLibraryPath();
                     this._startSharedLibraryWorker(libPath);
                 } else {
-                    this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    });
                 }
             }, 1500);
         } else {
@@ -1458,8 +1493,13 @@ export default class QemuRunner {
      */
     _cleanupPipes() {
         if (this._proxy) {
-            try { this._proxy.stop(); } catch { /* best-effort */ }
+            this._proxy.stop();
             this._proxy = null;
+        }
+
+        if (this._gatewayProxy) {
+            this._gatewayProxy.stop();
+            this._gatewayProxy = null;
         }
 
         if (this._uartSocket && !this._uartSocket.destroyed) {
