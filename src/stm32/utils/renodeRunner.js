@@ -474,8 +474,7 @@ export default class RenodeRunner {
             '--plain',           // no GUI / no interactive console
             '--disable-xwt',    // disable XWT GUI subsystem (headless)
             '--port', this._monitorPort.toString(), // enable telnet monitor port for hot-reloading
-            '-e',               // execute inline script
-            `include @${this._rescPath.replace(/\\/g, '/')}`,
+            this._rescPath.replace(/\\/g, '/'), // load script directly
         ];
 
         console.log(`[Renode:${this.buildId}] 🚀 Spawning: ${RENODE_PATH} ${args.join(' ')}`);
@@ -483,6 +482,7 @@ export default class RenodeRunner {
         this._renode = spawn(RENODE_PATH, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: false,
+            shell: process.platform === 'win32',
         });
 
         this._renode.stdout.on('data', (d) => {
