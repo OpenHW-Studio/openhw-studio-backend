@@ -68,21 +68,35 @@ func main() {
 		if !exists {
 			fmt.Printf("[Network Gateway] Creating new Virtual Network room: %s\n", sessionId)
 			
-			if globalVN == nil {
-				gatewayMode := os.Getenv("GATEWAY_MODE")
-				forwards := map[string]string{}
-				if gatewayMode != "public" {
-					fmt.Println("[Network Gateway] Private Mode: Port forwarding enabled (127.0.0.1:8080 -> 192.168.127.2:80)")
-					forwards["127.0.0.1:8080"] = "192.168.127.2:80"
-				}
+			gatewayMode := os.Getenv("GATEWAY_MODE")
+			var currentVN *virtualnetwork.VirtualNetwork
 
+			if gatewayMode != "public" {
+				if globalVN == nil {
+					config := types.Configuration{
+						Debug:             false,
+						MTU:               1500,
+						Subnet:            "192.168.127.0/24",
+						GatewayIP:         "192.168.127.1",
+						GatewayMacAddress: "5a:94:ef:e4:0c:dd",
+					}
+
+					vn, err := virtualnetwork.New(&config)
+					if err != nil {
+						roomsMutex.Unlock()
+						fmt.Printf("Error creating virtual network: %v\n", err)
+						return
+					}
+					globalVN = vn
+				}
+				currentVN = globalVN
+			} else {
 				config := types.Configuration{
 					Debug:             false,
 					MTU:               1500,
 					Subnet:            "192.168.127.0/24",
 					GatewayIP:         "192.168.127.1",
 					GatewayMacAddress: "5a:94:ef:e4:0c:dd",
-					Forwards:          forwards,
 				}
 
 				vn, err := virtualnetwork.New(&config)
@@ -91,7 +105,7 @@ func main() {
 					fmt.Printf("Error creating virtual network: %v\n", err)
 					return
 				}
-				globalVN = vn
+				currentVN = vn
 			}
 
 			pipe1, pipe2, err := connLoopback()
@@ -105,7 +119,7 @@ func main() {
 
 			room = &Room{
 				SessionId: sessionId,
-				VN:        globalVN,
+				VN:        currentVN,
 				Clients:   make(map[*Client]bool),
 				PipeToVN:  pipe2,
 				Ctx:       ctx,
@@ -116,7 +130,7 @@ func main() {
 			rooms[sessionId] = room
 
 			// Start the single gVisor acceptor for this room
-			go globalVN.AcceptQemu(ctx, pipe1)
+			go currentVN.AcceptQemu(ctx, pipe1)
 
 			// Start the single reader that takes frames from gVisor and broadcasts to ALL clients
 			go gvisorToClientsLoop(room)
