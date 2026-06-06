@@ -2,12 +2,20 @@ name: Release Standalone Gateways
 
 on:
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to create (for example: v1.2.3)'
+        required: true
+        type: string
   push:
     paths:
       - 'openhw-local-gateway/**'
     tags:
       - 'v*' # Triggers on version tags like v1.0.0
       - 'gateway*' # Triggers on tags like gateway
+
+permissions:
+  contents: write
 
 jobs:
   build-and-release:
@@ -68,6 +76,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
           name: OpenHW Network Gateway (Standalone)
           files: binaries/**/*
         env:
