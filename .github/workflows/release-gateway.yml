@@ -7,6 +7,7 @@ on:
       - 'openhw-local-gateway/**'
     tags:
       - 'v*' # Triggers on version tags like v1.0.0
+      - 'gateway*' # Triggers on tags like gateway
 
 jobs:
   build-and-release:
