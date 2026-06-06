@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     paths:
-      - 'openhw-studio-backend/openhw-local-gateway/**'
+      - 'openhw-local-gateway/**'
     tags:
       - 'v*' # Triggers on version tags like v1.0.0
 
@@ -39,7 +39,7 @@ jobs:
           go-version: '1.23'
 
       - name: Build Binary
-        working-directory: openhw-studio-backend/openhw-local-gateway
+        working-directory: openhw-local-gateway
         env:
           GOOS: ${{ matrix.os }}
           GOARCH: ${{ matrix.arch }}
@@ -51,7 +51,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: openhw-gw-${{ matrix.os }}-${{ matrix.arch }}
-          path: openhw-studio-backend/openhw-local-gateway/openhw-gw-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+          path: openhw-local-gateway/openhw-gw-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
 
   create-release:
     name: Create GitHub Release
