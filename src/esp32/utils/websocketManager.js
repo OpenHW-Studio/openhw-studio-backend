@@ -256,9 +256,14 @@ class WebSocketManager {
             if (entry.msgs.length >= MAX_PENDING_BUFFER) {
                 // Drop the oldest message to make room (ring-buffer behaviour)
                 entry.msgs.shift();
-                console.warn(
-                    `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
-                );
+                
+                const now = Date.now();
+                if (!entry.lastOverflowLog || now - entry.lastOverflowLog > 5000) {
+                    console.warn(
+                        `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
+                    );
+                    entry.lastOverflowLog = now;
+                }
             }
             entry.msgs.push(payload);
         }
