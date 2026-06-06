@@ -116,7 +116,7 @@ router.get(
             frontendUrl = origin;
         }
 
-        res.redirect(`${frontendUrl}/auth/success#token=${encodeURIComponent(token)}`);
+        res.redirect(`${frontendUrl}/login-success#token=${encodeURIComponent(token)}`);
     }
 );
 
