@@ -2,12 +2,22 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
+	"os"
+	"sync"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/gorilla/websocket"
 	"github.com/insomniacslk/dhcp/dhcpv4"
+)
+
+var (
+	globalNextIP byte = 2
+	globalMacToIP = make(map[string]net.IP)
+	globalIPToPort = make(map[string]int)
+	dhcpMutex sync.Mutex
 )
 
 // handleDHCP processes DHCP Discover/Request packets, assigns an IP, and sends an Offer/ACK directly back to the client.
@@ -35,17 +45,68 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 
 	macString := eth.SrcMAC.String()
 	
-	room.Lock()
-	assignedIP, exists := room.MacToIP[macString]
-	if !exists {
-		assignedIP = net.IPv4(192, 168, 127, room.NextIP)
-		room.NextIP++
-		if room.NextIP > 250 {
-			room.NextIP = 2
+	gatewayMode := os.Getenv("GATEWAY_MODE")
+	var assignedIP net.IP
+
+	if gatewayMode == "public" {
+		room.Lock()
+		ip, exists := room.MacToIP[macString]
+		if !exists {
+			ip = net.IPv4(192, 168, 127, room.NextIP)
+			room.NextIP++
+			if room.NextIP > 250 {
+				room.NextIP = 2
+			}
+			room.MacToIP[macString] = ip
 		}
-		room.MacToIP[macString] = assignedIP
+		assignedIP = ip
+		room.Unlock()
+	} else {
+		dhcpMutex.Lock()
+		ip, exists := globalMacToIP[macString]
+		if !exists {
+			ip = net.IPv4(192, 168, 127, globalNextIP)
+			globalNextIP++
+			if globalNextIP > 250 {
+				globalNextIP = 2
+			}
+			globalMacToIP[macString] = ip
+		}
+		assignedIP = ip
+
+		ipStr := assignedIP.String()
+		_, hasProxy := globalIPToPort[ipStr]
+		if !hasProxy {
+			port := 8080
+			for {
+				ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+				if err == nil {
+					globalIPToPort[ipStr] = port
+					go func(listener net.Listener, targetIP string, assignedPort int) {
+						defer listener.Close()
+						for {
+							conn, err := listener.Accept()
+							if err != nil {
+								return
+							}
+							go handleProxy(conn, targetIP)
+						}
+					}(ln, ipStr, port)
+
+					msg := fmt.Sprintf("[Port Forward] Mapped 127.0.0.1:%d -> %s:80", port, ipStr)
+					fmt.Println(msg)
+					
+					// Send notification to the frontend
+					client.WriteMutex.Lock()
+					client.Conn.WriteMessage(websocket.TextMessage, []byte(msg))
+					client.WriteMutex.Unlock()
+					break
+				}
+				port++
+			}
+		}
+		dhcpMutex.Unlock()
 	}
-	room.Unlock()
 
 	var replyDHCP *dhcpv4.DHCPv4
 	serverIP := net.IPv4(192, 168, 127, 1)
@@ -120,4 +181,40 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 	client.WriteMutex.Lock()
 	client.Conn.WriteMessage(websocket.BinaryMessage, replyMsg)
 	client.WriteMutex.Unlock()
+}
+
+func handleProxy(clientConn net.Conn, targetIP string) {
+	defer clientConn.Close()
+	
+	if globalVN == nil {
+		return
+	}
+	
+	destConn, err := globalVN.Dial("tcp", fmt.Sprintf("%s:80", targetIP))
+	if err != nil {
+		fmt.Printf("[Port Forward] Failed to connect to %s:80 - %v\n", targetIP, err)
+		return
+	}
+	defer destConn.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		io.Copy(destConn, clientConn)
+		if cw, ok := destConn.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		io.Copy(clientConn, destConn)
+		if cw, ok := clientConn.(interface{ CloseWrite() error }); ok {
+			cw.CloseWrite()
+		}
+	}()
+
+	wg.Wait()
 }
