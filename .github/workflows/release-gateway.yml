@@ -14,6 +14,9 @@ on:
       - 'v*' # Triggers on version tags like v1.0.0
       - 'gateway*' # Triggers on tags like gateway
 
+permissions:
+  contents: write
+
 jobs:
   build-and-release:
     name: Build Go Binaries
