@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import SystemTelemetry from '../models/SystemTelemetry.js';
 import VisitorPing from '../models/VisitorPing.js';
 
@@ -7,6 +8,7 @@ import VisitorPing from '../models/VisitorPing.js';
  * @param {number} timeMs - Elapsed time in ms
  */
 export async function logCompileTelemetry(success, timeMs) {
+    if (mongoose.connection.readyState !== 1) return;
     try {
         const date = new Date().toISOString().split('T')[0];
         

@@ -39,7 +39,7 @@ const __dirname  = path.dirname(__filename);
 
 const RENODE_PATH           = process.env.RENODE_PATH || 'renode';
 const RENODE_TCP_BASE_PORT  = parseInt(process.env.RENODE_TCP_BASE_PORT || '4000', 10);
-const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '25', 10);
+const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '100', 10);
 const RENODE_CONNECT_DELAY_MS = parseInt(process.env.RENODE_CONNECT_DELAY_MS || '400', 10);
 const RENODE_BOOT_WAIT_MS   = parseInt(process.env.RENODE_BOOT_WAIT_MS || '2000', 10);
 const STM32_PLATFORM_DESC   = process.env.STM32_PLATFORM_DESC || '@platforms/cpus/stm32f103.repl';
@@ -146,6 +146,8 @@ export default class RenodeRunner {
             this.connectionResolve = resolve;
             this.connectionReject  = reject;
         });
+        // Prevent unhandled promise rejection if this is a cold start and no one awaits it
+        this.connectionPromise.catch(() => {});
     }
 
     _logDebug(msg) {
