@@ -93,6 +93,21 @@ services:
           cpus: '2.0'
           memory: 2.5G
 
+  network-gateway:
+    image: ${DOCKER_USERNAME}/openhw-network-gateway:${BACKEND_TAG:-develop}
+    container_name: openhw-network-gateway
+    restart: always
+    environment:
+      - PORT=5099
+      - GATEWAY_MODE=public
+    ports:
+      - "5099:5099"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
   frontend:
     image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}
     container_name: openhw-frontend

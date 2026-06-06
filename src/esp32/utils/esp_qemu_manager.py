@@ -211,10 +211,18 @@ class EspQemuManager:
         # WiFi NIC (slirp user-mode networking)
         if wifi_enabled:
             nic_model = 'esp32c3_wifi' if 'c3' in machine else 'esp32_wifi'
-            nic_arg = f'user,model={nic_model},net=192.168.4.0/24'
+            netdev_arg = 'user,id=nd0,net=192.168.4.0/24'
             if wifi_hostfwd_port:
-                nic_arg += f',hostfwd=tcp::{wifi_hostfwd_port}-192.168.4.15:80'
-            cmd += ['-nic', nic_arg]
+                netdev_arg += f',hostfwd=tcp::{wifi_hostfwd_port}-192.168.4.15:80'
+            
+            pcap_path = os.path.join(os.path.dirname(__file__), '..', '..', '..', 'data', f'qemu_{inst.client_id}.pcap')
+            pcap_path = os.path.abspath(pcap_path)
+            
+            cmd += [
+                '-netdev', netdev_arg,
+                '-device', f'{nic_model},netdev=nd0',
+                '-object', f'filter-dump,id=f0,netdev=nd0,file={pcap_path}'
+            ]
 
         logger.info('Launching ESP32 QEMU for %s: %s', inst.client_id, ' '.join(cmd))
 

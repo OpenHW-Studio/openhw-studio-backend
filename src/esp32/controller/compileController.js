@@ -1002,6 +1002,9 @@ export const compileArduinoCode = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
+                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                        continue;
+                    }
                     if (fs.existsSync(src)) {
                         const destPath = path.join(sketchDir, dst);
                         const rawBytes = fs.readFileSync(src);
@@ -1186,6 +1189,9 @@ export const compileStart = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
+                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                        continue;
+                    }
                     if (fs.existsSync(src)) {
                         const destPath = path.join(sketchDir, dst);
                         const rawBytes = fs.readFileSync(src);
