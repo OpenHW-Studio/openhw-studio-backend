@@ -880,8 +880,8 @@ export default class QemuRunner {
         
         // Ensure the data directory exists
         try {
-            if (!require('fs').existsSync(pcapDir)) {
-                require('fs').mkdirSync(pcapDir, { recursive: true });
+            if (!fs.existsSync(pcapDir)) {
+                fs.mkdirSync(pcapDir, { recursive: true });
             }
         } catch (err) {
             this._log.error('Failed to create pcap directory:', err.message);
