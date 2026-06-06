@@ -875,7 +875,7 @@ export default class QemuRunner {
      */
     async _buildNicArgs() {
         // Resolve paths for PCAP dump
-        const pcapDir = path.resolve(__dirname, '../../../../data');
+        const pcapDir = path.resolve(__dirname, '../../../data');
         const pcapFile = path.resolve(pcapDir, `qemu_${this.buildId}.pcap`);
         
         // Ensure the data directory exists
@@ -894,8 +894,7 @@ export default class QemuRunner {
                 this._log.info(`🌐 Routing QEMU ethernet to Gateway: ${process.env.WOKWI_WSS_URL}`);
                 this._gatewayProxy = new GatewayProxy(this.buildId, this.buildId, process.env.WOKWI_WSS_URL, (gwPort) => {
                     resolve([
-                        '-netdev', `socket,id=net0,connect=127.0.0.1:${gwPort}`,
-                        '-device', 'open_eth,netdev=net0',
+                        '-nic', `socket,model=open_eth,id=net0,connect=127.0.0.1:${gwPort}`,
                         ...filterDumpArgs
                     ]);
                 });
@@ -909,11 +908,11 @@ export default class QemuRunner {
             const tapIface = process.env.TAP_INTERFACE || 'tap0';
             this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
             // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-netdev', `tap,id=net0,ifname=${tapIface},script=no,downscript=no`, '-device', 'open_eth,netdev=net0', ...filterDumpArgs];
+            return ['-nic', `tap,model=open_eth,id=net0,ifname=${tapIface},script=no,downscript=no`, ...filterDumpArgs];
         }
 
         this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-netdev', 'user,id=net0', '-device', 'open_eth,netdev=net0', ...filterDumpArgs];
+        return ['-nic', 'user,model=open_eth,id=net0', ...filterDumpArgs];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -974,11 +973,8 @@ export default class QemuRunner {
             const text = data.toString().trim();
             if (!text) return;
 
-            // Only surface genuine errors; suppress QEMU info lines
-            const lower = text.toLowerCase();
-            if (lower.includes('error') || lower.includes('failed') || lower.includes('abort')) {
-                this._log.error('🔴 QEMU stderr:', text);
-            }
+            // Surface ALL QEMU stderr to help debug crashes
+            this._log.error('🔴 QEMU stderr:', text);
         });
 
         // ── Normal or unexpected exit ───────────────────────────────────────────

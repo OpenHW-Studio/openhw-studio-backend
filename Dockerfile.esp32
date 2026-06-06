@@ -73,6 +73,6 @@ ENV ROLE=esp32-worker
 # Start the application
 CMD ["npm", "start"]
 
-# Trigger Rebuild
+# Trigger Rebuild 3
 # Force rebuild for SESSION_SECRET fix
 # Force rebuild to pick up the SimulatorWiFi.h fix
