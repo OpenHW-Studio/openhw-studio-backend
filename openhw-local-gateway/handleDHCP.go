@@ -3,11 +3,18 @@ package main
 import (
 	"fmt"
 	"net"
+	"sync"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/gorilla/websocket"
 	"github.com/insomniacslk/dhcp/dhcpv4"
+)
+
+var (
+	globalNextIP byte = 2
+	globalMacToIP = make(map[string]net.IP)
+	dhcpMutex sync.Mutex
 )
 
 // handleDHCP processes DHCP Discover/Request packets, assigns an IP, and sends an Offer/ACK directly back to the client.
@@ -35,17 +42,17 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 
 	macString := eth.SrcMAC.String()
 	
-	room.Lock()
-	assignedIP, exists := room.MacToIP[macString]
+	dhcpMutex.Lock()
+	assignedIP, exists := globalMacToIP[macString]
 	if !exists {
-		assignedIP = net.IPv4(192, 168, 127, room.NextIP)
-		room.NextIP++
-		if room.NextIP > 250 {
-			room.NextIP = 2
+		assignedIP = net.IPv4(192, 168, 127, globalNextIP)
+		globalNextIP++
+		if globalNextIP > 250 {
+			globalNextIP = 2
 		}
-		room.MacToIP[macString] = assignedIP
+		globalMacToIP[macString] = assignedIP
 	}
-	room.Unlock()
+	dhcpMutex.Unlock()
 
 	var replyDHCP *dhcpv4.DHCPv4
 	serverIP := net.IPv4(192, 168, 127, 1)

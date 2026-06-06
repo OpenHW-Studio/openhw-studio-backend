@@ -45,6 +45,7 @@ type Room struct {
 var (
 	roomsMutex sync.Mutex
 	rooms      = make(map[string]*Room)
+	globalVN   *virtualnetwork.VirtualNetwork
 )
 
 const PORT = "5099"
@@ -65,28 +66,32 @@ func main() {
 		roomsMutex.Lock()
 		room, exists := rooms[sessionId]
 		if !exists {
-			fmt.Printf("[Network Gateway] Creating new Virtual Network for room: %s\n", sessionId)
-			gatewayMode := os.Getenv("GATEWAY_MODE")
-			forwards := map[string]string{}
-			if gatewayMode != "public" {
-				fmt.Println("[Network Gateway] Private Mode: Port forwarding enabled (localhost:8080 -> 192.168.127.2:80)")
-				forwards["127.0.0.1:8080"] = "192.168.127.2:80"
-			}
+			fmt.Printf("[Network Gateway] Creating new Virtual Network room: %s\n", sessionId)
+			
+			if globalVN == nil {
+				gatewayMode := os.Getenv("GATEWAY_MODE")
+				forwards := map[string]string{}
+				if gatewayMode != "public" {
+					fmt.Println("[Network Gateway] Private Mode: Port forwarding enabled (127.0.0.1:8080 -> 192.168.127.2:80)")
+					forwards["127.0.0.1:8080"] = "192.168.127.2:80"
+				}
 
-			config := types.Configuration{
-				Debug:             false,
-				MTU:               1500,
-				Subnet:            "192.168.127.0/24",
-				GatewayIP:         "192.168.127.1",
-				GatewayMacAddress: "5a:94:ef:e4:0c:dd",
-				Forwards:          forwards,
-			}
+				config := types.Configuration{
+					Debug:             false,
+					MTU:               1500,
+					Subnet:            "192.168.127.0/24",
+					GatewayIP:         "192.168.127.1",
+					GatewayMacAddress: "5a:94:ef:e4:0c:dd",
+					Forwards:          forwards,
+				}
 
-			vn, err := virtualnetwork.New(&config)
-			if err != nil {
-				roomsMutex.Unlock()
-				fmt.Printf("Error creating virtual network: %v\n", err)
-				return
+				vn, err := virtualnetwork.New(&config)
+				if err != nil {
+					roomsMutex.Unlock()
+					fmt.Printf("Error creating virtual network: %v\n", err)
+					return
+				}
+				globalVN = vn
 			}
 
 			pipe1, pipe2, err := connLoopback()
@@ -100,7 +105,7 @@ func main() {
 
 			room = &Room{
 				SessionId: sessionId,
-				VN:        vn,
+				VN:        globalVN,
 				Clients:   make(map[*Client]bool),
 				PipeToVN:  pipe2,
 				Ctx:       ctx,
@@ -111,7 +116,7 @@ func main() {
 			rooms[sessionId] = room
 
 			// Start the single gVisor acceptor for this room
-			go vn.AcceptQemu(ctx, pipe1)
+			go globalVN.AcceptQemu(ctx, pipe1)
 
 			// Start the single reader that takes frames from gVisor and broadcasts to ALL clients
 			go gvisorToClientsLoop(room)
@@ -140,8 +145,13 @@ func main() {
 		handleClient(client, room)
 	})
 
-	fmt.Printf("[Network Gateway] Standalone Server running on ws://localhost:%s/api/network-gateway\n", PORT)
-	if err := http.ListenAndServe(":"+PORT, nil); err != nil {
+	listenAddr := "127.0.0.1:" + PORT
+	if os.Getenv("GATEWAY_MODE") == "public" {
+		listenAddr = ":" + PORT
+	}
+
+	fmt.Printf("[Network Gateway] Server running on ws://%s/api/network-gateway\n", listenAddr)
+	if err := http.ListenAndServe(listenAddr, nil); err != nil {
 		fmt.Printf("Server Error: %v\n", err)
 	}
 }
