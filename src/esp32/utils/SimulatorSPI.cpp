@@ -32,40 +32,45 @@ void SPIClass::end() {
 }
 
 void SPIClass::write(uint8_t data) {
-    _tx_buf[_tx_len++] = data;
-    if (_tx_len >= 64) {
-        flush();
-    }
+    _write_bulk(&data, 1);
 }
 
 void SPIClass::write16(uint16_t data) {
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
+    uint8_t buf[2];
+    buf[0] = data >> 8;
+    buf[1] = data;
+    _write_bulk(buf, 2);
 }
 
 void SPIClass::write32(uint32_t data) {
-    write((uint8_t)(data >> 24));
-    write((uint8_t)(data >> 16));
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
+    uint8_t buf[4];
+    buf[0] = data >> 24;
+    buf[1] = data >> 16;
+    buf[2] = data >> 8;
+    buf[3] = data;
+    _write_bulk(buf, 4);
 }
 
 uint8_t SPIClass::transfer(uint8_t data) {
-    write(data);
+    _write_bulk(&data, 1);
     return 0xFF;
 }
 
 uint16_t SPIClass::transfer16(uint16_t data) {
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
+    uint8_t buf[2];
+    buf[0] = data >> 8;
+    buf[1] = data;
+    _write_bulk(buf, 2);
     return 0xFFFF;
 }
 
 uint32_t SPIClass::transfer32(uint32_t data) {
-    write((uint8_t)(data >> 24));
-    write((uint8_t)(data >> 16));
-    write((uint8_t)(data >> 8));
-    write((uint8_t)data);
+    uint8_t buf[4];
+    buf[0] = data >> 24;
+    buf[1] = data >> 16;
+    buf[2] = data >> 8;
+    buf[3] = data;
+    _write_bulk(buf, 4);
     return 0xFFFFFFFF;
 }
 
@@ -75,7 +80,7 @@ static void _write_bulk(const uint8_t* data, uint32_t size) {
     uint32_t offset = 0;
     while (offset < size) {
         uint32_t chunk_size = size - offset;
-        if (chunk_size > 128) chunk_size = 128;
+        if (chunk_size > 64) chunk_size = 64;
         
         char frame[280];
         int pos = 0;
@@ -135,21 +140,43 @@ void SPIClass::writeBytes(const uint8_t *data, uint32_t size) {
 
 void SPIClass::writePixels(const void *data, uint32_t size) {
     flush();
-    _write_bulk((const uint8_t*)data, size);
+    if (!data || size == 0) return;
+    
+    // ESP32 is little-endian. writePixels is used for 16-bit colors.
+    // We need to swap adjacent bytes (from Low, High to High, Low) for SPI MSB first.
+    uint8_t buf[64];
+    uint32_t offset = 0;
+    
+    while (offset < size) {
+        uint32_t chunk_size = size - offset;
+        if (chunk_size > 64) chunk_size = 64;
+        
+        for (uint32_t i = 0; i < chunk_size; i += 2) {
+            if (offset + i + 1 < size) {
+                buf[i] = ((const uint8_t*)data)[offset + i + 1];
+                buf[i + 1] = ((const uint8_t*)data)[offset + i];
+            } else {
+                buf[i] = ((const uint8_t*)data)[offset + i];
+            }
+        }
+        
+        _write_bulk(buf, chunk_size);
+        offset += chunk_size;
+    }
 }
 
 void SPIClass::writePattern(const uint8_t *data, uint8_t size, uint32_t repeat) {
     flush();
     if (!data || size == 0 || repeat == 0) return;
     
-    uint8_t buf[128];
+    uint8_t buf[64];
     uint32_t buf_pos = 0;
     
     for (uint32_t r = 0; r < repeat; r++) {
         for (uint8_t i = 0; i < size; i++) {
             buf[buf_pos++] = data[i];
-            if (buf_pos == 128) {
-                _write_bulk(buf, 128);
+            if (buf_pos == 64) {
+                _write_bulk(buf, 64);
                 buf_pos = 0;
             }
         }

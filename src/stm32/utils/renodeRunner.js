@@ -30,6 +30,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { fileURLToPath } from 'url';
+import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -38,7 +39,7 @@ const __dirname  = path.dirname(__filename);
 
 const RENODE_PATH           = process.env.RENODE_PATH || 'renode';
 const RENODE_TCP_BASE_PORT  = parseInt(process.env.RENODE_TCP_BASE_PORT || '4000', 10);
-const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '25', 10);
+const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '100', 10);
 const RENODE_CONNECT_DELAY_MS = parseInt(process.env.RENODE_CONNECT_DELAY_MS || '400', 10);
 const RENODE_BOOT_WAIT_MS   = parseInt(process.env.RENODE_BOOT_WAIT_MS || '2000', 10);
 const STM32_PLATFORM_DESC   = process.env.STM32_PLATFORM_DESC || '@platforms/cpus/stm32f103.repl';
@@ -104,8 +105,10 @@ class FrameParser {
             }
         }
         // Trim to prevent unbounded growth if garbage data appears
-        if (this._buf.length > 4096) {
-            this._buf = this._buf.slice(-512);
+        // Trim to prevent unbounded growth if garbage data appears
+        if (this._buf.length > 65536) {
+            console.warn(`[RenodeRunner] FrameParser buffer exceeded 65536 bytes (${this._buf.length}). Truncating! This might drop extremely large frames.`);
+            this._buf = this._buf.slice(-16384);
         }
     }
 }
@@ -128,6 +131,7 @@ export default class RenodeRunner {
         this._renode     = null;     // Child process handle
         this._socket     = null;     // TCP socket to Renode's UART server
         this._tcpPort    = _allocatePort();
+        this._monitorPort = _allocatePort();
         this._rescPath   = path.join(buildDir, 'sim.resc');
         this._parser     = new FrameParser((frame) => this._handleFrame(frame));
         this._destroyed  = false;
@@ -136,6 +140,16 @@ export default class RenodeRunner {
         this.isReady        = false;
         this.lastActivity   = Date.now();
         this.disconnectedAt = null;
+
+        // Robust hot pool connection handshake promise
+        this.connectionResolve = null;
+        this.connectionReject  = null;
+        this.connectionPromise = new Promise((resolve, reject) => {
+            this.connectionResolve = resolve;
+            this.connectionReject  = reject;
+        });
+        // Prevent unhandled promise rejection if this is a cold start and no one awaits it
+        this.connectionPromise.catch(() => {});
     }
 
     _logDebug(msg) {
@@ -150,9 +164,22 @@ export default class RenodeRunner {
     // ── Public API ────────────────────────────────────────────────────────────
 
     start() {
-        this._writeReplFile();
-        this._writeRescScript();
-        this._spawnRenode();
+        const cost = getCost('stm32', 'sim');
+        const tag = this._isPooled ? `stm32:hotpool` : `stm32:sim:${this.buildId.substring(0, 8)}`;
+        console.log(`[Renode:${this.buildId}] Requesting ${cost} simulation points with tag "${tag}"...`);
+        acquirePoints(cost, tag).then((allocId) => {
+            this._reservedPointsKey = allocId;
+            if (this._destroyed) {
+                releasePoints(allocId);
+                return;
+            }
+            this._writeReplFile();
+            this._writeRescScript();
+            this._spawnRenode();
+        }).catch(err => {
+            console.error(`[Renode:${this.buildId}] Failed to acquire simulation points:`, err.message);
+            this.kill();
+        });
     }
 
     kill() {
@@ -167,6 +194,76 @@ export default class RenodeRunner {
             }, 2000);
         }
         console.log(`[Renode:${this.buildId}] 🛑 Killed`);
+        if (this._reservedPointsKey) {
+            releasePoints(this._reservedPointsKey);
+            this._reservedPointsKey = null;
+        }
+    }
+
+    reload(newElfPath) {
+        this.isReady = false; // Reset ready flag on hot-reload
+        this.elfPath = newElfPath;
+        const elfForRenode = newElfPath.replace(/\\/g, '/');
+        
+        let pcAddress = '0x8002119'; // Default fallback
+        try {
+            const buf = Buffer.alloc(28);
+            const fd = fs.openSync(newElfPath, 'r');
+            fs.readSync(fd, buf, 0, 28, 0);
+            fs.closeSync(fd);
+
+            if (buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46) {
+                const entryPoint = buf.readUInt32LE(24);
+                pcAddress = `0x${entryPoint.toString(16)}`;
+                console.log(`[Renode:${this.buildId}] 🚀 Parsed ELF entry point: ${pcAddress}`);
+            }
+        } catch (e) {
+            console.error(`[Renode:${this.buildId}] ⚠️ Failed to parse ELF header:`, e.message);
+        }
+
+        const socket = net.connect(this._monitorPort, 'localhost');
+        socket.on('connect', () => {
+            console.log(`[Renode:${this.buildId}] 🔄 Hot-reloading ELF via monitor...`);
+            socket.write(`pause\n`);
+            socket.write(`sysbus LoadELF @${elfForRenode}\n`);
+            socket.write(`cpu PC ${pcAddress}\n`);
+            socket.write(`cpu SP 0x20005000\n`);
+            socket.write(`cpu PerformanceInMips 72\n`);
+            socket.write(`start\n`);
+            setTimeout(() => socket.destroy(), 1000); // give it slightly more time to read outputs
+            
+            // Notify frontend
+            this.wsManager.sendToSession(this.buildId, {
+                type: 'SERIAL_OUTPUT',
+                buildId: this.buildId,
+                data: `\n[SIM-INFO] Instantly hot-reloaded new binary!\n`,
+            });
+        });
+        socket.on('data', (data) => {
+            const text = data.toString().trim();
+            if (text) {
+                console.log(`[Renode:${this.buildId}] 🖥️ Monitor response:\n${text}`);
+            }
+        });
+        socket.on('error', (err) => {
+            console.error(`[Renode:${this.buildId}] ⚠️ Monitor connect error:`, err);
+        });
+    }
+
+    /**
+     * assignSession(newBuildId)
+     *
+     * Transfers this pre-warmed pool runner to a real user session.
+     * Updates buildId so all subsequent WS messages go to the correct client.
+     *
+     * @param {string} newBuildId - The real user session buildId.
+     */
+    assignSession(newBuildId) {
+        const oldId = this.buildId;
+        this.buildId       = newBuildId;
+        this._isPooled     = false;
+        this.lastActivity  = Date.now();
+        console.log(`[Renode] ♻️  Pool runner reassigned from ${oldId.substring(0, 8)} → ${newBuildId.substring(0, 8)}`);
     }
 
     /**
@@ -342,6 +439,7 @@ export default class RenodeRunner {
         //  1. stm32f103.repl (official platform: cpu, gpio, timers, usart, SVD tags)
         //  2. stm32_mock.repl (our RCC + FLASH overrides — replaces the 4-byte SVD tag)
         const resc = [
+            `logFile @${this._rescPath.replace('.resc', '.log').replace(/\\/g, '/')}`,
             'using sysbus',
             '',
             `mach create "stm32-${this.buildId.slice(0, 8)}"`,
@@ -379,9 +477,8 @@ export default class RenodeRunner {
         const args = [
             '--plain',           // no GUI / no interactive console
             '--disable-xwt',    // disable XWT GUI subsystem (headless)
-            '--port', '0',      // disable / allocate random telnet monitor port to prevent collisions
-            '-e',               // execute inline script
-            `include @${this._rescPath}`,
+            '--port', this._monitorPort.toString(), // enable telnet monitor port for hot-reloading
+            this._rescPath.replace(/\\/g, '/'), // load script directly
         ];
 
         console.log(`[Renode:${this.buildId}] 🚀 Spawning: ${RENODE_PATH} ${args.join(' ')}`);
@@ -389,6 +486,7 @@ export default class RenodeRunner {
         this._renode = spawn(RENODE_PATH, args, {
             stdio: ['ignore', 'pipe', 'pipe'],
             detached: false,
+            shell: process.platform === 'win32',
         });
 
         this._renode.stdout.on('data', (d) => {
@@ -434,6 +532,11 @@ export default class RenodeRunner {
 
         this._renode.on('exit', (code, signal) => {
             this._logDebug(`🏁 Renode exited (code=${code}, signal=${signal})`);
+            if (this.connectionReject) {
+                this.connectionReject(new Error(`Renode process exited with code ${code}`));
+                this.connectionResolve = null;
+                this.connectionReject = null;
+            }
             if (!this._destroyed) {
                 this.wsManager.sendToSession(this.buildId, {
                     type: 'SIMULATOR_STOPPED',
@@ -472,6 +575,12 @@ export default class RenodeRunner {
             // Send our Telnet greeting immediately so Renode completes the
             // IAC option handshake and releases buffered UART data.
             socket.write(TELNET_GREETING);
+
+            if (this.connectionResolve) {
+                this.connectionResolve(this);
+                this.connectionResolve = null;
+                this.connectionReject = null;
+            }
         });
 
         socket.on('data', (chunk) => {
@@ -491,6 +600,13 @@ export default class RenodeRunner {
                 setTimeout(() => this._connectTcp(), RENODE_CONNECT_DELAY_MS);
             } else {
                 this._logDebug(`❌ TCP failed after ${RENODE_CONNECT_RETRIES} attempts: ${err.message}`);
+                
+                if (this.connectionReject) {
+                    this.connectionReject(new Error(`TCP failed after ${RENODE_CONNECT_RETRIES} attempts: ${err.message}`));
+                    this.connectionResolve = null;
+                    this.connectionReject = null;
+                }
+
                 this.wsManager.sendToSession(this.buildId, {
                     type: 'RUNTIME_ERROR',
                     buildId: this.buildId,
@@ -681,12 +797,15 @@ export default class RenodeRunner {
                 const addr = parseInt(parts[1], 16);
                 const hex  = parts[2] || '';
                 if (!isNaN(addr)) {
+                    if (hex.length > 100) {
+                        console.log(`[RenodeRunner] Parsed large I2C transaction for addr 0x${addr.toString(16)}, length: ${hex.length / 2} bytes`);
+                    }
                     const data = [];
                     for (let i = 0; i < hex.length; i += 2) {
                         data.push(parseInt(hex.slice(i, i + 2), 16));
                     }
                     this.wsManager.sendToSession(this.buildId, {
-                        type:    'I2C_TRANSACTION',
+                        type: 'I2C_TRANSACTION',
                         buildId: this.buildId,
                         addr,
                         data,

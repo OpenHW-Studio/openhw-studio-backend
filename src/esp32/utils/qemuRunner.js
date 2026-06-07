@@ -31,6 +31,8 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import GatewayProxy from './gatewayProxy.js';
+import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -78,7 +80,14 @@ const ROM_NOISE_PATTERNS = Object.freeze([
  * Format: >GPIO:<pin>:<val><
  */
 const GPIO_PATTERN = />GPIO:(\d+):([01])</;
-const TONE_PATTERN = />TONE:(\d+):(\d+):(\d+)</;
+// const TONE_PATTERN removed — TONE is now a SIM control frame: >SIM:TONE:pin:freq:dur<
+// It is handled in _handleSimFrame below, same channel as READY/BEAT/LOG/SLEEP.
+const PWM_PATTERN  = />PWM:(\d+):(\d+)</;
+const DAC_PATTERN  = />DAC:(\d+):(\d+)</;
+const LEDC_PATTERN = />LEDC:(\d+):(\d+)/;       // >LEDC:<channel>:<duty>< (0-8191 for 13-bit)
+const TWAI_PATTERN = />TWAI:([0-9a-fA-F]+):([0-9a-fA-F]{2}):([0-9a-fA-F]*)</;  // >TWAI:<id_hex>:<dlc>:<data_hex><
+const RMT_PATTERN  = />RMT:(\d+):([0-9a-fA-F]+)</;   // >RMT:<channel>:<encoded_pulses_hex><
+const PCNT_PATTERN = />PCNT:(\d+):(-?\d+)</;           // >PCNT:<unit>:<count>< (signed)
 
 /**
  * SimulatorBridge.h I2C frame.
@@ -209,6 +218,73 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
     // Public API
     // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Hot-reload a new flash image without restarting the VM process.
+     * @param {string} newFlashImage - Path to the new merged flash bin
+     */
+    reload(newFlashImage) {
+        this.flashImage = newFlashImage;
+        if (this._isSharedLibraryMode) {
+            try {
+                const firmwareB64 = fs.readFileSync(this.flashImage).toString('base64');
+                this._writeWorkerCmd({ cmd: 'reset', firmware_b64: firmwareB64 });
+                this._sendWs({
+                    type: 'SERIAL_OUTPUT',
+                    buildId: this.buildId,
+                    data: `\n[SIM-INFO] Instantly hot-reloaded new ESP32 firmware!\n`,
+                });
+            } catch (err) {
+                this._log.error('Failed to read new flash image for reload:', err.message);
+            }
+        } else {
+            this._log.info('🔄 Performing cold restart of QEMU for hot-reload...');
+            this._restartCount = 0; // reset restart count for user manual reload
+            this.phase = 'booting';
+            this._bootDetected = false;
+            this.isReady = false;
+            this._sendWs({ type: 'QEMU_BOOTING' });
+
+            this._stopHeartbeatWatchdog();
+
+            if (this._process) {
+                try {
+                    this._process.removeAllListeners();
+                    this._process.kill('SIGKILL');
+                } catch { /* already dead */ }
+                this._process = null;
+            }
+
+            this._outBuffer = '';
+            if (this._uartBuffers) {
+                this._uartBuffers = {};
+            }
+
+            // Spawn QEMU again with the new flash image
+            setTimeout(() => {
+                if (this._destroyed) return;
+                this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+            }, 1000);
+        }
+    }
+
+    /**
+     * assignSession(newBuildId)
+     *
+     * Transfers this pre-warmed pool runner to a real user session.
+     * Updates the internal buildId so all subsequent WebSocket messages are
+     * routed to the correct client.
+     *
+     * @param {string} newBuildId - The real user session buildId.
+     */
+    assignSession(newBuildId) {
+        const oldId = this.buildId;
+        this.buildId       = newBuildId;
+        this._isPooled     = false;
+        this._log          = new SessionLogger(newBuildId);
+        this.lastActivity  = Date.now();
+        this._log.info(`♻️  Pool runner reassigned from ${oldId.substring(0, 8)} → ${newBuildId.substring(0, 8)}`);
+    }
 
     /**
      * start() — Create FIFOs, boot NetworkProxy, then spawn QEMU.
@@ -417,15 +493,8 @@ export default class QemuRunner {
             return;
         }
 
-        // ── Start 1-second perf diagnostic logger ────────────────────────────
+        // ── Start 1-second perf diagnostic counter reset ────────────────────────────
         this._perf.logTimer = setInterval(() => {
-            const { wsSent, gpioRaw, gpioSent, workerEvts } = this._perf;
-            this._log.info(
-                `[PERF] phase=${this.phase} | WS-sent/s=${wsSent}` +
-                ` | worker-events/s=${workerEvts}` +
-                ` | GPIO-raw/s=${gpioRaw} GPIO-forwarded/s=${gpioSent}` +
-                ` (suppressed=${gpioRaw - gpioSent})`
-            );
             this._perf.wsSent     = 0;
             this._perf.gpioRaw    = 0;
             this._perf.gpioSent   = 0;
@@ -433,52 +502,72 @@ export default class QemuRunner {
         }, 1000);
 
         const libPath = this._getSharedLibraryPath();
-        if (libPath) {
-            this._isSharedLibraryMode = true;
-            this._startSharedLibraryWorker(libPath);
-            return;
-        }
+        
+        // Dynamic Point Allocation
+        const cost = getCost('esp32', 'sim');
+        const tag = this._isPooled ? `esp32:hotpool` : `esp32:sim:${this.buildId.substring(0, 8)}`;
+        console.log(`[QEMU:${this.buildId.substring(0, 8)}] Requesting ${cost} simulation points with tag "${tag}"...`);
+        acquirePoints(cost, tag).then((allocId) => {
+            this._reservedPointsKey = allocId;
+            if (this._destroyed) {
+                // If runner was destroyed while waiting for points
+                releasePoints(allocId);
+                return;
+            }
+            if (libPath) {
+                this._isSharedLibraryMode = true;
+                this._startSharedLibraryWorker(libPath);
+                return;
+            }
 
-        this._isSharedLibraryMode = false;
-        this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-        this._nicArgs  = this._buildNicArgs();
+            this._isSharedLibraryMode = false;
+            this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
 
-        // Start the network proxy first
-        this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
-            this._proxyPort = proxyPort;
-            
-            // Start TCP Server for UART0
-            this._uartServer = net.createServer((socket) => {
-                this._log.info('📡 QEMU connected to UART0 TCP bridge');
-                this._uartSocket = socket;
+            const startQemu = (proxyPort) => {
+                this._proxyPort = proxyPort;
                 
-                socket.setEncoding('utf8');
-                socket.on('data', (chunk) => {
-                    this.lastActivity = Date.now();
-                    this._handleSerialData(chunk);
+                // Start TCP Server for UART0
+                this._uartServer = net.createServer((socket) => {
+                    this._log.info('📡 QEMU connected to UART0 TCP bridge');
+                    this._uartSocket = socket;
+                    
+                    socket.setEncoding('utf8');
+                    socket.on('data', (chunk) => {
+                        this.lastActivity = Date.now();
+                        this._handleSerialData(chunk);
+                    });
+                    
+                    socket.on('error', (err) => {
+                        this._log.warn('UART0 socket error:', err.message);
+                    });
+                    
+                    socket.on('close', () => {
+                        this._uartSocket = null;
+                    });
                 });
                 
-                socket.on('error', (err) => {
-                    this._log.warn('UART0 socket error:', err.message);
+                this._uartServer.on('error', (err) => {
+                    this._log.error('❌ Failed to create UART0 TCP server:', err.message);
+                    this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
                 });
                 
-                socket.on('close', () => {
-                    this._uartSocket = null;
+                this._uartServer.listen(0, '127.0.0.1', () => {
+                    this._uartPort = this._uartServer.address().port;
+                    this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    });
                 });
-            });
+            };
             
-            this._uartServer.on('error', (err) => {
-                this._log.error('❌ Failed to create UART0 TCP server:', err.message);
-                this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
-            });
-            
-            this._uartServer.listen(0, '127.0.0.1', () => {
-                this._uartPort = this._uartServer.address().port;
-                this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
-            });
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, startQemu);
+            this._proxy.start();
+        }).catch(err => {
+            this._log.error('Failed to acquire simulation points:', err.message);
+            this.kill();
         });
-        this._proxy.start();
     }
 
     /**
@@ -638,7 +727,7 @@ export default class QemuRunner {
      * In legacy TCP mode, writes the bytes as a raw buffer over the UART0 socket.
      *
      * The caller (compileController) is responsible for chunking to ≤64 bytes
-     * to prevent FIFO overflow, matching the Velxio constraint.
+     * to prevent FIFO overflow, matching the OpenHW constraint.
      *
      * @param {number}   uart  - UART index (0 = primary Serial, 1/2 = extra).
      * @param {number[]} bytes - Array of byte values (0–255).
@@ -663,8 +752,8 @@ export default class QemuRunner {
     }
 
     // ── ESP32-CAM frame injection ─────────────────────────────────────────────
-    // Mirrors Velxio's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
-    // The worker routes to velxio_push_camera_frame() in libqemu-xtensa which
+    // Mirrors OpenHW's Esp32Bridge.sendCameraAttach/Frame/Detach exactly.
+    // The worker routes to openhw_push_camera_frame() in libqemu-xtensa which
     // delivers the bytes to the QEMU OV2640+I²S DMA buffer.  esp_camera_fb_get()
     // in the firmware receives the frame transparently.
 
@@ -704,7 +793,7 @@ export default class QemuRunner {
     /**
      * sendCameraDetach()
      *
-     * Drop the queued frame and detach the camera. Calls velxio_push_camera_frame
+     * Drop the queued frame and detach the camera. Calls openhw_push_camera_frame
      * with a NULL/empty payload on the C side which resets the DMA pointer.
      */
     sendCameraDetach() {
@@ -759,6 +848,12 @@ export default class QemuRunner {
                 }
             }
         }
+
+        // Release points
+        if (this._reservedPointsKey) {
+            releasePoints(this._reservedPointsKey);
+            this._reservedPointsKey = null;
+        }
     }
 
     _stopHeartbeatWatchdog() {
@@ -775,23 +870,13 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Returns the -nic args for QEMU based on the WIFI_MODE env var.
-     *
-     *  slirp (default) — userspace NAT, no root needed, macOS + Linux.
-     *  tap             — kernel-level tap0, Linux production only.
+     * Returns the -nic or -netdev args for QEMU.
+     * Uses GatewayProxy if WOKWI_WSS_URL is set, otherwise SLIRP/TAP.
      */
-    _buildNicArgs() {
-        const wifiMode = (process.env.WIFI_MODE || 'slirp').toLowerCase();
-
-        if (wifiMode === 'tap') {
-            const tapIface = process.env.TAP_INTERFACE || 'tap0';
-            this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
-            // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-nic', `tap,ifname=${tapIface},script=no,downscript=no,model=open_eth`];
-        }
-
-        this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-nic', 'user,model=open_eth'];
+    async _buildNicArgs() {
+        // QEMU ESP32 does NOT use open_eth! Networking is proxied over UART1 via SimulatorWiFi.h
+        // Attaching open_eth causes unhandled interrupts leading to 'Guru Meditation / Cache Error' panics.
+        return [];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -806,36 +891,40 @@ export default class QemuRunner {
      *   -serial tcp:127.0.0.1:<port>     → UART1 (WiFi payload multiplexer)
      */
     _spawnQemu(qemuPath, nicArgs, proxyPort, uartPort) {
-        const args = [
-            '-nographic',
-            '-machine', 'esp32',
-            '-m', '4M',
-            '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
-            '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
-            '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
-            ...nicArgs,
-        ];
+        setTimeout(() => {
+            if (this._destroyed) return;
 
-        this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
+            const args = [
+                '-nographic',
+                '-machine', 'esp32',
+                '-m', '4M',
+                '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
+                '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
+                '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
+                ...nicArgs,
+            ];
 
-        this._process = spawn(qemuPath, args, {
-            // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
-            // Only pipe stderr so we can capture QEMU-level errors.
-            stdio: ['ignore', 'ignore', 'pipe'],
-        });
+            this._log.info(`🚀 Spawning QEMU: ${qemuPath} ${args.join(' ')}`);
 
-        // Set low scheduling priority to prevent CPU starvation
-        if (this._process && this._process.pid) {
-            try {
-                os.setPriority(this._process.pid, 10);
-                this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
-            } catch (e) {
-                this._log.warn('Failed to set QEMU process priority:', e.message);
+            this._process = spawn(qemuPath, args, {
+                // stdin/stdout/stderr are for QEMU's monitor, NOT the UART lines.
+                // Only pipe stderr so we can capture QEMU-level errors.
+                stdio: ['ignore', 'ignore', 'pipe'],
+            });
+
+            // Set low scheduling priority to prevent CPU starvation
+            if (this._process && this._process.pid) {
+                try {
+                    os.setPriority(this._process.pid, 10);
+                    this._log.info(`Priority set to 10 for QEMU process ${this._process.pid}`);
+                } catch (e) {
+                    this._log.warn('Failed to set QEMU process priority:', e.message);
+                }
             }
-        }
 
-        // Attach lifecycle handlers
-        this._attachProcessHandlers();
+            // Attach lifecycle handlers
+            this._attachProcessHandlers();
+        }, 300);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -848,11 +937,8 @@ export default class QemuRunner {
             const text = data.toString().trim();
             if (!text) return;
 
-            // Only surface genuine errors; suppress QEMU info lines
-            const lower = text.toLowerCase();
-            if (lower.includes('error') || lower.includes('failed') || lower.includes('abort')) {
-                this._log.error('🔴 QEMU stderr:', text);
-            }
+            // Surface ALL QEMU stderr to help debug crashes
+            this._log.error('🔴 QEMU stderr:', text);
         });
 
         // ── Normal or unexpected exit ───────────────────────────────────────────
@@ -940,40 +1026,21 @@ export default class QemuRunner {
                 if (this._destroyed) return;
                 this._log.info(`Rebooting QEMU ESP32 instance (Attempt ${this._restartCount}/${this._maxRestarts})...`);
 
-                // On Windows, force-kill any process still listening on the UART
-                // port left behind by the crashed QEMU (zombie TCP server).
-                if (this._uartPort) {
-                    try {
-                        const { execSync } = await import('child_process');
-                        // netstat -ano shows PID; find the one on our port and kill it
-                        const out = execSync(
-                            `netstat -ano | findstr ":${this._uartPort} "`,
-                            { encoding: 'utf8', timeout: 3000 }
-                        );
-                        const pids = new Set();
-                        for (const line of out.split('\n')) {
-                            const m = line.trim().split(/\s+/);
-                            const pid = parseInt(m[m.length - 1], 10);
-                            if (pid > 4 && pid !== process.pid) pids.add(pid);  // skip System (PID 4) and ourselves
-                        }
-                        for (const pid of pids) {
-                            try {
-                                execSync(`taskkill /PID ${pid} /F`, { timeout: 2000 });
-                                this._log.info(`🧹 Killed zombie QEMU process PID ${pid} holding port ${this._uartPort}`);
-                            } catch { /* already dead */ }
-                        }
-                    } catch { /* netstat failed or no zombie — proceed anyway */ }
-                }
-
+                // (Removed dangerous fuser/taskkill logic that killed the Node.js server itself)
                 if (this._isSharedLibraryMode) {
                     const libPath = this._getSharedLibraryPath();
                     this._startSharedLibraryWorker(libPath);
                 } else {
-                    this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    });
                 }
             }, 1500);
         } else {
             // Exceeded retry count
+
+
             this._sendWs({
                 type: 'SERIAL_LOG',
                 level: 'ERROR',
@@ -1086,18 +1153,104 @@ export default class QemuRunner {
             return;
         }
 
-        // ── TONE shim intercept ───────────────────────────────────────────────
-        // >TONE:<pin>:<freq>:<dur>< must NEVER reach the serial monitor.
-        const toneMatch = line.match(TONE_PATTERN);
-        if (toneMatch) {
-            const pin = parseInt(toneMatch[1], 10);
-            const frequency = parseInt(toneMatch[2], 10);
-            const duration = parseInt(toneMatch[3], 10);
-            this._sendWs({ type: 'TONE', pin, frequency, duration });
+        // ── PWM shim intercept ────────────────────────────────────────────────
+        const pwmMatch = line.match(PWM_PATTERN);
+        if (pwmMatch) {
+            const pin = parseInt(pwmMatch[1], 10);
+            const val = parseInt(pwmMatch[2], 10);
+            const duty_pct = Math.max(0, Math.min(1.0, val / 255.0)); // assume 8-bit PWM for now
+            this._sendWs({ type: 'PWM_SYNC', channel: pin, duty_pct });
+            return;
+        }
+
+        // ── DAC shim intercept ────────────────────────────────────────────────
+        // >DAC:<pin>:<val>< — 8-bit DAC output (ESP32 pins 25, 26)
+        const dacMatch = line.match(DAC_PATTERN);
+        if (dacMatch) {
+            const pin = parseInt(dacMatch[1], 10);
+            const val = parseInt(dacMatch[2], 10);   // 0-255
+            const voltage = (val / 255.0) * 3.3;     // convert to voltage
+            this._sendWs({ type: 'DAC_SYNC', pin, val, voltage });
+            return;
+        }
+
+        // ── LEDC shim intercept ──────────────────────────────────────────────
+        // >LEDC:<channel>:<duty>< — LEDC PWM channel duty (0-8191 for 13-bit)
+        const ledcMatch = line.match(LEDC_PATTERN);
+        if (ledcMatch) {
+            const channel = parseInt(ledcMatch[1], 10);
+            const duty    = parseInt(ledcMatch[2], 10);
+            const duty_pct = Math.max(0, Math.min(1.0, duty / 8191.0));
+            this._sendWs({ type: 'LEDC_SYNC', channel, duty, duty_pct });
+            return;
+        }
+
+        // ── LEDC_ATTACH intercept ─────────────────────────────────────────────
+        // >LEDC_ATTACH:<channel>:<pin>< — channel-to-pin mapping from ledcAttachPin()
+        const ledcAttachMatch = line.match(/>LEDC_ATTACH:(\d+):(\d+)</);
+        if (ledcAttachMatch) {
+            const channel = parseInt(ledcAttachMatch[1], 10);
+            const pin     = parseInt(ledcAttachMatch[2], 10);
+            this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `ledc_${channel}` });
+            this._sendWs({ type: 'LEDC_ATTACH', channel, pin });
+            return;
+        }
+
+        // ── PCNT_INIT intercept ───────────────────────────────────────────────
+        // >PCNT_INIT:<unit>:<pin>< — pulse counter unit-to-pin mapping
+        const pcntInitMatch = line.match(/>PCNT_INIT:(\d+):(\d+)</);
+        if (pcntInitMatch) {
+            const unit = parseInt(pcntInitMatch[1], 10);
+            const pin  = parseInt(pcntInitMatch[2], 10);
+            this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `pcnt_${unit}` });
+            this._sendWs({ type: 'PCNT_INIT', unit, pin });
+            return;
+        }
+
+        // ── TWAI / CAN Bus intercept ─────────────────────────────────────────
+        // >TWAI:<id_hex>:<dlc>:<data_hex>< — CAN 2.0B frame TX from firmware
+        const twaiMatch = line.match(TWAI_PATTERN);
+        if (twaiMatch) {
+            const id  = parseInt(twaiMatch[1], 16);
+            const dlc = parseInt(twaiMatch[2], 16);
+            const hexStr = twaiMatch[3] || '';
+            const data = [];
+            for (let i = 0; i < hexStr.length; i += 2) {
+                data.push(parseInt(hexStr.substring(i, i + 2), 16));
+            }
+            this._sendWs({ type: 'TWAI_TX', id, dlc, data });
+            return;
+        }
+
+        // ── RMT / IR pulse intercept ─────────────────────────────────────────
+        // >RMT:<channel>:<encoded_hex>< — RMT encoded pulse train
+        const rmtMatch = line.match(RMT_PATTERN);
+        if (rmtMatch) {
+            const channel = parseInt(rmtMatch[1], 10);
+            const hex = rmtMatch[2];
+            // Decode packed RMT items: each 4 bytes = level(1bit) | duration(15bit) x2
+            const pulses = [];
+            for (let i = 0; i + 3 < hex.length; i += 8) {
+                const word = parseInt(hex.substring(i, i + 8), 16);
+                pulses.push({ level: (word >> 15) & 1, duration: word & 0x7FFF });
+                pulses.push({ level: (word >> 31) & 1, duration: (word >> 16) & 0x7FFF });
+            }
+            this._sendWs({ type: 'RMT_PULSE', channel, pulses });
+            return;
+        }
+
+        // ── PCNT intercept ───────────────────────────────────────────────────
+        // >PCNT:<unit>:<count>< — pulse counter current value
+        const pcntMatch = line.match(PCNT_PATTERN);
+        if (pcntMatch) {
+            const unit  = parseInt(pcntMatch[1], 10);
+            const count = parseInt(pcntMatch[2], 10);
+            this._sendWs({ type: 'PCNT_UPDATE', unit, count });
             return;
         }
 
         // ── I2C shim intercept ───────────────────────────────────────────────
+
         // >I2C:<addr_hex>:<data_hex>< — write transaction from SimWire
         const i2cMatch = line.match(I2C_PATTERN);
         if (i2cMatch) {
@@ -1167,8 +1320,8 @@ export default class QemuRunner {
             if (ROM_NOISE_PATTERNS.some(re => re.test(line))) return;
         }
 
-        // ── Regular serial output → client serial monitor (Disabled to prevent UI/event-loop lag) ─────────────────────
-        // this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
+        // ── Regular serial output → client serial monitor ───────────────────
+        this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
     }
 
     /**
@@ -1195,8 +1348,34 @@ export default class QemuRunner {
                 // Refresh the watchdog on every heartbeat
                 this.lastActivity = Date.now();
                 this._armHeartbeatWatchdog();
-                // this._log.info('💓 Heartbeat received'); // Muted to prevent backend terminal spam
                 break;
+
+            case 'TONE': {
+                // payload = "pin:frequency:duration"
+                // Routed universally via syncTone + collectConnectedComponentPins on frontend
+                const [pin, frequency, duration] = payload.split(':').map(Number);
+                this._sendWs({ type: 'TONE', pin, frequency, duration });
+                break;
+            }
+
+            case 'I2S': {
+                // payload = "port:sampleRate:bits:b64pcm"
+                // Example: >SIM:I2S:0:44100:16:AAEC...<=
+                // The b64 data contains raw PCM samples (16-bit signed LE by default).
+                // Frontend decodes and schedules via Web Audio API AudioBuffer.
+                const colonIdx1 = payload.indexOf(':');        // after port
+                const colonIdx2 = payload.indexOf(':', colonIdx1 + 1); // after sampleRate
+                const colonIdx3 = payload.indexOf(':', colonIdx2 + 1); // after bits
+                if (colonIdx3 < 0) break;
+                const port       = parseInt(payload.slice(0, colonIdx1), 10);
+                const sampleRate = parseInt(payload.slice(colonIdx1 + 1, colonIdx2), 10) || 44100;
+                const bits       = parseInt(payload.slice(colonIdx2 + 1, colonIdx3), 10) || 16;
+                const pcm_b64    = payload.slice(colonIdx3 + 1);
+                if (pcm_b64) {
+                    this._sendWs({ type: 'I2S_AUDIO', port, sampleRate, bits, pcm_b64 });
+                }
+                break;
+            }
 
             case 'LOG': {
                 // payload = "<level>:<message>"
@@ -1204,6 +1383,29 @@ export default class QemuRunner {
                 const level   = colonIdx > 0 ? payload.slice(0, colonIdx)  : 'INFO';
                 const message = colonIdx > 0 ? payload.slice(colonIdx + 1) : payload;
                 this._sendWs({ type: 'SERIAL_LOG', level, message });
+                break;
+            }
+
+            case 'SLEEP': {
+                // payload = duration_us (uint64, may be 0 for indefinite)
+                const duration_us = parseInt(payload, 10) || 0;
+                this._sendWs({ type: 'SLEEP_START', duration_us });
+                this._log.info(`💤 Firmware entering deep sleep for ${duration_us}µs`);
+                break;
+            }
+
+            case 'LEDC_ATTACH': {
+                // payload = "channel:pin" — maps a LEDC channel to a GPIO pin
+                const [ch, pin] = payload.split(':').map(Number);
+                this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `ledc_${ch}` });
+                this._log.info(`LEDC ch${ch} attached to GPIO${pin}`);
+                break;
+            }
+
+            case 'PCNT_INIT': {
+                // payload = "unit:pin"
+                const [unit, pin] = payload.split(':').map(Number);
+                this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `pcnt_${unit}` });
                 break;
             }
 
@@ -1251,8 +1453,13 @@ export default class QemuRunner {
      */
     _cleanupPipes() {
         if (this._proxy) {
-            try { this._proxy.stop(); } catch { /* best-effort */ }
+            this._proxy.stop();
             this._proxy = null;
+        }
+
+        if (this._gatewayProxy) {
+            this._gatewayProxy.stop();
+            this._gatewayProxy = null;
         }
 
         if (this._uartSocket && !this._uartSocket.destroyed) {

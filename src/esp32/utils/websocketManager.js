@@ -19,12 +19,12 @@
  *   5. All subsequent sends go directly to the socket.
  */
 
-import { WebSocketServer } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 /** Maximum number of messages buffered per session (prevents OOM). */
-const MAX_PENDING_BUFFER = 512;
+const MAX_PENDING_BUFFER = 32768;
 
 /**
  * Maximum age (ms) of a pending buffer whose client never showed up.
@@ -71,6 +71,12 @@ class WebSocketManager {
          */
         this._earlyListeners = [];
 
+        /**
+         * Map<buildId, string>
+         * Stores target engine ('esp32' or 'stm32') for each session.
+         */
+        this._buildIdToTarget = new Map();
+
         // Start orphan-buffer GC
         const gcTimer = setInterval(() => this._gcPendingBuffers(), PENDING_GC_INTERVAL_MS);
         gcTimer.unref(); // Don't prevent process exit
@@ -95,33 +101,56 @@ class WebSocketManager {
         }
 
         this.wss = new WebSocketServer({ server: httpServer });
-
+ 
         this.wss.on('connection', (ws, req) => {
             const clientIp = req.socket.remoteAddress || 'unknown';
             console.log(`[WSManager] 📡 Client connected (ip=${clientIp})`);
-
+ 
             ws.on('close', (code, reason) => {
                 console.log(
                     `[WSManager] 📡 Client disconnected (code=${code}, reason=${reason?.toString() || 'n/a'})`,
                 );
                 this._handleSocketClose(ws);
             });
-
+ 
             ws.on('error', (err) => {
                 // Log WS-level errors; the 'close' event fires right after so
                 // cleanup is handled there.
                 console.error('[WSManager] WebSocket error:', err.message);
             });
-
-            // Fire any listeners registered via onClientConnection()
-            for (const cb of this._earlyListeners) {
-                try { cb(ws); } catch (e) {
-                    console.error('[WSManager] Error in connection listener:', e);
-                }
+ 
+            if (process.env.ROLE === 'main') {
+                const checkProxyHandler = (rawMsg) => {
+                    let data;
+                    try { data = JSON.parse(rawMsg.toString()); } catch { return; }
+                    
+                    if (data.type === 'REGISTER_SESSION' && data.buildId) {
+                        const target = this.getTarget(data.buildId);
+                        if (target === 'esp32' || target === 'stm32') {
+                            ws.off('message', checkProxyHandler);
+                            this.proxySession(ws, data.buildId, target);
+                            return;
+                        }
+                    }
+                    
+                    ws.off('message', checkProxyHandler);
+                    this._fireEarlyListeners(ws);
+                };
+                ws.on('message', checkProxyHandler);
+            } else {
+                this._fireEarlyListeners(ws);
             }
         });
-
+ 
         console.log('[WSManager] 🚀 WebSocket server initialised');
+    }
+
+    _fireEarlyListeners(ws) {
+        for (const cb of this._earlyListeners) {
+            try { cb(ws); } catch (e) {
+                console.error('[WSManager] Error in connection listener:', e);
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -227,9 +256,14 @@ class WebSocketManager {
             if (entry.msgs.length >= MAX_PENDING_BUFFER) {
                 // Drop the oldest message to make room (ring-buffer behaviour)
                 entry.msgs.shift();
-                console.warn(
-                    `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
-                );
+                
+                const now = Date.now();
+                if (!entry.lastOverflowLog || now - entry.lastOverflowLog > 5000) {
+                    console.warn(
+                        `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
+                    );
+                    entry.lastOverflowLog = now;
+                }
             }
             entry.msgs.push(payload);
         }
@@ -301,6 +335,66 @@ class WebSocketManager {
     // ─────────────────────────────────────────────────────────────────────────
     // Private helpers
     // ─────────────────────────────────────────────────────────────────────────
+
+    setTarget(buildId, target) {
+        this._buildIdToTarget.set(buildId, target);
+        console.log(`[WSManager] 🎯 Set target of ${buildId} to ${target}`);
+    }
+
+    getTarget(buildId) {
+        return this._buildIdToTarget.get(buildId);
+    }
+
+    proxySession(ws, buildId, target) {
+        console.log(`[WSManager] 🔀 Proxying session ${buildId} to ${target} worker`);
+        
+        const workerUrl = target === 'esp32' 
+            ? (process.env.ESP32_WORKER_WS_URL || 'ws://esp32-worker:5001')
+            : (process.env.STM32_WORKER_WS_URL || 'ws://stm32-worker:5002');
+            
+        const workerWs = new WebSocket(workerUrl);
+        
+        // Track the worker socket so we can close it if the client disconnects
+        this._sessions.set(buildId, ws);
+        this._wsToSession.set(ws, buildId);
+        
+        workerWs.on('open', () => {
+            console.log(`[WSManager] 🔌 Connected to ${target} worker for session ${buildId}`);
+            // Send register session to the worker
+            workerWs.send(JSON.stringify({ type: 'REGISTER_SESSION', buildId }));
+        });
+        
+        // Pipe client -> worker (ensuring text string format)
+        ws.on('message', (rawMsg) => {
+            if (workerWs.readyState === WebSocket.OPEN) {
+                workerWs.send(rawMsg.toString('utf8'));
+            }
+        });
+        
+        // Pipe worker -> client (ensuring text string format so browser WebSocket client parses as text frame)
+        workerWs.on('message', (rawMsg) => {
+            if (ws.readyState === 1) { // 1 is OPEN for client ws
+                ws.send(rawMsg.toString('utf8'));
+            }
+        });
+        
+        workerWs.on('close', () => {
+            console.log(`[WSManager] 🔌 Worker socket closed for session ${buildId}`);
+            ws.close();
+        });
+        
+        workerWs.on('error', (err) => {
+            console.error(`[WSManager] Worker socket error for session ${buildId}:`, err.message);
+            ws.close();
+        });
+        
+        ws.on('close', () => {
+            console.log(`[WSManager] 📡 Client socket closed for session ${buildId}`);
+            if (workerWs.readyState === WebSocket.OPEN || workerWs.readyState === WebSocket.CONNECTING) {
+                workerWs.close();
+            }
+        });
+    }
 
     /** Serialize and send; swallows errors so one bad client never crashes the server. */
     _safeSend(ws, payload) {

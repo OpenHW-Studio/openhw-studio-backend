@@ -65,7 +65,10 @@ export const getPendingDeployments = async (req, res) => {
                     repo: repo,
                     name: run.name,
                     head_branch: run.head_branch,
-                    head_commit: run.head_commit.message,
+                    head_sha: run.head_sha || run.head_commit?.id,
+                    head_commit: run.head_commit?.id,
+                    commit_message: run.head_commit?.message,
+                    commits: run.head_commit ? [{ message: run.head_commit.message, id: run.head_commit.id, author: run.head_commit.author?.name }] : [],
                     status: run.status,
                     created_at: run.created_at,
                     jobs: jobsData.jobs.map(job => ({
@@ -143,6 +146,54 @@ export const approveDeployment = async (req, res) => {
     }
 };
 
+/**
+ * Reject a pending deployment
+ */
+export const rejectDeployment = async (req, res) => {
+    const { run_id, repo, environment } = req.body;
+
+    if (!run_id || !repo || !environment) {
+        return res.status(400).json({ error: 'run_id, repo, and environment are required.' });
+    }
+
+    try {
+        const pendingResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, { headers });
+        
+        if (!pendingResp.ok) {
+            return res.status(500).json({ error: 'Failed to fetch pending deployment details.' });
+        }
+
+        const pendingData = await pendingResp.json();
+        const envId = pendingData[0]?.environment?.id;
+
+        if (!envId) {
+            return res.status(404).json({ error: 'No pending deployment found for this run.' });
+        }
+
+        const rejectResp = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/runs/${run_id}/pending_deployments`, {
+            method: 'POST',
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                environment_ids: [envId],
+                state: 'rejected',
+                comment: 'Rejected via Admin Dashboard'
+            })
+        });
+
+        if (!rejectResp.ok) {
+            const err = await rejectResp.text();
+            console.error('Rejection failed:', err);
+            return res.status(500).json({ error: 'Failed to reject deployment on GitHub.', details: err });
+        }
+
+        res.json({ success: true, message: 'Deployment rejected.' });
+
+    } catch (error) {
+        console.error('Error rejecting deployment:', error);
+        res.status(500).json({ error: 'Internal server error during rejection.' });
+    }
+};
+
 let deploymentNotifications = [];
 
 /**
@@ -178,6 +229,15 @@ export const notifyChange = (req, res) => {
  */
 export const getNotifications = (req, res) => {
     res.json({ success: true, notifications: deploymentNotifications });
+};
+
+/**
+ * Dismiss a sub-repo change notification
+ */
+export const dismissNotification = (req, res) => {
+    const { id } = req.params;
+    deploymentNotifications = deploymentNotifications.filter(n => n.id !== id);
+    res.json({ success: true, message: 'Notification dismissed.' });
 };
 
 /**

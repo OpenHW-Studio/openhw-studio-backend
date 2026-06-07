@@ -11,14 +11,20 @@ import {
 import { searchLibrary, installLibrary, listLibraries } from '../controllers/libController.js';
 import { protectRoute } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/authorization.js';
-import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary } from '../esp32/index.js';
+import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary, handleESP32CompileStart, handleESP32CompileStatus } from '../esp32/index.js';
 import { handleSTM32Stop } from '../stm32/index.js';
+import { compileTelemetryMiddleware } from '../services/telemetryService.js';
 
 const router = Router();
+
+// Track compile durations and successes automatically
+router.use(compileTelemetryMiddleware);
 
 // Compile Arduino code
 router.post('/', compileArduinoCode);
 router.post('/diagnostics', compileArduinoCode);
+router.post('/start', handleESP32CompileStart);
+router.get('/status/:jobId', handleESP32CompileStatus);
 router.post('/flash', flashFirmware);
 router.get('/ports', listSerialPorts);
 router.get('/pico/micropython-uf2', getDefaultPicoMicroPythonUf2);

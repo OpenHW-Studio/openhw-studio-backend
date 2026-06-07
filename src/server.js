@@ -13,6 +13,10 @@ import authRoutes from './routes/auth.js';
 import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
 import { initESP32Module } from './esp32/index.js';
 import { initSTM32Module } from './stm32/index.js';
+import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
+import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
+import { initLibraryIndexService } from './services/libraryIndexService.js';
+import { reloadBudget } from './services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +40,15 @@ const resolveConfiguredPath = (rawPath, fallbackCandidates = []) => {
     : path.resolve(backendRoot, fallbackCandidates[0] || '.');
 };
 
+const PORT = process.env.PORT || 5001;
+const role = process.env.ROLE || 'all-in-one';
+console.log(`
+=============================================================
+  OPENHW STUDIO BACKEND - ROLE: ${role.toUpperCase()}
+  Port: ${PORT}
+=============================================================
+`);
+
 // Ensure required directories and files exist
 const tempDir = path.join(__dirname, '../temp');
 const dataDir = path.join(__dirname, '../data/components');
@@ -48,16 +61,38 @@ const indexFile = path.join(dataDir, 'index.ts');
   }
 });
 
+// --- Boot Synchronization for Shared Library Pool ---
+const officialLibsVolume = path.join(__dirname, '../data/libraries/permanent');
+const cacheLibsVolume = path.join(__dirname, '../data/libraries/cache');
+
+[officialLibsVolume, cacheLibsVolume].forEach(dir => {
+  if (!fs.existsSync(dir)) {
+    fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+// Initialize Library Index Service (loads / updates library_index.json)
+initLibraryIndexService();
+
+// Synchronize libraries listed in data/libraries.json
+console.log('Boot Sync: Checking permanent libraries pool...');
+await syncPermanentLibraries();
+
 if (!fs.existsSync(indexFile)) {
   fs.writeFileSync(indexFile, '\n');
   console.log(`Initialized: ${indexFile}`);
 }
 
-console.log("Attempting to connect to MongoDB...");
-const isDbConnected = await connectDB();
+let isDbConnected = false;
+if (!process.env.ROLE || process.env.ROLE === 'main') {
+  console.log("Attempting to connect to MongoDB...");
+  isDbConnected = await connectDB();
 
-if (!isDbConnected) {
-  console.warn("⚠️  Running in DEGRADED MODE: Database-backed features (Auth, Profiles) will be unavailable.");
+  if (!isDbConnected) {
+    console.warn("⚠️  Running in DEGRADED MODE: Database-backed features (Auth, Profiles) will be unavailable.");
+  }
+} else {
+  console.log("ℹ️ Worker role: MongoDB database connection bypassed.");
 }
 
 const app = express();
@@ -168,6 +203,20 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.get('/api/network-gateway/pcap', (req, res) => {
+  const clientId = req.query.clientId;
+  if (!clientId) {
+    return res.status(400).send('Missing clientId query parameter.');
+  }
+
+  const pcapPath = path.resolve(backendRoot, `data/qemu_${clientId}.pcap`);
+  if (fs.existsSync(pcapPath)) {
+    res.download(pcapPath, `qemu_${clientId}.pcap`);
+  } else {
+    res.status(404).send('No network traffic captured for this session yet.');
+  }
+});
+
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
   './openhw-studio-examples/examples',
@@ -180,12 +229,38 @@ const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
   ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
   : path.resolve(backendRoot, 'data/classroom');
 app.use('/api/assets/classroom', express.static(classroomAssetsDir));
-const PORT = process.env.PORT || 5001;
+// PORT is defined at startup
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
 initESP32Module(server);
 initSTM32Module(server);
-server.listen(PORT, () => {
+
+server.listen(PORT, async () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
+
+  const budgetFile = path.resolve(backendRoot, 'data/calibrated_budget.json');
+  if (!fs.existsSync(budgetFile)) {
+    console.log('[Boot] Calibrated budget file missing. Triggering calibration via Health Agent...');
+    try {
+      fetch('http://openhw-health-agent:8080/api/calibrate', { method: 'POST' })
+        .then(() => console.log('[Boot] Calibration triggered successfully.'))
+        .catch(err => console.error('[Boot] Failed to trigger calibration:', err.message));
+    } catch (err) {
+      console.error('[Boot] Calibration fetch failed:', err);
+    }
+  }
+
+  // Hot Pool: pre-warm one idle QEMU (ESP32) and one Renode (STM32) VM.
+  // Set HOT_POOL_ENABLED=false in .env to disable (e.g. very low-RAM machines).
+  const hotPoolEnabled = (process.env.HOT_POOL_ENABLED ?? 'true') !== 'false';
+  if (hotPoolEnabled) {
+    initPools().catch(err => console.error('[HotPool] Init error (server unaffected):', err.message));
+  } else {
+    console.log('[HotPool] Disabled via HOT_POOL_ENABLED=false');
+  }
 });
+
+// Graceful shutdown — kill idle pool VMs cleanly
+process.on('SIGTERM', () => { shutdownHotPool(); process.exit(0); });
+process.on('SIGINT',  () => { shutdownHotPool(); process.exit(0); });
 // Nodemon trigger change for --port 0 fix

@@ -1,0 +1,77 @@
+# Use Node.js as the base image
+FROM node:20
+
+# Install basic dependencies, GCC-ARM, and Renode
+RUN apt-get update && apt-get install -y \
+    curl \
+    python3 \
+    wget \
+    xz-utils \
+    git \
+    make \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
+    build-essential \
+    ca-certificates \
+    gnupg \
+    ccache \
+    psmisc \
+    iproute2 \
+    libglib2.0-0 \
+    zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Renode
+RUN wget -q https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb -O packages-microsoft-prod.deb && \
+    dpkg -i packages-microsoft-prod.deb && \
+    rm packages-microsoft-prod.deb && \
+    apt-get update && \
+    wget -q https://github.com/renode/renode/releases/download/v1.16.1/renode_1.16.1_amd64.deb && \
+    apt-get install -y ./renode_1.16.1_amd64.deb && \
+    rm -f renode_1.16.1_amd64.deb && \
+    rm -rf /var/lib/apt/lists/*
+
+# ccache stores compiled objects on the persistent data volume
+ENV CCACHE_DIR=/app/data/ccache
+ENV CCACHE_MAXSIZE=2G
+
+# Install arduino-cli
+RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+ENV PATH=$PATH:/root/bin
+
+# Initialize arduino-cli and install STM32 core
+RUN arduino-cli config init && \
+    arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/BoardManagerFiles/raw/main/package_stmicroelectronics_index.json && \
+    arduino-cli core update-index && \
+    arduino-cli core install STMicroelectronics:stm32 && \
+    rm -rf /root/.arduino15/staging/*
+
+# Set working directory
+WORKDIR /app
+
+COPY openhw-studio-backend/package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy the application code and required sibling repos from the build context
+COPY openhw-studio-backend/ .
+COPY openhw-studio-examples/ ./openhw-studio-examples/
+COPY openhw-studio-emulator/ ./openhw-studio-emulator/
+
+# Ensure temp and data directories exist
+RUN mkdir -p temp
+RUN mkdir -p data/components
+
+# Expose the port
+EXPOSE 5002
+
+# Set environment variables
+ENV PORT=5002
+ENV ROLE=stm32-worker
+
+# Start the application
+CMD ["npm", "start"]
+
+# Trigger Rebuild 3
+# Force rebuild for SESSION_SECRET fix

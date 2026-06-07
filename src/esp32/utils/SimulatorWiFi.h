@@ -63,24 +63,11 @@ typedef uint8_t wl_status_t;
 #endif
 
 // ─── WiFi mode constants ──────────────────────────────────────────────────────
-#ifndef WIFI_MODE_STA
-#  define WIFI_MODE_NULL  0
-#  define WIFI_MODE_STA   1
-#  define WIFI_MODE_AP    2
-#  define WIFI_MODE_APSTA 3
-#endif
 #ifndef WIFI_STA
-#  define WIFI_STA    WIFI_MODE_STA
-#  define WIFI_AP     WIFI_MODE_AP
-#  define WIFI_AP_STA WIFI_MODE_APSTA
-#  define WIFI_OFF    WIFI_MODE_NULL
-#endif
-
-// Auth mode stubs
-#ifndef WIFI_AUTH_OPEN
-#  define WIFI_AUTH_OPEN     0
-#  define WIFI_AUTH_WPA_PSK  2
-#  define WIFI_AUTH_WPA2_PSK 3
+#  define WIFI_STA    1
+#  define WIFI_AP     2
+#  define WIFI_AP_STA 3
+#  define WIFI_OFF    0
 #endif
 
 // ─── Simulated network identity ───────────────────────────────────────────────

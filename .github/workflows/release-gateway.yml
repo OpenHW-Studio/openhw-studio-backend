@@ -1,0 +1,83 @@
+name: Release Standalone Gateways
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag to create (for example: v1.2.3)'
+        required: true
+        type: string
+  push:
+    paths:
+      - 'openhw-local-gateway/**'
+    tags:
+      - 'v*' # Triggers on version tags like v1.0.0
+      - 'gateway*' # Triggers on tags like gateway
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Go Binaries
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+            ext: .exe
+          - os: linux
+            arch: amd64
+            ext: ''
+          - os: darwin
+            arch: amd64
+            ext: ''
+          - os: darwin
+            arch: arm64
+            ext: ''
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Build Binary
+        working-directory: openhw-local-gateway
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+        run: |
+          go mod tidy
+          go build -o openhw-gw-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }} .
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhw-gw-${{ matrix.os }}-${{ matrix.arch }}
+          path: openhw-local-gateway/openhw-gw-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-and-release
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: binaries
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.release_tag || github.ref_name }}
+          name: OpenHW Network Gateway (Standalone)
+          files: binaries/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

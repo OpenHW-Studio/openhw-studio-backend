@@ -1,0 +1,78 @@
+# Use Node.js as the base image
+FROM node:20
+
+# Install dependencies for QEMU, Python, and esptool
+RUN apt-get update && apt-get install -y \
+    curl \
+    python3 \
+    python3-pip \
+    python3-venv \
+    wget \
+    xz-utils \
+    git \
+    make \
+    build-essential \
+    ca-certificates \
+    ccache \
+    psmisc \
+    iproute2 \
+    libsdl2-2.0-0 \
+    libslirp0 \
+    libglib2.0-0 \
+    libpixman-1-0 \
+    libfdt1 \
+    zlib1g \
+    && pip3 install --break-system-packages esptool \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Espressif QEMU for ESP32 simulation
+RUN mkdir -p /opt/qemu && \
+    wget -qO- https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz | tar xJ -C /opt/qemu --strip-components=1
+ENV QEMU_ESP32_PATH=/opt/qemu/bin/qemu-system-xtensa
+# Verify all QEMU shared libraries are present at build time
+RUN ldd /opt/qemu/bin/qemu-system-xtensa | grep 'not found' && echo "❌ Missing QEMU libraries!" && exit 1 || echo "✅ All QEMU libraries present"
+# ccache stores compiled objects on the persistent data volume
+ENV CCACHE_DIR=/app/data/ccache
+ENV CCACHE_MAXSIZE=2G
+
+# Install arduino-cli
+RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+ENV PATH=$PATH:/root/bin
+
+# Initialize arduino-cli and install ESP32 core
+RUN arduino-cli config init && \
+    arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json && \
+    arduino-cli core update-index && \
+    arduino-cli core install esp32:esp32 && \
+    rm -rf /root/.arduino15/staging/*
+
+# Set working directory
+WORKDIR /app
+
+COPY openhw-studio-backend/package*.json ./
+
+# Install dependencies
+RUN npm install
+
+# Copy the application code and required sibling repos from the build context
+COPY openhw-studio-backend/ .
+COPY openhw-studio-examples/ ./openhw-studio-examples/
+COPY openhw-studio-emulator/ ./openhw-studio-emulator/
+
+# Ensure temp and data directories exist
+RUN mkdir -p temp
+RUN mkdir -p data/components
+
+# Expose the port
+EXPOSE 5001
+
+# Set environment variables
+ENV PORT=5001
+ENV ROLE=esp32-worker
+
+# Start the application
+CMD ["npm", "start"]
+
+# Trigger Rebuild 3
+# Force rebuild for SESSION_SECRET fix
+# Force rebuild to pick up the SimulatorWiFi.h fix

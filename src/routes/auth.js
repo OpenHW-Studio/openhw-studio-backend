@@ -35,10 +35,13 @@ function decodeState(raw) {
 //    The Passport strategy will keep the user's existing role.
 router.get(
     '/google',
-    passport.authenticate('google', {
-        scope: ['profile', 'email'],
-        state: encodeState({ intent: 'login' }),
-    })
+    (req, res, next) => {
+        const origin = req.query.origin;
+        passport.authenticate('google', {
+            scope: ['profile', 'email'],
+            state: encodeState({ intent: 'login', origin }),
+        })(req, res, next);
+    }
 );
 
 /**
@@ -55,7 +58,7 @@ router.get(
  *    parameter so Google passes them back unchanged in the callback.
  */
 router.get('/google/signup', (req, res, next) => {
-    const { role, school, classStandard } = req.query;
+    const { role, school, classStandard, origin } = req.query;
 
     if (!ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({
@@ -66,6 +69,7 @@ router.get('/google/signup', (req, res, next) => {
     const statePayload = {
         intent: 'signup',
         role,
+        origin,
         // Optional fields — only attached if provided
         ...(school && { school }),
         ...((classStandard) && {
@@ -99,8 +103,20 @@ router.get(
             process.env.JWT_SECRET,
             { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
         );
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        res.redirect(`${frontendUrl}#token=${encodeURIComponent(token)}`);
+        const state = req.oauthState || {};
+        const origin = state.origin;
+        
+        // Validate origin against ALLOWED_ORIGINS to prevent open redirect attacks
+        const allowedOrigins = process.env.ALLOWED_ORIGINS 
+            ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+            : ['http://localhost:5173'];
+            
+        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
+        if (origin && allowedOrigins.includes(origin)) {
+            frontendUrl = origin;
+        }
+
+        res.redirect(`${frontendUrl}/login-success#token=${encodeURIComponent(token)}`);
     }
 );
 

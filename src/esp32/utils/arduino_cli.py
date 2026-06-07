@@ -691,7 +691,7 @@ class ArduinoCLIService:
             def _download():
                 req = urllib.request.Request(
                     url,
-                    headers={"User-Agent": "velxio-arduino-emulator/1.0"},
+                    headers={"User-Agent": "openhw-arduino-emulator/1.0"},
                 )
                 try:
                     with urllib.request.urlopen(req, timeout=30) as resp, \

@@ -26,6 +26,12 @@ import { fileURLToPath } from 'url';
 
 import wsManager  from '../utils/websocketManager.js';
 import RenodeRunner from '../utils/renodeRunner.js';
+import { acquireStm32Runner } from '../../services/hotPoolManager.js';
+import { enqueueCompile } from '../../services/compileQueueManager.js';
+import { getCost } from '../../services/resourceManager.js';
+import { parseLibrariesTxt } from '../../services/libraryTxtParser.js';
+import { ensureLibrariesForCompile } from '../../services/dynamicLibraryManager.js';
+import { pruneUniversalCachePool } from '../../services/compileCachePruner.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
@@ -35,6 +41,7 @@ const __dirname  = path.dirname(__filename);
 const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 const TEMP_DIR    = path.resolve(__dirname, '../../../temp');
 const BUILDS_DIR  = path.resolve(__dirname, '../../../builds');
+const DATA_DIR    = path.resolve(__dirname, '../../../data');
 
 // Simulator shim headers injected into every STM32 sketch build directory
 const SHIM_HEADERS = Object.freeze([
@@ -50,10 +57,11 @@ const SHIM_HEADERS = Object.freeze([
 
 const MAX_SESSIONS = parseInt(process.env.STM32_MAX_SESSIONS || process.env.MAX_SESSIONS || '5', 10);
 
-const SESSION_TIMEOUT_MS = parseInt(
-    process.env.STM32_SESSION_TIMEOUT_MS || String(300 * 1000),
-    10,
-);
+/** Hard limit for simulation execution (10 minutes). */
+const SIMULATION_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+
+/** Session inactivity timeout (1 minute). Any simulation with no user interaction is killed. */
+const SIMULATION_INACTIVITY_MS = 60 * 1000;
 
 const COMPILE_TIMEOUT_MS = parseInt(process.env.COMPILE_TIMEOUT_MS || '180000', 10);
 
@@ -76,6 +84,10 @@ const INJECTED_LINE_COUNT = 13;
 /** @type {Map<string, RenodeRunner>} buildId → runner */
 const _activeRunners = new Map();
 
+// ── Compile Queue ───────────────────────────────────────────────────────────────
+// Concurrency is now globally managed by compileQueueManager.js.
+
+
 // ─── Session GC ───────────────────────────────────────────────────────────────
 
 const _gcTimer = setInterval(() => {
@@ -89,10 +101,20 @@ const _gcTimer = setInterval(() => {
             runner.disconnectedAt = now;
         }
 
+        const runTime = now - (runner.createdAt || runner.lastActivity);
+        const inactiveTime = now - (runner.lastUserActivity || runner.lastActivity);
         const disconnectedTime = runner.disconnectedAt ? (now - runner.disconnectedAt) : 0;
 
-        if (now - runner.lastActivity > SESSION_TIMEOUT_MS || disconnectedTime > SESSION_TIMEOUT_MS) {
-            console.log(`[STM32:Compile] 🧹  Session ${buildId} timed out — killing Renode`);
+        if (runTime > SIMULATION_HARD_TIMEOUT_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} reached 10-minute hard limit — killing Renode`);
+            runner.kill();
+            _cleanup(buildId);
+        } else if (inactiveTime > SIMULATION_INACTIVITY_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} inactive for 1 minute — killing Renode`);
+            runner.kill();
+            _cleanup(buildId);
+        } else if (disconnectedTime > SIMULATION_INACTIVITY_MS) {
+            console.log(`[STM32:Compile] 🧹  Session ${buildId} disconnected for 1 minute — killing Renode`);
             runner.kill();
             _cleanup(buildId);
         }
@@ -149,10 +171,20 @@ for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) 
 
 // ─── WebSocket message handler ────────────────────────────────────────────────
 
+if (process.env.ROLE !== 'main') {
 wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
         try { data = JSON.parse(rawMsg.toString()); } catch { return; }
+
+        // Track user activity for the inactivity monitor
+        if (data.buildId) {
+            const runner = _activeRunners.get(data.buildId);
+            if (runner) runner.lastUserActivity = Date.now();
+        }
+
+        // Ignore pure keep-alive pings beyond updating activity
+        if (data.type === 'PING') return;
 
         // ── REGISTER_SESSION ─────────────────────────────────────────────────
         if (data.type === 'REGISTER_SESSION' && data.buildId) {
@@ -230,13 +262,23 @@ wsManager.onClientConnection((ws) => {
         console.log('[STM32:Compile] 📡 Client disconnected — Renode session preserved for reconnect window');
     });
 });
+}
+
+function buildCodeHash(mainCode, req) {
+    const payload = {
+        code: mainCode,
+        libraries_txt: req.body.libraries_txt || '',
+        files: req.body.files || []
+    };
+    return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+}
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
 /**
  * POST /api/compile  { code: string, target: 'stm32' }
  */
-export const compileArduinoCode = (req, res) => {
+export const compileArduinoCode = async (req, res) => {
     const { code, files, target, fqbn } = req.body || {};
 
     const isStm32 = target === 'stm32' || String(fqbn || '').toLowerCase().includes('stm32');
@@ -266,7 +308,8 @@ export const compileArduinoCode = (req, res) => {
     }
 
     // ── Build environment setup ───────────────────────────────────────────────
-    const buildId   = crypto.randomUUID();
+    const sessionId = req.body.sessionId;
+    const buildId   = sessionId || crypto.randomUUID();
     const sketchDir = path.join(BUILDS_DIR, buildId);
     const buildDir  = path.join(sketchDir, 'build');
 
@@ -274,7 +317,58 @@ export const compileArduinoCode = (req, res) => {
     const sketchName = buildId;
     const sketchFile = path.join(sketchDir, `${sketchName}.ino`);
 
-    // Open the pending buffer BEFORE any async I/O
+    const codeHash = buildCodeHash(mainCode, req);
+    const cacheDir = path.join(BUILDS_DIR, 'stm32-compile-cache', codeHash);
+    const cachedElf = path.join(cacheDir, 'firmware.elf');
+
+    if (fs.existsSync(cachedElf)) {
+        console.log(`[Compile Cache] 🟢 Cache hit! Skipping compilation for STM32.`);
+        wsManager.createPendingSession(buildId);
+
+        try {
+            fs.mkdirSync(sketchDir, { recursive: true });
+            fs.mkdirSync(buildDir,  { recursive: true });
+            const elfPath = path.join(buildDir, 'firmware.elf');
+            fs.copyFileSync(cachedElf, elfPath);
+
+            // Respond immediately — compilation is bypassed
+            res.json({
+                success: true,
+                buildId,
+                cache: 'hit',
+                message: 'STM32 compilation skipped (Cache Hit). Connect via WebSocket.',
+            });
+
+            // Start/Reload Renode in background after a tiny delay
+            setTimeout(() => {
+                wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
+
+                if (_activeRunners.has(buildId)) {
+                    console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                    const existingRunner = _activeRunners.get(buildId);
+                    existingRunner.reload(elfPath);
+                } else {
+                    const pooledRunner = acquireStm32Runner();
+                    if (pooledRunner) {
+                        console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                        pooledRunner.assignSession(buildId);
+                        _activeRunners.set(buildId, pooledRunner);
+                        pooledRunner.reload(elfPath);
+                    } else {
+                        console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty - Cache Hit)`);
+                        const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
+                        _activeRunners.set(buildId, runner);
+                        runner.start();
+                    }
+                }
+            }, 100);
+            return;
+        } catch (cacheErr) {
+            console.error(`[STM32:Compile:${buildId}] ⚠️ Cache bypass initialization failed:`, cacheErr.message);
+            // fallback to full compilation
+        }
+    }
+
     wsManager.createPendingSession(buildId);
 
     try {
@@ -364,26 +458,45 @@ export const compileArduinoCode = (req, res) => {
         message: 'STM32 compilation started. Connect via WebSocket and send REGISTER_SESSION.',
     });
 
-    // ── Async: compile → launch Renode ────────────────────────────────────────
-    const CACHE_DIR = path.join(buildDir, 'cache');
+    // ── Async: compile → launch Renode ───────────────────────────────────────
+    const COMPILE_CACHE_DIR = path.join(DATA_DIR, 'arduino-cache');
+
+    // Parse and resolve libraries from the optional libraries_txt field
+    const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
+    const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
+    const libraryFlags   = libraryPaths.flatMap(p => ['--libraries', p]);
+
+    // ccache is disabled for arduino-cli here because platform.txt prepends {compiler.path}, breaking it.
+    const ccacheProps = [];
+
     const compileArgs = [
         'compile',
-        '--clean',
         '--fqbn',             STM32_FQBN,
-        '--build-cache-path', CACHE_DIR,
+        '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
+        '--jobs',             '4',
         '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...ccacheProps,
+        ...libraryFlags,
         sketchFile,
     ];
 
-    console.log(`[STM32:Compile:${buildId}] 🔨 arduino-cli compile (fqbn=${STM32_FQBN})`);
+    console.log(`[STM32:Compile:${buildId}] 🔨 Queuing compile task (fqbn=${STM32_FQBN})`);
 
-    execFile(
-        ARDUINO_CLI_PATH,
-        compileArgs,
-        { timeout: COMPILE_TIMEOUT_MS },
-        (error, stdout, stderr) => {
-            const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
+    // Wrap Arduino compile in global queue
+    enqueueCompile(getCost('stm32', 'compile'), () => {
+        return new Promise((resolve) => {
+            execFile(
+                ARDUINO_CLI_PATH,
+                compileArgs,
+                { timeout: COMPILE_TIMEOUT_MS },
+                (error, stdout, stderr) => {
+                    resolve({ error, stdout, stderr });
+                }
+            );
+        });
+    }, COMPILE_TIMEOUT_MS).then(({ error, stdout, stderr }) => {
+        const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
             const output    = _shiftLineNumbers(rawOutput, sketchFile);
 
             // Find the .elf artifact (not .bin — Renode loads .elf directly)
@@ -403,17 +516,52 @@ export const compileArduinoCode = (req, res) => {
             const elfPath = path.join(buildDir, elfFile);
             console.log(`[STM32:Compile:${buildId}] ✅ Compiled → ${elfPath}`);
 
+            try {
+                const codeHash = buildCodeHash(mainCode, req);
+                const cacheDir = path.join(BUILDS_DIR, 'stm32-compile-cache', codeHash);
+                const cachedElf = path.join(cacheDir, 'firmware.elf');
+                fs.mkdirSync(cacheDir, { recursive: true });
+                fs.copyFileSync(elfPath, cachedElf);
+                console.log(`[STM32:Compile:${buildId}] 💾 Saved STM32 compiled ELF to Fast-Bypass cache: ${cachedElf}`);
+                pruneUniversalCachePool();
+            } catch (cacheErr) {
+                console.error(`[STM32:Compile:${buildId}] ⚠️ Failed to save STM32 cache:`, cacheErr.message);
+            }
+
             // ── Notify client that compilation succeeded ───────────────────────
             wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-            // ── Launch Renode ─────────────────────────────────────────────────
-            const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
-            _activeRunners.set(buildId, runner);
-            runner.start();
-
-            console.log(`[STM32:Compile:${buildId}] 🚀 Renode runner started`);
-        },
-    );
+            // ── Launch or Reload Renode ─────────────────────────────────────────────
+            if (_activeRunners.has(buildId)) {
+                // Hot-reload: user recompiled within same session
+                console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+                const existingRunner = _activeRunners.get(buildId);
+                existingRunner.reload(elfPath);
+            } else {
+                // Try to grab a pre-warmed pool instance first
+                const pooledRunner = acquireStm32Runner();
+                if (pooledRunner) {
+                    console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                    pooledRunner.assignSession(buildId);
+                    _activeRunners.set(buildId, pooledRunner);
+                    wsManager.createPendingSession(buildId);
+                    pooledRunner.reload(elfPath);
+                } else {
+                    // No pool instance — cold start
+                    console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty)`);
+                    const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
+                    _activeRunners.set(buildId, runner);
+                    
+                    // We must catch the connection promise or Renode connection failures crash the process
+                    runner.start();
+                    runner.connectionPromise.catch((err) => {
+                        console.error(`[STM32:Compile:${buildId}] ❌ Cold-start failed:`, err.message);
+                        try { runner.kill(); } catch {}
+                        _activeRunners.delete(buildId);
+                    });
+                }
+            }
+    });
 };
 
 /**
