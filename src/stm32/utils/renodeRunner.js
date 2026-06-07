@@ -39,7 +39,7 @@ const __dirname  = path.dirname(__filename);
 
 const RENODE_PATH           = process.env.RENODE_PATH || 'renode';
 const RENODE_TCP_BASE_PORT  = parseInt(process.env.RENODE_TCP_BASE_PORT || '4000', 10);
-const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '25', 10);
+const RENODE_CONNECT_RETRIES = parseInt(process.env.RENODE_CONNECT_RETRIES || '100', 10);
 const RENODE_CONNECT_DELAY_MS = parseInt(process.env.RENODE_CONNECT_DELAY_MS || '400', 10);
 const RENODE_BOOT_WAIT_MS   = parseInt(process.env.RENODE_BOOT_WAIT_MS || '2000', 10);
 const STM32_PLATFORM_DESC   = process.env.STM32_PLATFORM_DESC || '@platforms/cpus/stm32f103.repl';
@@ -105,8 +105,10 @@ class FrameParser {
             }
         }
         // Trim to prevent unbounded growth if garbage data appears
-        if (this._buf.length > 4096) {
-            this._buf = this._buf.slice(-512);
+        // Trim to prevent unbounded growth if garbage data appears
+        if (this._buf.length > 65536) {
+            console.warn(`[RenodeRunner] FrameParser buffer exceeded 65536 bytes (${this._buf.length}). Truncating! This might drop extremely large frames.`);
+            this._buf = this._buf.slice(-16384);
         }
     }
 }
@@ -146,6 +148,8 @@ export default class RenodeRunner {
             this.connectionResolve = resolve;
             this.connectionReject  = reject;
         });
+        // Prevent unhandled promise rejection if this is a cold start and no one awaits it
+        this.connectionPromise.catch(() => {});
     }
 
     _logDebug(msg) {
@@ -793,12 +797,15 @@ export default class RenodeRunner {
                 const addr = parseInt(parts[1], 16);
                 const hex  = parts[2] || '';
                 if (!isNaN(addr)) {
+                    if (hex.length > 100) {
+                        console.log(`[RenodeRunner] Parsed large I2C transaction for addr 0x${addr.toString(16)}, length: ${hex.length / 2} bytes`);
+                    }
                     const data = [];
                     for (let i = 0; i < hex.length; i += 2) {
                         data.push(parseInt(hex.slice(i, i + 2), 16));
                     }
                     this.wsManager.sendToSession(this.buildId, {
-                        type:    'I2C_TRANSACTION',
+                        type: 'I2C_TRANSACTION',
                         buildId: this.buildId,
                         addr,
                         data,
