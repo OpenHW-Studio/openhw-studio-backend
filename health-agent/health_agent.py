@@ -220,6 +220,74 @@ def generate_html():
         f.write(html)
     return filename, summary_text
 
+import threading
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+SCRIPTS_FILE = "/app/data/calibration_scripts.json"
+BUDGET_FILE = "/app/data/calibrated_budget.json"
+
+DEFAULT_SCRIPTS = {
+    "uno": "#include <Wire.h>\n#include <SPI.h>\n#include <Servo.h>\n#include <LiquidCrystal.h>\n#include <SoftwareSerial.h>\nLiquidCrystal lcd(12, 11, 5, 4, 3, 2);\nServo myservo;\nvoid setup() {\n  Serial.begin(9600);\n  lcd.begin(16, 2);\n  lcd.print(\"Calibration\");\n  myservo.attach(9);\n}\nvoid loop() {\n  for(int pos=0; pos<=180; pos++) {\n    myservo.write(pos);\n    delay(15);\n  }\n}",
+    "esp32": "#include <WiFi.h>\n#include <WiFiClientSecure.h>\n#include <WebServer.h>\n#include <Wire.h>\n#include <SPI.h>\n#include <SPIFFS.h>\n#include <HTTPClient.h>\nWebServer server(80);\nvoid setup() {\n  Serial.begin(115200);\n  WiFi.begin(\"test\", \"test\");\n  if(!SPIFFS.begin(true)){ Serial.println(\"SPIFFS Mount Failed\"); }\n  server.on(\"/\", [](){ server.send(200, \"text/plain\", \"Hello World\"); });\n  server.begin();\n}\nvoid loop() {\n  server.handleClient();\n  float heavyMath = sqrt(pow(sin(millis()), 2) + pow(cos(millis()), 2));\n  Serial.println(heavyMath);\n}",
+    "stm32": "#include <Wire.h>\n#include <SPI.h>\nvoid setup() {\n  Serial.begin(115200);\n  Wire.begin();\n  SPI.begin();\n}\nvoid loop() {\n  double complexMath = 0;\n  for(int i = 0; i < 1000; i++) {\n    complexMath += sin(i) * cos(i);\n  }\n  Serial.println(complexMath);\n  delay(10);\n}",
+    "pico": "#include <Wire.h>\n#include <SPI.h>\n#include <LittleFS.h>\nvoid setup() {\n  Serial.begin(115200);\n  LittleFS.begin();\n}\nvoid setup1() {\n  // Multicore initialization\n}\nvoid loop() {\n  float data = analogRead(26);\n  Serial.println(data * 3.3 / 1023.0);\n}\nvoid loop1() {\n  // Core 1 busy loop\n  delay(1);\n}"
+}
+
+def load_calibration_scripts():
+    if os.path.exists(SCRIPTS_FILE):
+        try:
+            with open(SCRIPTS_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # If missing or broken, write defaults
+    os.makedirs(os.path.dirname(SCRIPTS_FILE), exist_ok=True)
+    with open(SCRIPTS_FILE, "w") as f:
+        json.dump(DEFAULT_SCRIPTS, f, indent=4)
+    return DEFAULT_SCRIPTS
+
+def run_calibration_test(target, image, fqbn, script):
+    print(f"[Calibration] Spawning container for {target}...")
+    try:
+        # Create a tiny script to echo the file and run arduino-cli
+        cmd = f"mkdir -p /tmp/sketch && echo '{script}' > /tmp/sketch/sketch.ino && arduino-cli compile --fqbn {fqbn} /tmp/sketch"
+        container = client.containers.run(
+            image,
+            command=["sh", "-c", cmd],
+            detach=True,
+            mem_limit="1g",
+            cpu_quota=100000 # 1 core
+        )
+        
+        peak_mem = 0
+        while True:
+            try:
+                container.reload()
+                if container.status == "exited":
+                    break
+                stats = container.stats(stream=False)
+                if 'memory_stats' in stats and 'usage' in stats['memory_stats']:
+                    mem_mb = stats['memory_stats']['usage'] / 1024 / 1024
+                    if mem_mb > peak_mem:
+                        peak_mem = mem_mb
+            except:
+                pass
+            time.sleep(0.05)
+            
+        container.remove(force=True)
+        
+        if peak_mem == 0:
+            return 200 # Fallback
+            
+        calibrated = max(100, int(peak_mem * 1.2))
+        print(f"[Calibration] {target} peak memory: {peak_mem:.1f}MB (calibrated: {calibrated}MB)")
+        return calibrated
+    except Exception as e:
+        print(f"[Calibration] Failed to measure {target}: {e}")
+        return 200 # Fallback
+
 def watchdog():
     print("🛡️ Health Agent Watchdog Started...")
     last_status = {}
@@ -248,5 +316,42 @@ def watchdog():
 
         time.sleep(WATCHDOG_INTERVAL)
 
+def execute_calibration_suite():
+    print("[Calibration] Starting Automated Calibration Suite in Docker...")
+    scripts = load_calibration_scripts()
+    
+    budget = {
+        "uno_compile": 150, "uno_sim": 50,
+        "pico_compile": 300, "pico_sim": 100,
+        "esp32_compile": 800, "esp32_sim": 250,
+        "stm32_compile": 400, "stm32_sim": 150
+    }
+    
+    # We use esp32-worker for esp32/uno/pico, stm32-worker for stm32 (they have arduino-cli)
+    budget["esp32_compile"] = run_calibration_test("esp32", "openhw-esp32-worker:develop", "esp32:esp32:esp32", scripts.get("esp32", DEFAULT_SCRIPTS["esp32"]))
+    budget["uno_compile"] = run_calibration_test("uno", "openhw-esp32-worker:develop", "arduino:avr:uno", scripts.get("uno", DEFAULT_SCRIPTS["uno"]))
+    budget["pico_compile"] = run_calibration_test("pico", "openhw-esp32-worker:develop", "rp2040:rp2040:rpipico", scripts.get("pico", DEFAULT_SCRIPTS["pico"]))
+    budget["stm32_compile"] = run_calibration_test("stm32", "openhw-stm32-worker:develop", "STMicroelectronics:stm32:GenF1", scripts.get("stm32", DEFAULT_SCRIPTS["stm32"]))
+    
+    os.makedirs(os.path.dirname(BUDGET_FILE), exist_ok=True)
+    with open(BUDGET_FILE, "w") as f:
+        json.dump(budget, f, indent=4)
+    print(f"[Calibration] Suite complete. Config saved to {BUDGET_FILE}")
+
+@app.route('/api/calibrate', methods=['POST'])
+def trigger_calibrate():
+    # Run in background to avoid blocking HTTP response
+    threading.Thread(target=execute_calibration_suite).start()
+    return jsonify({"success": True, "message": "Calibration started in background."})
+
+@app.route('/api/status', methods=['GET'])
+def get_status():
+    try:
+        return jsonify(get_vm_stats())
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 if __name__ == "__main__":
-    watchdog()
+    t = threading.Thread(target=watchdog, daemon=True)
+    t.start()
+    app.run(host="0.0.0.0", port=8080)

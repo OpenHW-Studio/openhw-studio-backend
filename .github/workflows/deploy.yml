@@ -114,6 +114,15 @@ jobs:
               ${{ secrets.DOCKER_USERNAME }}/openhw-health-agent:develop
               ${{ secrets.DOCKER_USERNAME }}/openhw-health-agent:${{ github.sha }}
 
+      - name: Build and push Network Gateway
+        uses: docker/build-push-action@v5
+        with:
+            context: ./openhw-studio-backend/openhw-local-gateway
+            push: true
+            tags: |
+              ${{ secrets.DOCKER_USERNAME }}/openhw-network-gateway:develop
+              ${{ secrets.DOCKER_USERNAME }}/openhw-network-gateway:${{ github.sha }}
+
   notify_admin:
     name: Notify Dashboard
     needs: test_and_build
@@ -255,6 +264,28 @@ jobs:
           df -h
           docker image prune -af --filter "until=5m"
           df -h
+
+      - name: Deploy Network Gateway
+        run: |
+          cd /opt/openhw/backend
+          
+          # Ensure credentials
+          export DOCKER_USERNAME=${{ secrets.DOCKER_USERNAME }}
+          echo "${{ secrets.DOCKER_PASSWORD }}" | docker login -u "${{ secrets.DOCKER_USERNAME }}" --password-stdin
+          
+          echo "Pulling new Network Gateway image..."
+          docker compose -f docker-compose.prod.yml pull network-gateway
+          
+          echo "Upgrading running Network Gateway container..."
+          docker compose -f docker-compose.prod.yml up -d network-gateway
+          
+          sleep 10
+          if [ -z "$(docker ps -q -f name=network-gateway)" ]; then
+            echo "Network Gateway container crashed after startup!"
+            exit 1
+          fi
+          
+          docker image prune -af --filter "until=5m"
 
       - name: Deploy STM32 Worker
         if: needs.test_and_build.outputs.stm32_changed == 'true' || github.event_name == 'workflow_dispatch'

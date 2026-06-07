@@ -32,6 +32,8 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-$VITE_GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
       - ESP32_WORKER_HTTP_URL=http://openhw-esp32-worker:5001
@@ -93,6 +95,21 @@ services:
           cpus: '2.0'
           memory: 2.5G
 
+  network-gateway:
+    image: ${DOCKER_USERNAME}/openhw-network-gateway:${BACKEND_TAG:-develop}
+    container_name: openhw-network-gateway
+    restart: always
+    environment:
+      - PORT=5099
+      - GATEWAY_MODE=public
+    ports:
+      - "5099:5099"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
   frontend:
     image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}
     container_name: openhw-frontend
@@ -111,9 +128,10 @@ services:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/proc:ro
       - /:/host_root:ro
+      - ./persistent-data/data:/app/data
 
 volumes:
   mongodb_data:

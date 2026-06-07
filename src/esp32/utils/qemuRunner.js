@@ -31,6 +31,7 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import GatewayProxy from './gatewayProxy.js';
 import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -79,7 +80,14 @@ const ROM_NOISE_PATTERNS = Object.freeze([
  * Format: >GPIO:<pin>:<val><
  */
 const GPIO_PATTERN = />GPIO:(\d+):([01])</;
-const TONE_PATTERN = />TONE:(\d+):(\d+):(\d+)</;
+// const TONE_PATTERN removed — TONE is now a SIM control frame: >SIM:TONE:pin:freq:dur<
+// It is handled in _handleSimFrame below, same channel as READY/BEAT/LOG/SLEEP.
+const PWM_PATTERN  = />PWM:(\d+):(\d+)</;
+const DAC_PATTERN  = />DAC:(\d+):(\d+)</;
+const LEDC_PATTERN = />LEDC:(\d+):(\d+)/;       // >LEDC:<channel>:<duty>< (0-8191 for 13-bit)
+const TWAI_PATTERN = />TWAI:([0-9a-fA-F]+):([0-9a-fA-F]{2}):([0-9a-fA-F]*)</;  // >TWAI:<id_hex>:<dlc>:<data_hex><
+const RMT_PATTERN  = />RMT:(\d+):([0-9a-fA-F]+)</;   // >RMT:<channel>:<encoded_pulses_hex><
+const PCNT_PATTERN = />PCNT:(\d+):(-?\d+)</;           // >PCNT:<unit>:<count>< (signed)
 
 /**
  * SimulatorBridge.h I2C frame.
@@ -514,10 +522,8 @@ export default class QemuRunner {
 
             this._isSharedLibraryMode = false;
             this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-            this._nicArgs  = this._buildNicArgs();
 
-            // Start the network proxy first
-            this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
+            const startQemu = (proxyPort) => {
                 this._proxyPort = proxyPort;
                 
                 // Start TCP Server for UART0
@@ -548,9 +554,15 @@ export default class QemuRunner {
                 this._uartServer.listen(0, '127.0.0.1', () => {
                     this._uartPort = this._uartServer.address().port;
                     this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                    this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    });
                 });
-            });
+            };
+            
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, startQemu);
             this._proxy.start();
         }).catch(err => {
             this._log.error('Failed to acquire simulation points:', err.message);
@@ -858,23 +870,49 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Returns the -nic args for QEMU based on the WIFI_MODE env var.
-     *
-     *  slirp (default) — userspace NAT, no root needed, macOS + Linux.
-     *  tap             — kernel-level tap0, Linux production only.
+     * Returns the -nic or -netdev args for QEMU.
+     * Uses GatewayProxy if WOKWI_WSS_URL is set, otherwise SLIRP/TAP.
      */
-    _buildNicArgs() {
+    async _buildNicArgs() {
+        // Resolve paths for PCAP dump
+        const pcapDir = path.resolve(__dirname, '../../../data');
+        const pcapFile = path.resolve(pcapDir, `qemu_${this.buildId}.pcap`);
+        
+        // Ensure the data directory exists
+        try {
+            if (!fs.existsSync(pcapDir)) {
+                fs.mkdirSync(pcapDir, { recursive: true });
+            }
+        } catch (err) {
+            this._log.error('Failed to create pcap directory:', err.message);
+        }
+
+        const filterDumpArgs = ['-object', `filter-dump,id=f0,netdev=net0,file=${pcapFile}`];
+
+        if (process.env.WOKWI_WSS_URL) {
+            return new Promise((resolve) => {
+                this._log.info(`🌐 Routing QEMU ethernet to Gateway: ${process.env.WOKWI_WSS_URL}`);
+                this._gatewayProxy = new GatewayProxy(this.buildId, this.buildId, process.env.WOKWI_WSS_URL, (gwPort) => {
+                    resolve([
+                        '-nic', `socket,model=open_eth,id=net0,connect=127.0.0.1:${gwPort}`,
+                        ...filterDumpArgs
+                    ]);
+                });
+                this._gatewayProxy.start();
+            });
+        }
+
         const wifiMode = (process.env.WIFI_MODE || 'slirp').toLowerCase();
 
         if (wifiMode === 'tap') {
             const tapIface = process.env.TAP_INTERFACE || 'tap0';
             this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
             // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-nic', `tap,ifname=${tapIface},script=no,downscript=no,model=open_eth`];
+            return ['-nic', `tap,model=open_eth,id=net0,ifname=${tapIface},script=no,downscript=no`, ...filterDumpArgs];
         }
 
         this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-nic', 'user,model=open_eth'];
+        return ['-nic', 'user,model=open_eth,id=net0', ...filterDumpArgs];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -935,11 +973,8 @@ export default class QemuRunner {
             const text = data.toString().trim();
             if (!text) return;
 
-            // Only surface genuine errors; suppress QEMU info lines
-            const lower = text.toLowerCase();
-            if (lower.includes('error') || lower.includes('failed') || lower.includes('abort')) {
-                this._log.error('🔴 QEMU stderr:', text);
-            }
+            // Surface ALL QEMU stderr to help debug crashes
+            this._log.error('🔴 QEMU stderr:', text);
         });
 
         // ── Normal or unexpected exit ───────────────────────────────────────────
@@ -1032,7 +1067,10 @@ export default class QemuRunner {
                     const libPath = this._getSharedLibraryPath();
                     this._startSharedLibraryWorker(libPath);
                 } else {
-                    this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    });
                 }
             }, 1500);
         } else {
@@ -1151,18 +1189,104 @@ export default class QemuRunner {
             return;
         }
 
-        // ── TONE shim intercept ───────────────────────────────────────────────
-        // >TONE:<pin>:<freq>:<dur>< must NEVER reach the serial monitor.
-        const toneMatch = line.match(TONE_PATTERN);
-        if (toneMatch) {
-            const pin = parseInt(toneMatch[1], 10);
-            const frequency = parseInt(toneMatch[2], 10);
-            const duration = parseInt(toneMatch[3], 10);
-            this._sendWs({ type: 'TONE', pin, frequency, duration });
+        // ── PWM shim intercept ────────────────────────────────────────────────
+        const pwmMatch = line.match(PWM_PATTERN);
+        if (pwmMatch) {
+            const pin = parseInt(pwmMatch[1], 10);
+            const val = parseInt(pwmMatch[2], 10);
+            const duty_pct = Math.max(0, Math.min(1.0, val / 255.0)); // assume 8-bit PWM for now
+            this._sendWs({ type: 'PWM_SYNC', channel: pin, duty_pct });
+            return;
+        }
+
+        // ── DAC shim intercept ────────────────────────────────────────────────
+        // >DAC:<pin>:<val>< — 8-bit DAC output (ESP32 pins 25, 26)
+        const dacMatch = line.match(DAC_PATTERN);
+        if (dacMatch) {
+            const pin = parseInt(dacMatch[1], 10);
+            const val = parseInt(dacMatch[2], 10);   // 0-255
+            const voltage = (val / 255.0) * 3.3;     // convert to voltage
+            this._sendWs({ type: 'DAC_SYNC', pin, val, voltage });
+            return;
+        }
+
+        // ── LEDC shim intercept ──────────────────────────────────────────────
+        // >LEDC:<channel>:<duty>< — LEDC PWM channel duty (0-8191 for 13-bit)
+        const ledcMatch = line.match(LEDC_PATTERN);
+        if (ledcMatch) {
+            const channel = parseInt(ledcMatch[1], 10);
+            const duty    = parseInt(ledcMatch[2], 10);
+            const duty_pct = Math.max(0, Math.min(1.0, duty / 8191.0));
+            this._sendWs({ type: 'LEDC_SYNC', channel, duty, duty_pct });
+            return;
+        }
+
+        // ── LEDC_ATTACH intercept ─────────────────────────────────────────────
+        // >LEDC_ATTACH:<channel>:<pin>< — channel-to-pin mapping from ledcAttachPin()
+        const ledcAttachMatch = line.match(/>LEDC_ATTACH:(\d+):(\d+)</);
+        if (ledcAttachMatch) {
+            const channel = parseInt(ledcAttachMatch[1], 10);
+            const pin     = parseInt(ledcAttachMatch[2], 10);
+            this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `ledc_${channel}` });
+            this._sendWs({ type: 'LEDC_ATTACH', channel, pin });
+            return;
+        }
+
+        // ── PCNT_INIT intercept ───────────────────────────────────────────────
+        // >PCNT_INIT:<unit>:<pin>< — pulse counter unit-to-pin mapping
+        const pcntInitMatch = line.match(/>PCNT_INIT:(\d+):(\d+)</);
+        if (pcntInitMatch) {
+            const unit = parseInt(pcntInitMatch[1], 10);
+            const pin  = parseInt(pcntInitMatch[2], 10);
+            this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `pcnt_${unit}` });
+            this._sendWs({ type: 'PCNT_INIT', unit, pin });
+            return;
+        }
+
+        // ── TWAI / CAN Bus intercept ─────────────────────────────────────────
+        // >TWAI:<id_hex>:<dlc>:<data_hex>< — CAN 2.0B frame TX from firmware
+        const twaiMatch = line.match(TWAI_PATTERN);
+        if (twaiMatch) {
+            const id  = parseInt(twaiMatch[1], 16);
+            const dlc = parseInt(twaiMatch[2], 16);
+            const hexStr = twaiMatch[3] || '';
+            const data = [];
+            for (let i = 0; i < hexStr.length; i += 2) {
+                data.push(parseInt(hexStr.substring(i, i + 2), 16));
+            }
+            this._sendWs({ type: 'TWAI_TX', id, dlc, data });
+            return;
+        }
+
+        // ── RMT / IR pulse intercept ─────────────────────────────────────────
+        // >RMT:<channel>:<encoded_hex>< — RMT encoded pulse train
+        const rmtMatch = line.match(RMT_PATTERN);
+        if (rmtMatch) {
+            const channel = parseInt(rmtMatch[1], 10);
+            const hex = rmtMatch[2];
+            // Decode packed RMT items: each 4 bytes = level(1bit) | duration(15bit) x2
+            const pulses = [];
+            for (let i = 0; i + 3 < hex.length; i += 8) {
+                const word = parseInt(hex.substring(i, i + 8), 16);
+                pulses.push({ level: (word >> 15) & 1, duration: word & 0x7FFF });
+                pulses.push({ level: (word >> 31) & 1, duration: (word >> 16) & 0x7FFF });
+            }
+            this._sendWs({ type: 'RMT_PULSE', channel, pulses });
+            return;
+        }
+
+        // ── PCNT intercept ───────────────────────────────────────────────────
+        // >PCNT:<unit>:<count>< — pulse counter current value
+        const pcntMatch = line.match(PCNT_PATTERN);
+        if (pcntMatch) {
+            const unit  = parseInt(pcntMatch[1], 10);
+            const count = parseInt(pcntMatch[2], 10);
+            this._sendWs({ type: 'PCNT_UPDATE', unit, count });
             return;
         }
 
         // ── I2C shim intercept ───────────────────────────────────────────────
+
         // >I2C:<addr_hex>:<data_hex>< — write transaction from SimWire
         const i2cMatch = line.match(I2C_PATTERN);
         if (i2cMatch) {
@@ -1232,8 +1356,8 @@ export default class QemuRunner {
             if (ROM_NOISE_PATTERNS.some(re => re.test(line))) return;
         }
 
-        // ── Regular serial output → client serial monitor (Disabled to prevent UI/event-loop lag) ─────────────────────
-        // this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
+        // ── Regular serial output → client serial monitor ───────────────────
+        this._sendWs({ type: 'SERIAL_OUTPUT', text: line + '\n' });
     }
 
     /**
@@ -1260,8 +1384,34 @@ export default class QemuRunner {
                 // Refresh the watchdog on every heartbeat
                 this.lastActivity = Date.now();
                 this._armHeartbeatWatchdog();
-                // this._log.info('💓 Heartbeat received'); // Muted to prevent backend terminal spam
                 break;
+
+            case 'TONE': {
+                // payload = "pin:frequency:duration"
+                // Routed universally via syncTone + collectConnectedComponentPins on frontend
+                const [pin, frequency, duration] = payload.split(':').map(Number);
+                this._sendWs({ type: 'TONE', pin, frequency, duration });
+                break;
+            }
+
+            case 'I2S': {
+                // payload = "port:sampleRate:bits:b64pcm"
+                // Example: >SIM:I2S:0:44100:16:AAEC...<=
+                // The b64 data contains raw PCM samples (16-bit signed LE by default).
+                // Frontend decodes and schedules via Web Audio API AudioBuffer.
+                const colonIdx1 = payload.indexOf(':');        // after port
+                const colonIdx2 = payload.indexOf(':', colonIdx1 + 1); // after sampleRate
+                const colonIdx3 = payload.indexOf(':', colonIdx2 + 1); // after bits
+                if (colonIdx3 < 0) break;
+                const port       = parseInt(payload.slice(0, colonIdx1), 10);
+                const sampleRate = parseInt(payload.slice(colonIdx1 + 1, colonIdx2), 10) || 44100;
+                const bits       = parseInt(payload.slice(colonIdx2 + 1, colonIdx3), 10) || 16;
+                const pcm_b64    = payload.slice(colonIdx3 + 1);
+                if (pcm_b64) {
+                    this._sendWs({ type: 'I2S_AUDIO', port, sampleRate, bits, pcm_b64 });
+                }
+                break;
+            }
 
             case 'LOG': {
                 // payload = "<level>:<message>"
@@ -1269,6 +1419,29 @@ export default class QemuRunner {
                 const level   = colonIdx > 0 ? payload.slice(0, colonIdx)  : 'INFO';
                 const message = colonIdx > 0 ? payload.slice(colonIdx + 1) : payload;
                 this._sendWs({ type: 'SERIAL_LOG', level, message });
+                break;
+            }
+
+            case 'SLEEP': {
+                // payload = duration_us (uint64, may be 0 for indefinite)
+                const duration_us = parseInt(payload, 10) || 0;
+                this._sendWs({ type: 'SLEEP_START', duration_us });
+                this._log.info(`💤 Firmware entering deep sleep for ${duration_us}µs`);
+                break;
+            }
+
+            case 'LEDC_ATTACH': {
+                // payload = "channel:pin" — maps a LEDC channel to a GPIO pin
+                const [ch, pin] = payload.split(':').map(Number);
+                this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `ledc_${ch}` });
+                this._log.info(`LEDC ch${ch} attached to GPIO${pin}`);
+                break;
+            }
+
+            case 'PCNT_INIT': {
+                // payload = "unit:pin"
+                const [unit, pin] = payload.split(':').map(Number);
+                this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `pcnt_${unit}` });
                 break;
             }
 
@@ -1316,8 +1489,13 @@ export default class QemuRunner {
      */
     _cleanupPipes() {
         if (this._proxy) {
-            try { this._proxy.stop(); } catch { /* best-effort */ }
+            this._proxy.stop();
             this._proxy = null;
+        }
+
+        if (this._gatewayProxy) {
+            this._gatewayProxy.stop();
+            this._gatewayProxy = null;
         }
 
         if (this._uartSocket && !this._uartSocket.destroyed) {

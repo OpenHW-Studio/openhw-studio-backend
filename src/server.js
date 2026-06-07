@@ -16,7 +16,6 @@ import { initSTM32Module } from './stm32/index.js';
 import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
 import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
 import { initLibraryIndexService } from './services/libraryIndexService.js';
-import { runCalibration } from './services/calibrationSuite.js';
 import { reloadBudget } from './services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -202,6 +201,20 @@ app.get('/api/health', (req, res) => {
   res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.get('/api/network-gateway/pcap', (req, res) => {
+  const clientId = req.query.clientId;
+  if (!clientId) {
+    return res.status(400).send('Missing clientId query parameter.');
+  }
+
+  const pcapPath = path.resolve(backendRoot, `data/qemu_${clientId}.pcap`);
+  if (fs.existsSync(pcapPath)) {
+    res.download(pcapPath, `qemu_${clientId}.pcap`);
+  } else {
+    res.status(404).send('No network traffic captured for this session yet.');
+  }
+});
+
 // Serve demo/guide files from openhw-studio-examples repo
 const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
   './openhw-studio-examples/examples',
@@ -219,17 +232,19 @@ const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
 initESP32Module(server);
 initSTM32Module(server);
+
 server.listen(PORT, async () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
 
   const budgetFile = path.resolve(backendRoot, 'data/calibrated_budget.json');
   if (!fs.existsSync(budgetFile)) {
-    console.log('[Boot] Calibrated budget file missing. Running calibration...');
+    console.log('[Boot] Calibrated budget file missing. Triggering calibration via Health Agent...');
     try {
-      await runCalibration();
-      reloadBudget();
+      fetch('http://openhw-health-agent:8080/api/calibrate', { method: 'POST' })
+        .then(() => console.log('[Boot] Calibration triggered successfully.'))
+        .catch(err => console.error('[Boot] Failed to trigger calibration:', err.message));
     } catch (err) {
-      console.error('[Boot] Calibration failed:', err);
+      console.error('[Boot] Calibration fetch failed:', err);
     }
   }
 

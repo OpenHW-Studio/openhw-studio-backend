@@ -12,7 +12,7 @@ import Project from '../models/Project.js';
 import LiveSimulationSession from '../models/LiveSimulationSession.js';
 import SystemConfig from '../models/systemConfig.js';
 import { getStatus as getResourcePoolStatus, reloadBudget } from '../services/resourceManager.js';
-import { runCalibration } from '../services/calibrationSuite.js';
+import fs from 'fs';
 
 const execAsync = promisify(exec);
 
@@ -20,7 +20,7 @@ let cachedInfraStatus = null;
 let lastInfraFetch = 0;
 const CACHE_TTL = 10000; // 10 seconds
 
-import fs from 'fs';
+
 
 // Helper to reliably construct docker compose command based on environment
 const getComposeArgs = (...extraArgs) => {
@@ -653,22 +653,92 @@ export const recalibrate = async (req, res) => {
         await logAdminAction(
             req.user?.email || 'unknown-admin',
             'RECALIBRATE_RESOURCES',
-            'Manually triggered budget recalibration stress-test',
+            'Manually triggered budget recalibration stress-test via Health Agent',
             {},
             req.ip
         );
 
-        // Run calibration in background to avoid blocking request timeout
-        runCalibration().then(() => {
-            reloadBudget();
-            console.log('[Admin] Background recalibration successfully completed.');
-        }).catch(err => {
-            console.error('[Admin] Background recalibration failed:', err);
-        });
+        // Run calibration in background via Health Agent
+        fetch('http://openhw-health-agent:8080/api/calibrate', { method: 'POST' })
+            .then(() => {
+                console.log('[Admin] Health Agent recalibration triggered successfully.');
+                // We don't reload budget immediately since it runs async in the agent.
+                // It can be reloaded later or polled.
+            })
+            .catch(err => {
+                console.error('[Admin] Failed to trigger Health Agent recalibration:', err.message);
+            });
 
-        res.json({ success: true, message: 'Recalibration started in the background.' });
+        res.json({ success: true, message: 'Recalibration started in the Health Agent.' });
     } catch (error) {
         res.status(500).json({ success: false, error: 'Failed to start recalibration' });
     }
 };
 
+const SCRIPTS_FILE = path.join('/app/data', 'calibration_scripts.json');
+
+export const getCalibrationScripts = async (req, res) => {
+    try {
+        if (!fs.existsSync(SCRIPTS_FILE)) {
+            return res.json({ success: true, data: {} });
+        }
+        const data = fs.readFileSync(SCRIPTS_FILE, 'utf8');
+        res.setHeader('Content-Disposition', 'attachment; filename=calibration_scripts.json');
+        res.setHeader('Content-Type', 'application/json');
+        res.send(data);
+    } catch (error) {
+        res.status(500).json({ success: false, error: 'Failed to read scripts' });
+    }
+};
+
+export const updateCalibrationScripts = async (req, res) => {
+    try {
+        if (!req.files || !req.files.file) {
+            return res.status(400).json({ success: false, error: 'No file uploaded' });
+        }
+        const fileContent = fs.readFileSync(req.files.file.tempFilePath, 'utf8');
+        // Validate JSON
+        JSON.parse(fileContent);
+        
+        fs.writeFileSync(SCRIPTS_FILE, fileContent);
+        
+        await logAdminAction(
+            req.user?.email || 'unknown-admin',
+            'UPDATE_CALIBRATION_SCRIPTS',
+            'Updated calibration_scripts.json',
+            {},
+            req.ip
+        );
+        
+        res.json({ success: true, message: 'Calibration scripts updated successfully.' });
+    } catch (error) {
+        res.status(400).json({ success: false, error: 'Invalid JSON or failed to save file' });
+    }
+};
+
+export const getHostStatus = async (req, res) => {
+    try {
+        const isDocker = process.env.ROLE === 'main';
+        const healthAgentUrl = isDocker ? 'http://openhw-health-agent:8080' : 'http://127.0.0.1:8080';
+        
+        const response = await fetch(`${healthAgentUrl}/api/status`);
+        const data = await response.json();
+        res.json({ success: true, host: data });
+    } catch (error) {
+        console.warn('[Admin] Failed to fetch host status from health agent (are you running locally on Windows?). Returning mock data.');
+        
+        // Return N/A data for local Windows development so the UI still renders but is obviously inactive
+        const mockData = {
+            cpu: "N/A",
+            load_avg: "N/A",
+            total_mem: "N/A",
+            used_mem: "N/A",
+            mem_pct: "N/A",
+            total_disk: "N/A",
+            free_disk: "0",
+            uptime: "N/A (Local Dev)"
+        };
+        
+        res.json({ success: true, host: mockData, isMock: true });
+    }
+};
