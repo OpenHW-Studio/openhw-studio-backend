@@ -171,6 +171,7 @@ for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) 
 
 // ─── WebSocket message handler ────────────────────────────────────────────────
 
+if (process.env.ROLE !== 'main') {
 wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
@@ -261,6 +262,7 @@ wsManager.onClientConnection((ws) => {
         console.log('[STM32:Compile] 📡 Client disconnected — Renode session preserved for reconnect window');
     });
 });
+}
 
 function buildCodeHash(mainCode, req) {
     const payload = {

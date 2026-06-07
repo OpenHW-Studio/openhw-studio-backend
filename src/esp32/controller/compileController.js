@@ -331,6 +331,7 @@ for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) 
 
 // ─── WebSocket message handler (installed once per connection) ────────────────
 
+if (process.env.ROLE !== 'main') {
 wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
@@ -529,6 +530,7 @@ wsManager.onClientConnection((ws) => {
         console.log('[Compile] 📡 Client disconnected — QEMU session preserved for reconnect window');
     });
 });
+}
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
