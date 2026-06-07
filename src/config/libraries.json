@@ -1,20 +1,27 @@
 {
-  "permanent": [
-    "Adafruit NeoPixel",
-    "Stepper",
-    "Servo",
-    "Adafruit GFX Library",
-    "Adafruit SSD1306",
-    "Adafruit ILI9341",
-    "LiquidCrystal I2C",
-    "PubSubClient",
-    "ArduinoJson",
-    "Adafruit MPU6050",
-    "Adafruit BusIO",
-    "Adafruit Unified Sensor",
-    "Ticker",
-    "DHT sensor library",
-    "SparkFun MAX3010x Pulse and Proximity Sensor Library"
-  ],
-  "cached": []
+    "permanent": [
+        "Adafruit NeoPixel",
+        "Stepper",
+        "Servo",
+        "Adafruit GFX Library",
+        "Adafruit SSD1306",
+        "Adafruit ILI9341",
+        "LiquidCrystal I2C",
+        "PubSubClient",
+        "ArduinoJson",
+        "Adafruit MPU6050",
+        "Adafruit BusIO",
+        "Adafruit Unified Sensor",
+        "Ticker",
+        "DHT sensor library",
+        "SparkFun MAX3010x Pulse and Proximity Sensor Library",
+        "AccelStepper",
+        "GxEPD2"
+    ],
+    "cached": [
+        "AccelStepper",
+        "ESP32Servo",
+        "GxEPD2",
+        "LedControl"
+    ]
 }
