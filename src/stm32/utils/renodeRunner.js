@@ -105,8 +105,10 @@ class FrameParser {
             }
         }
         // Trim to prevent unbounded growth if garbage data appears
-        if (this._buf.length > 4096) {
-            this._buf = this._buf.slice(-512);
+        // Trim to prevent unbounded growth if garbage data appears
+        if (this._buf.length > 65536) {
+            console.warn(`[RenodeRunner] FrameParser buffer exceeded 65536 bytes (${this._buf.length}). Truncating! This might drop extremely large frames.`);
+            this._buf = this._buf.slice(-16384);
         }
     }
 }
@@ -795,12 +797,15 @@ export default class RenodeRunner {
                 const addr = parseInt(parts[1], 16);
                 const hex  = parts[2] || '';
                 if (!isNaN(addr)) {
+                    if (hex.length > 100) {
+                        console.log(`[RenodeRunner] Parsed large I2C transaction for addr 0x${addr.toString(16)}, length: ${hex.length / 2} bytes`);
+                    }
                     const data = [];
                     for (let i = 0; i < hex.length; i += 2) {
                         data.push(parseInt(hex.slice(i, i + 2), 16));
                     }
                     this.wsManager.sendToSession(this.buildId, {
-                        type:    'I2C_TRANSACTION',
+                        type: 'I2C_TRANSACTION',
                         buildId: this.buildId,
                         addr,
                         data,

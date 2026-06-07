@@ -549,7 +549,14 @@ export const compileArduinoCode = async (req, res) => {
                     console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty)`);
                     const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
                     _activeRunners.set(buildId, runner);
+                    
+                    // We must catch the connection promise or Renode connection failures crash the process
                     runner.start();
+                    runner.connectionPromise.catch((err) => {
+                        console.error(`[STM32:Compile:${buildId}] ❌ Cold-start failed:`, err.message);
+                        try { runner.kill(); } catch {}
+                        _activeRunners.delete(buildId);
+                    });
                 }
             }
     });
