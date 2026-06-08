@@ -171,6 +171,7 @@ for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) 
 
 // ─── WebSocket message handler ────────────────────────────────────────────────
 
+if (process.env.ROLE !== 'main') {
 wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
@@ -261,6 +262,7 @@ wsManager.onClientConnection((ws) => {
         console.log('[STM32:Compile] 📡 Client disconnected — Renode session preserved for reconnect window');
     });
 });
+}
 
 function buildCodeHash(mainCode, req) {
     const payload = {
@@ -549,7 +551,14 @@ export const compileArduinoCode = async (req, res) => {
                     console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty)`);
                     const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
                     _activeRunners.set(buildId, runner);
+                    
+                    // We must catch the connection promise or Renode connection failures crash the process
                     runner.start();
+                    runner.connectionPromise.catch((err) => {
+                        console.error(`[STM32:Compile:${buildId}] ❌ Cold-start failed:`, err.message);
+                        try { runner.kill(); } catch {}
+                        _activeRunners.delete(buildId);
+                    });
                 }
             }
     });

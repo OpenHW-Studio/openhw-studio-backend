@@ -874,45 +874,9 @@ export default class QemuRunner {
      * Uses GatewayProxy if WOKWI_WSS_URL is set, otherwise SLIRP/TAP.
      */
     async _buildNicArgs() {
-        // Resolve paths for PCAP dump
-        const pcapDir = path.resolve(__dirname, '../../../data');
-        const pcapFile = path.resolve(pcapDir, `qemu_${this.buildId}.pcap`);
-        
-        // Ensure the data directory exists
-        try {
-            if (!fs.existsSync(pcapDir)) {
-                fs.mkdirSync(pcapDir, { recursive: true });
-            }
-        } catch (err) {
-            this._log.error('Failed to create pcap directory:', err.message);
-        }
-
-        const filterDumpArgs = ['-object', `filter-dump,id=f0,netdev=net0,file=${pcapFile}`];
-
-        if (process.env.WOKWI_WSS_URL) {
-            return new Promise((resolve) => {
-                this._log.info(`🌐 Routing QEMU ethernet to Gateway: ${process.env.WOKWI_WSS_URL}`);
-                this._gatewayProxy = new GatewayProxy(this.buildId, this.buildId, process.env.WOKWI_WSS_URL, (gwPort) => {
-                    resolve([
-                        '-nic', `socket,model=open_eth,id=net0,connect=127.0.0.1:${gwPort}`,
-                        ...filterDumpArgs
-                    ]);
-                });
-                this._gatewayProxy.start();
-            });
-        }
-
-        const wifiMode = (process.env.WIFI_MODE || 'slirp').toLowerCase();
-
-        if (wifiMode === 'tap') {
-            const tapIface = process.env.TAP_INTERFACE || 'tap0';
-            this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
-            // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-nic', `tap,model=open_eth,id=net0,ifname=${tapIface},script=no,downscript=no`, ...filterDumpArgs];
-        }
-
-        this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-nic', 'user,model=open_eth,id=net0', ...filterDumpArgs];
+        // QEMU ESP32 does NOT use open_eth! Networking is proxied over UART1 via SimulatorWiFi.h
+        // Attaching open_eth causes unhandled interrupts leading to 'Guru Meditation / Cache Error' panics.
+        return [];
     }
 
     // ─────────────────────────────────────────────────────────────────────────

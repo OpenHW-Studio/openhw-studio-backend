@@ -24,7 +24,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 /** Maximum number of messages buffered per session (prevents OOM). */
-const MAX_PENDING_BUFFER = 512;
+const MAX_PENDING_BUFFER = 32768;
 
 /**
  * Maximum age (ms) of a pending buffer whose client never showed up.
