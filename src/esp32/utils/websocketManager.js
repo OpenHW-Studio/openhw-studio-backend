@@ -100,7 +100,16 @@ class WebSocketManager {
             return;
         }
 
-        this.wss = new WebSocketServer({ server: httpServer });
+        // Use noServer so we can filter out paths owned by other WS handlers
+        // (e.g. live simulation at /api/live-simulations/ws).
+        this.wss = new WebSocketServer({ noServer: true });
+        httpServer.on('upgrade', (request, socket, head) => {
+            const url = new URL(request.url, 'http://localhost');
+            if (url.pathname === '/api/live-simulations/ws') return;
+            this.wss.handleUpgrade(request, socket, head, (ws) => {
+                this.wss.emit('connection', ws, request);
+            });
+        });
  
         this.wss.on('connection', (ws, req) => {
             const clientIp = req.socket.remoteAddress || 'unknown';
