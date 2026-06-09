@@ -69,7 +69,7 @@ services:
       - ./persistent-data/data:/app/data
     tmpfs:
       - /app/temp:size=1G
-      - /app/builds:size=512M
+      - /app/builds:size=2G
     deploy:
       resources:
         limits:
@@ -88,7 +88,7 @@ services:
       - ./persistent-data/data:/app/data
     tmpfs:
       - /app/temp:size=1G
-      - /app/builds:size=512M
+      - /app/builds:size=1G
     deploy:
       resources:
         limits:
