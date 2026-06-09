@@ -12,13 +12,12 @@ import { ensureLibrariesForCompile } from '../services/dynamicLibraryManager.js'
 import { pruneUniversalCachePool } from '../services/compileCachePruner.js';
 import { enqueueCompile } from '../services/compileQueueManager.js';
 import { getCost } from '../services/resourceManager.js';
+import { ARDUINO_CLI_PATH, arduinoCliArgs, formatArduinoCliError } from '../utils/arduinoCli.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
-const ARDUINO_CLI_PATH = 'arduino-cli';
+// Arduino CLI path/resolution is handled in src/utils/arduinoCli.js
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
 const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
@@ -725,7 +724,7 @@ function normalizePortEntry(address, meta = {}) {
 
 async function listDetectedArduinoPorts() {
     try {
-        const { stdout } = await execFileAsync(ARDUINO_CLI_PATH, ['board', 'list', '--format', 'json']);
+        const { stdout } = await execFileAsync(ARDUINO_CLI_PATH, arduinoCliArgs(['board', 'list', '--format', 'json']));
         const parsed = JSON.parse(stdout || '{}');
         const rows = Array.isArray(parsed?.detected_ports) ? parsed.detected_ports : [];
         const out = [];
@@ -1266,9 +1265,23 @@ pico_add_extra_outputs(firmware)
     cliArgs.push(sketchDir);
 
       enqueueCompile(getCost('uno', 'compile'), () => new Promise((resolve) => {
-          execFile(ARDUINO_CLI_PATH, cliArgs, {
+          execFile(ARDUINO_CLI_PATH, arduinoCliArgs(cliArgs), {
               env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
           }, (error, stdout, stderr) => {
+        if (error) {
+            console.error('arduino-cli execution error:', formatArduinoCliError(error, stdout, stderr));
+            if (error && error.code === 'ENOENT') {
+                return sendCompileFailure(
+                    res,
+                    500,
+                    {
+                        error: 'Compile failed',
+                        details: 'arduino-cli executable not found (spawn ENOENT). Install arduino-cli and ensure it is on PATH, or set ARDUINO_CLI_PATH to a valid binary. On Windows you can use `scoop install arduino-cli` or download from https://arduino.github.io/arduino-cli/latest/installation/',
+                    },
+                    { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
+                );
+            }
+        }
         // Read produced firmware artifact regardless of warnings, but handle hard errors.
         let compiledArtifact = {
             payload: '',
@@ -1299,7 +1312,7 @@ pico_add_extra_outputs(firmware)
         }
 
         if (error) {
-            console.error('Compile error:', stderr || stdout);
+            console.error('Compile error:', error || stdout);
             return sendCompileFailure(
                 res,
                 400,
@@ -1392,16 +1405,22 @@ export const flashFirmware = (req, res) => {
         args.push('--upload-property', 'upload.disable_flushing=true');
     }
 
-    execFile(ARDUINO_CLI_PATH, args, (error, stdout, stderr) => {
+    execFile(ARDUINO_CLI_PATH, arduinoCliArgs(args), (error, stdout, stderr) => {
         fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
             if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
         });
 
         if (error) {
-            console.error('Flash error:', stderr || stdout);
+            console.error('Flash error:', formatArduinoCliError(error, stdout, stderr));
+            if (error && error.code === 'ENOENT') {
+                return res.status(500).json({
+                    error: 'Flashing failed',
+                    details: 'arduino-cli executable not found (spawn ENOENT). Install arduino-cli and ensure it is on PATH, or set ARDUINO_CLI_PATH to a valid binary.',
+                });
+            }
             return res.status(400).json({
                 error: 'Flashing failed',
-                details: stderr || stdout,
+                details: stderr || stdout || error.message,
             });
         }
 
