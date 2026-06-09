@@ -32,9 +32,6 @@ const liveSimulationSessionSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: {},
     },
-    ip: { type: String },
-    lat: { type: Number },
-    lng: { type: Number },
   },
   { timestamps: true },
 );
