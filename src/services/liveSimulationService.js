@@ -6,7 +6,7 @@ import User from "../models/User.js";
 
 let geoip = null;
 try {
-  geoip = await import("geoip-lite");
+  geoip = (await import("geoip-lite")).default;
 } catch (e) {
   // geoip-lite not installed yet
 }
@@ -439,45 +439,60 @@ export async function registerLiveSimulationWebSocket(httpServer) {
 
     const liveWss = new WebSocketServer({ noServer: true });
 
-    httpServer.on("upgrade", async (request, socket, head) => {
+    httpServer.on("upgrade", (request, socket, head) => {
       const url = new URL(request.url, "http://localhost");
       if (url.pathname !== "/api/live-simulations/ws") {
         return;
       }
 
-      try {
-        const sessionCode = String(url.searchParams.get("sessionCode") || "")
-          .trim()
-          .toUpperCase();
-        const requestedRole = String(url.searchParams.get("role") || "")
-          .trim()
-          .toLowerCase();
-        const user = await resolveSocketUser(request);
-        const session = await assertLiveSessionAccess(sessionCode, user, {
-          requireTeacherHost: requestedRole === "teacher",
-        });
+      const sessionCode = String(url.searchParams.get("sessionCode") || "")
+        .trim()
+        .toUpperCase();
+      const requestedRole = String(url.searchParams.get("role") || "")
+        .trim()
+        .toLowerCase();
 
-        liveWss.handleUpgrade(request, socket, head, (ws) => {
-          ws.liveMeta = {
-            sessionCode,
-            role:
-              requestedRole === "teacher" || user.role === "admin"
-                ? "teacher"
-                : user.role === "student"
-                  ? "student"
-                  : "viewer",
-            userId: String(user._id),
-            userName: user.name || user.email || "Participant",
-          };
-          liveWss.emit("connection", ws, request, { session });
-        });
-      } catch (error) {
-        const status = error?.status || 401;
-        socket.write(
-          `HTTP/1.1 ${status} ${error?.message || "Unauthorized"}\r\nConnection: close\r\n\r\n`,
-        );
-        socket.destroy();
-      }
+      // Call handleUpgrade synchronously BEFORE any async work so the
+      // WebSocket upgrade completes before other upgrade listeners (e.g. WSManager
+      // for ESP32/STM32) can intercept this connection.
+      liveWss.handleUpgrade(request, socket, head, (ws) => {
+        resolveSocketUser(request)
+          .then((user) =>
+            assertLiveSessionAccess(sessionCode, user, {
+              requireTeacherHost: requestedRole === "teacher",
+            }).then((session) => ({ user, session })),
+          )
+          .then(({ user, session }) => {
+            ws.liveMeta = {
+              sessionCode,
+              role:
+                requestedRole === "teacher" || user.role === "admin"
+                  ? "teacher"
+                  : user.role === "student"
+                    ? "student"
+                    : "viewer",
+              userId: String(user._id),
+              userName: user.name || user.email || "Participant",
+            };
+            liveWss.emit("connection", ws, request, { session });
+          })
+          .catch((error) => {
+            const status = error?.status || 401;
+            try {
+              socket.write(
+                `HTTP/1.1 ${status} ${error?.message || "Unauthorized"}\r\nConnection: close\r\n\r\n`,
+              );
+            } catch (_) {
+              /* socket may already be upgraded */
+            }
+            try {
+              socket.destroy();
+            } catch (_) {
+              /* ignore */
+            }
+            ws.close();
+          });
+      });
     });
 
     liveWss.on("connection", async (ws, _request, { session }) => {
