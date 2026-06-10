@@ -18,6 +18,7 @@
         "ESP32Servo"
     ],
     "cached": [
-        "AccelStepper"
+        "AccelStepper",
+        "LiquidCrystal"
     ]
 }
