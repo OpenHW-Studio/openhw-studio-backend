@@ -972,16 +972,23 @@ export const compileArduinoCode = async (req, res) => {
                 finalCode = code;
                 console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
             } else {
-                const preamble = [
-                    '#define setup _sim_user_setup',
-                    '#define loop  _sim_user_loop',
-                    '',
-                ].join('\n');
+                // ── Rename ONLY the user's global setup()/loop() definitions ────
+                // Using #define for this is fragile: it renames ALL tokens called
+                // "loop" or "setup" — including library methods like
+                // PubSubClient::loop(), Preferences::begin() etc. — causing
+                // "undefined reference" linker errors.
+                //
+                // Instead, we do a targeted regex rename directly on the source text:
+                // only bare `void setup(` and `void loop(` at the start of a line
+                // (or after whitespace) are renamed. Library method declarations
+                // inside class bodies are NOT matched because they have a return type
+                // other than void or are preceded by a class/struct scope.
+                const renamedCode = code
+                    .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
+                    .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
                 const suffix = [
                     '',
-                    '#undef setup',
-                    '#undef loop',
                     '#include "SimulatorBridge.h"',
                     '',
                     'void setup() {',
@@ -997,7 +1004,7 @@ export const compileArduinoCode = async (req, res) => {
                     '',
                 ].join('\n');
 
-                finalCode = preamble + code + suffix;
+                finalCode = renamedCode + suffix;
             }
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
@@ -1159,16 +1166,13 @@ export const compileStart = async (req, res) => {
                 finalCode = code;
                 console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
             } else {
-                const preamble = [
-                    '#define setup _sim_user_setup',
-                    '#define loop  _sim_user_loop',
-                    '',
-                ].join('\n');
+                // ── Rename ONLY the user's global setup()/loop() definitions ────
+                const renamedCode = code
+                    .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
+                    .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
                 const suffix = [
                     '',
-                    '#undef setup',
-                    '#undef loop',
                     '#include "SimulatorBridge.h"',
                     '',
                     'void setup() {',
@@ -1184,7 +1188,7 @@ export const compileStart = async (req, res) => {
                     '',
                 ].join('\n');
 
-                finalCode = preamble + code + suffix;
+                finalCode = renamedCode + suffix;
             }
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
