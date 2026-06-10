@@ -754,13 +754,17 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     // ccache is disabled for arduino-cli here because platform.txt prepends {compiler.path}, breaking it.
     const ccacheProps = [];
 
+    const extraFlagsProps = req.body.targetEngine === 'frontend' 
+        ? [] 
+        : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'];
+
     const compileArgs = [
         'compile',
         '--fqbn',             ESP32_FQBN,
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
         '--jobs',             '4',
-        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...extraFlagsProps,
         ...ccacheProps,
         ...libraryFlags,
         sketchFile,
@@ -972,22 +976,24 @@ export const compileArduinoCode = async (req, res) => {
                 finalCode = code;
                 console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
             } else {
-                // ── Rename ONLY the user's global setup()/loop() definitions ────
-                // Using #define for this is fragile: it renames ALL tokens called
-                // "loop" or "setup" — including library methods like
-                // PubSubClient::loop(), Preferences::begin() etc. — causing
-                // "undefined reference" linker errors.
-                //
-                // Instead, we do a targeted regex rename directly on the source text:
-                // only bare `void setup(` and `void loop(` at the start of a line
-                // (or after whitespace) are renamed. Library method declarations
                 // inside class bodies are NOT matched because they have a return type
                 // other than void or are preceded by a class/struct scope.
                 const renamedCode = code
                     .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
                     .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
-                const suffix = [
+                const isFrontend = req.body.targetEngine === 'frontend';
+                const suffix = isFrontend ? [
+                    '',
+                    'void setup() {',
+                    '    _sim_user_setup();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    '',
+                ].join('\n') : [
                     '',
                     '#include "SimulatorBridge.h"',
                     '',
@@ -1011,7 +1017,7 @@ export const compileArduinoCode = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
-                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                    if (req.body.targetEngine === 'frontend') {
                         continue;
                     }
                     if (fs.existsSync(src)) {
@@ -1171,7 +1177,18 @@ export const compileStart = async (req, res) => {
                     .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
                     .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
-                const suffix = [
+                const isFrontend = req.body.targetEngine === 'frontend';
+                const suffix = isFrontend ? [
+                    '',
+                    'void setup() {',
+                    '    _sim_user_setup();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    '',
+                ].join('\n') : [
                     '',
                     '#include "SimulatorBridge.h"',
                     '',
@@ -1195,7 +1212,7 @@ export const compileStart = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
-                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                    if (req.body.targetEngine === 'frontend') {
                         continue;
                     }
                     if (fs.existsSync(src)) {
