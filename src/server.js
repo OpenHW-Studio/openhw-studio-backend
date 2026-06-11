@@ -194,6 +194,8 @@ app.use(createInMemoryRateLimiter({
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
 
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);
 
