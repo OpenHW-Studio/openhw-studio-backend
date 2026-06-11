@@ -19,7 +19,9 @@
         "GxEPD2"
     ],
     "cached": [
-        "LedControl",
-        "SevSeg"
+        "AccelStepper",
+        "ESP32Servo",
+        "GxEPD2",
+        "LedControl"
     ]
 }
