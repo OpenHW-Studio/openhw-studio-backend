@@ -23,7 +23,7 @@ const __dirname = path.dirname(__filename);
 const backendRoot = path.resolve(__dirname, '..');
 
 const resolveConfiguredPath = (rawPath, fallbackCandidates = []) => {
-  const candidates = rawPath ? [rawPath] : fallbackCandidates;
+  const candidates = rawPath ? [rawPath, ...fallbackCandidates] : fallbackCandidates;
 
   for (const candidate of candidates) {
     const resolvedCandidate = path.isAbsolute(candidate)
