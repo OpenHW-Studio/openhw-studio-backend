@@ -60,10 +60,10 @@ const BOOT_SIGNATURES = Object.freeze([
  */
 const ROM_NOISE_PATTERNS = Object.freeze([
     // ESP32 ROM / bootloader lines (cannot be suppressed in QEMU)
-    /^ets J/, /^rst:0x/, /^configsip:/,
-    /^clk_drv:/, /^mode:DIO/, /^mode:QIO/,
-    /^load:/, /^entry /, /^ESP-ROM:/,
-    /^Build:/, /^Chip is /, /^Features:/,
+    /^ets J/,      /^rst:0x/,     /^configsip:/,
+    /^clk_drv:/,   /^mode:DIO/,   /^mode:QIO/,
+    /^load:/,      /^entry /,     /^ESP-ROM:/,
+    /^Build:/,     /^Chip is /,   /^Features:/,
     /^Crystal is /, /^MAC:/,
     // QEMU Wokwi machine identifier — wokwi_esp32_1 etc.
     /wokwi_esp32/i, /^wokwi/i,
@@ -82,11 +82,11 @@ const ROM_NOISE_PATTERNS = Object.freeze([
 const GPIO_PATTERN = />GPIO:(\d+):([01])</;
 // const TONE_PATTERN removed — TONE is now a SIM control frame: >SIM:TONE:pin:freq:dur<
 // It is handled in _handleSimFrame below, same channel as READY/BEAT/LOG/SLEEP.
-const PWM_PATTERN = />PWM:(\d+):(\d+)</;
-const DAC_PATTERN = />DAC:(\d+):(\d+)</;
+const PWM_PATTERN  = />PWM:(\d+):(\d+)</;
+const DAC_PATTERN  = />DAC:(\d+):(\d+)</;
 const LEDC_PATTERN = />LEDC:(\d+):(\d+)/;       // >LEDC:<channel>:<duty>< (0-8191 for 13-bit)
 const TWAI_PATTERN = />TWAI:([0-9a-fA-F]+):([0-9a-fA-F]{2}):([0-9a-fA-F]*)</;  // >TWAI:<id_hex>:<dlc>:<data_hex><
-const RMT_PATTERN = />RMT:(\d+):([0-9a-fA-F]+)</;   // >RMT:<channel>:<encoded_pulses_hex><
+const RMT_PATTERN  = />RMT:(\d+):([0-9a-fA-F]+)</;   // >RMT:<channel>:<encoded_pulses_hex><
 const PCNT_PATTERN = />PCNT:(\d+):(-?\d+)</;           // >PCNT:<unit>:<count>< (signed)
 
 /**
@@ -94,10 +94,10 @@ const PCNT_PATTERN = />PCNT:(\d+):(-?\d+)</;           // >PCNT:<unit>:<count>< 
  * Format: >I2C:<addr_hex>:<data_hex><
  * e.g.  >I2C:3c:000001< 
  */
-const I2C_PATTERN = />I2C:([0-9a-fA-F]+):([0-9a-fA-F]*)</;
+const I2C_PATTERN     = />I2C:([0-9a-fA-F]+):([0-9a-fA-F]*)</;
 const I2C_READ_PATTERN = />I2C_READ:([0-9a-fA-F]+):([0-9a-fA-F]+)</;
-const SPI_PATTERN = />SPI:([0-9a-fA-F]{2})</;
-const SPIBUF_PATTERN = />SPIBUF:([0-9a-fA-F]+)</
+const SPI_PATTERN      = />SPI:([0-9a-fA-F]{2})</;
+const SPIBUF_PATTERN   = />SPIBUF:([0-9a-fA-F]+)</
 
 /**
  * SimulatorBridge.h simulation control frames.
@@ -151,9 +151,9 @@ class SessionLogger {
     constructor(buildId) {
         this._prefix = `[QEMU:${buildId.substring(0, 8)}]`;
     }
-    info(...args) { console.log(this._prefix, ...args); }
-    warn(...args) { console.warn(this._prefix, ...args); }
-    error(...args) { console.error(this._prefix, ...args); }
+    info  (...args) { console.log  (this._prefix, ...args); }
+    warn  (...args) { console.warn (this._prefix, ...args); }
+    error (...args) { console.error(this._prefix, ...args); }
 }
 
 // ─── QemuRunner ────────────────────────────────────────────────────────────────
@@ -166,38 +166,38 @@ export default class QemuRunner {
      * @param {string} sketchDir  - Optional sketch compilation directory for GC.
      */
     constructor(buildId, flashImage, pipesDir, sketchDir = null) {
-        this.buildId = buildId;
+        this.buildId    = buildId;
         this.flashImage = flashImage;
-        this.pipesDir = pipesDir;
-        this.sketchDir = sketchDir;
+        this.pipesDir   = pipesDir;
+        this.sketchDir  = sketchDir;
 
         // Runtime state
-        this._process = null;   // child_process handle
-        this._uartServer = null;   // net.Server for UART0
-        this._uartSocket = null;   // net.Socket for UART0
-        this._uartPort = null;   // TCP port for UART0
-        this._outBuffer = '';     // incomplete line accumulator
-        this._proxy = null;   // NetworkProxy instance
-        this._log = new SessionLogger(buildId);
-        this._destroyed = false;  // set to true after kill() to prevent double-cleanup
-        this._bootDetected = false;  // true once ROM boot signatures seen
-        this._heartbeatTimer = null;   // setTimeout handle for heartbeat watchdog
+        this._process          = null;   // child_process handle
+        this._uartServer       = null;   // net.Server for UART0
+        this._uartSocket       = null;   // net.Socket for UART0
+        this._uartPort         = null;   // TCP port for UART0
+        this._outBuffer        = '';     // incomplete line accumulator
+        this._proxy            = null;   // NetworkProxy instance
+        this._log              = new SessionLogger(buildId);
+        this._destroyed        = false;  // set to true after kill() to prevent double-cleanup
+        this._bootDetected     = false;  // true once ROM boot signatures seen
+        this._heartbeatTimer   = null;   // setTimeout handle for heartbeat watchdog
 
         // Emulation dynamic supervisor & sandboxing state
-        this._restartCount = 0;
-        this._maxRestarts = 3;
-        this._qemuPath = null;
-        this._nicArgs = null;
-        this._proxyPort = null;
-        this._lastGpioValues = new Uint8Array(40).fill(0xFF);
+        this._restartCount     = 0;
+        this._maxRestarts      = 3;
+        this._qemuPath         = null;
+        this._nicArgs          = null;
+        this._proxyPort        = null;
+        this._lastGpioValues   = new Uint8Array(40).fill(0xFF);
 
         // ── Performance diagnostic counters (logged every 1s) ─────────────────
         this._perf = {
-            wsSent: 0,   // WS messages sent this window
-            gpioRaw: 0,   // gpio_change events from worker (pre-dedup)
-            gpioSent: 0,   // GPIO_SYNC forwarded to WS     (post-dedup)
+            wsSent:     0,   // WS messages sent this window
+            gpioRaw:    0,   // gpio_change events from worker (pre-dedup)
+            gpioSent:   0,   // GPIO_SYNC forwarded to WS     (post-dedup)
             workerEvts: 0,   // total _handleWorkerEvent calls
-            logTimer: null,
+            logTimer:   null,
         };
 
         /**
@@ -208,10 +208,10 @@ export default class QemuRunner {
          *  'running'    — firmware sent >SIM:READY<     (set on SIM:READY frame)
          *  'stopped'    — session ended                 (set on kill/exit)
          */
-        this.phase = 'compiling';
+        this.phase        = 'compiling';
 
         // Kept for backward compat — true once 'running'
-        this.isReady = false;
+        this.isReady      = false;
         this.lastActivity = Date.now();
     }
 
@@ -279,10 +279,10 @@ export default class QemuRunner {
      */
     assignSession(newBuildId) {
         const oldId = this.buildId;
-        this.buildId = newBuildId;
-        this._isPooled = false;
-        this._log = new SessionLogger(newBuildId);
-        this.lastActivity = Date.now();
+        this.buildId       = newBuildId;
+        this._isPooled     = false;
+        this._log          = new SessionLogger(newBuildId);
+        this.lastActivity  = Date.now();
         this._log.info(`♻️  Pool runner reassigned from ${oldId.substring(0, 8)} → ${newBuildId.substring(0, 8)}`);
     }
 
@@ -294,10 +294,10 @@ export default class QemuRunner {
         const libName = os.platform() === 'win32' ? 'libqemu-xtensa.dll' : 'libqemu-xtensa.so';
         const envPath = process.env.QEMU_ESP32_LIB;
         if (envPath && fs.existsSync(envPath)) return envPath;
-
+        
         const localPath = path.resolve(__dirname, libName);
         if (fs.existsSync(localPath)) return localPath;
-
+        
         return null;
     }
 
@@ -391,7 +391,7 @@ export default class QemuRunner {
             this._log.error('🔴 Failed to spawn worker:', err.message);
             this.phase = 'stopped';
             this._sendWs({
-                type: 'QEMU_ERROR',
+                type:    'QEMU_ERROR',
                 message: `Failed to start shared-library worker: ${err.message}.`,
             });
             if (!this._destroyed) this.kill();
@@ -495,14 +495,14 @@ export default class QemuRunner {
 
         // ── Start 1-second perf diagnostic counter reset ────────────────────────────
         this._perf.logTimer = setInterval(() => {
-            this._perf.wsSent = 0;
-            this._perf.gpioRaw = 0;
-            this._perf.gpioSent = 0;
+            this._perf.wsSent     = 0;
+            this._perf.gpioRaw    = 0;
+            this._perf.gpioSent   = 0;
             this._perf.workerEvts = 0;
         }, 1000);
 
         const libPath = this._getSharedLibraryPath();
-
+        
         // Dynamic Point Allocation
         const cost = getCost('esp32', 'sim');
         const tag = this._isPooled ? `esp32:hotpool` : `esp32:sim:${this.buildId.substring(0, 8)}`;
@@ -521,36 +521,36 @@ export default class QemuRunner {
             }
 
             this._isSharedLibraryMode = false;
-            this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/bin/qemu-system-xtensa');
+            this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
 
             const startQemu = (proxyPort) => {
                 this._proxyPort = proxyPort;
-
+                
                 // Start TCP Server for UART0
                 this._uartServer = net.createServer((socket) => {
                     this._log.info('📡 QEMU connected to UART0 TCP bridge');
                     this._uartSocket = socket;
-
+                    
                     socket.setEncoding('utf8');
                     socket.on('data', (chunk) => {
                         this.lastActivity = Date.now();
                         this._handleSerialData(chunk);
                     });
-
+                    
                     socket.on('error', (err) => {
                         this._log.warn('UART0 socket error:', err.message);
                     });
-
+                    
                     socket.on('close', () => {
                         this._uartSocket = null;
                     });
                 });
-
+                
                 this._uartServer.on('error', (err) => {
                     this._log.error('❌ Failed to create UART0 TCP server:', err.message);
                     this._sendWs({ type: 'QEMU_ERROR', message: `Failed to create serial bridge: ${err.message}` });
                 });
-
+                
                 this._uartServer.listen(0, '127.0.0.1', () => {
                     this._uartPort = this._uartServer.address().port;
                     this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
@@ -560,7 +560,7 @@ export default class QemuRunner {
                     });
                 });
             };
-
+            
             // Start the network proxy first
             this._proxy = new NetworkProxy(this.buildId, startQemu);
             this._proxy.start();
@@ -651,7 +651,7 @@ export default class QemuRunner {
         if (!this._isSharedLibraryMode) {
             const cmd = `<ADC:${pin}:${value}>\n`;
             if (this._uartSocket && !this._uartSocket.destroyed) {
-                try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) { }
+                try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) {}
             }
         } else {
             // Shared-lib mode: set_adc_raw already exists
@@ -898,9 +898,9 @@ export default class QemuRunner {
                 '-nographic',
                 '-machine', 'esp32',
                 '-m', '4M',
-                '-drive', `file=${this.flashImage},if=mtd,format=raw`,
-                '-serial', `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
-                '-serial', `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
+                '-drive',   `file=${this.flashImage},if=mtd,format=raw`,
+                '-serial',  `tcp:127.0.0.1:${uartPort}`,      // UART0 → Node.js TCP Server
+                '-serial',  `tcp:127.0.0.1:${proxyPort}`,     // UART1 → NetworkProxy
                 ...nicArgs,
             ];
 
@@ -944,7 +944,7 @@ export default class QemuRunner {
         // ── Normal or unexpected exit ───────────────────────────────────────────
         this._process.on('close', (code, signal) => {
             this._log.info(`🛑 QEMU exited (code=${code}, signal=${signal}, destroyed=${this._destroyed})`);
-
+            
             if (!this._destroyed) {
                 // Unexpected exit - trigger crash recovery
                 this._handleCrash(`Process exited unexpectedly (code=${code ?? 'unknown'}, signal=${signal ?? 'none'})`);
@@ -966,9 +966,9 @@ export default class QemuRunner {
             this._log.error('🔴 Failed to spawn QEMU:', err.message);
             this.phase = 'stopped';
             this._sendWs({
-                type: 'QEMU_ERROR',
+                type:    'QEMU_ERROR',
                 message: `Failed to start QEMU: ${err.message}. ` +
-                    `Is qemu-system-xtensa installed and in PATH?`,
+                         `Is qemu-system-xtensa installed and in PATH?`,
             });
             this._stopHeartbeatWatchdog();
             if (!this._destroyed) this._cleanupPipes();
@@ -1047,7 +1047,7 @@ export default class QemuRunner {
                 message: 'ESP32 simulator crashed repeatedly. Emulation aborted.'
             });
             this._sendWs({
-                type: 'QEMU_ERROR',
+                type:    'QEMU_ERROR',
                 message: `QEMU simulator terminated: ${reason}. Repeated crashes detected.`,
             });
             this.kill();
@@ -1137,10 +1137,10 @@ export default class QemuRunner {
             // Flush any buffered SPI bytes before changing GPIO pin state
             this._flushSpi();
 
-            const pin = parseInt(gpioMatch[1], 10);
+            const pin   = parseInt(gpioMatch[1], 10);
             const value = parseInt(gpioMatch[2], 10);
 
-
+            
             // Deduplicate GPIO state changes to prevent WebSocket flooding
             if (pin >= 0 && pin < this._lastGpioValues.length) {
                 if (this._lastGpioValues[pin] !== value) {
@@ -1179,7 +1179,7 @@ export default class QemuRunner {
         const ledcMatch = line.match(LEDC_PATTERN);
         if (ledcMatch) {
             const channel = parseInt(ledcMatch[1], 10);
-            const duty = parseInt(ledcMatch[2], 10);
+            const duty    = parseInt(ledcMatch[2], 10);
             const duty_pct = Math.max(0, Math.min(1.0, duty / 8191.0));
             this._sendWs({ type: 'LEDC_SYNC', channel, duty, duty_pct });
             return;
@@ -1190,7 +1190,7 @@ export default class QemuRunner {
         const ledcAttachMatch = line.match(/>LEDC_ATTACH:(\d+):(\d+)</);
         if (ledcAttachMatch) {
             const channel = parseInt(ledcAttachMatch[1], 10);
-            const pin = parseInt(ledcAttachMatch[2], 10);
+            const pin     = parseInt(ledcAttachMatch[2], 10);
             this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `ledc_${channel}` });
             this._sendWs({ type: 'LEDC_ATTACH', channel, pin });
             return;
@@ -1201,7 +1201,7 @@ export default class QemuRunner {
         const pcntInitMatch = line.match(/>PCNT_INIT:(\d+):(\d+)</);
         if (pcntInitMatch) {
             const unit = parseInt(pcntInitMatch[1], 10);
-            const pin = parseInt(pcntInitMatch[2], 10);
+            const pin  = parseInt(pcntInitMatch[2], 10);
             this._sendWs({ type: 'GPIO_ROUTING', gpio: pin, signal_id: `pcnt_${unit}` });
             this._sendWs({ type: 'PCNT_INIT', unit, pin });
             return;
@@ -1211,7 +1211,7 @@ export default class QemuRunner {
         // >TWAI:<id_hex>:<dlc>:<data_hex>< — CAN 2.0B frame TX from firmware
         const twaiMatch = line.match(TWAI_PATTERN);
         if (twaiMatch) {
-            const id = parseInt(twaiMatch[1], 16);
+            const id  = parseInt(twaiMatch[1], 16);
             const dlc = parseInt(twaiMatch[2], 16);
             const hexStr = twaiMatch[3] || '';
             const data = [];
@@ -1243,7 +1243,7 @@ export default class QemuRunner {
         // >PCNT:<unit>:<count>< — pulse counter current value
         const pcntMatch = line.match(PCNT_PATTERN);
         if (pcntMatch) {
-            const unit = parseInt(pcntMatch[1], 10);
+            const unit  = parseInt(pcntMatch[1], 10);
             const count = parseInt(pcntMatch[2], 10);
             this._sendWs({ type: 'PCNT_UPDATE', unit, count });
             return;
@@ -1269,7 +1269,7 @@ export default class QemuRunner {
         const i2cReadMatch = line.match(I2C_READ_PATTERN);
         if (i2cReadMatch) {
             const addr = parseInt(i2cReadMatch[1], 16);
-            const qty = parseInt(i2cReadMatch[2], 16);
+            const qty  = parseInt(i2cReadMatch[2], 16);
             // Also notify frontend so it can update component state
             this._sendWs({ type: 'I2C_READ_REQ', addr, qty });
             // Inject cached response if available
@@ -1277,9 +1277,9 @@ export default class QemuRunner {
             if (respBytes && respBytes.length > 0) {
                 const hex = Array.from(respBytes.slice(0, qty))
                     .map(b => b.toString(16).padStart(2, '0')).join('');
-                const cmd = `<I2C_RESP:${addr.toString(16).padStart(2, '0')}:${hex}>\n`;
+                const cmd = `<I2C_RESP:${addr.toString(16).padStart(2,'0')}:${hex}>\n`;
                 if (this._uartSocket && !this._uartSocket.destroyed) {
-                    try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) { }
+                    try { this._uartSocket.write(Buffer.from(cmd)); } catch (e) {}
                 }
             }
             return;
@@ -1334,7 +1334,7 @@ export default class QemuRunner {
         switch (cmd) {
             case 'READY':
                 if (this.phase === 'running') return; // Idempotent
-                this.phase = 'running';
+                this.phase   = 'running';
                 this.isReady = true;
                 this._log.info('✅ FIRMWARE_READY — device handshake received');
                 this._sendWs({ type: 'FIRMWARE_READY' });
@@ -1367,10 +1367,10 @@ export default class QemuRunner {
                 const colonIdx2 = payload.indexOf(':', colonIdx1 + 1); // after sampleRate
                 const colonIdx3 = payload.indexOf(':', colonIdx2 + 1); // after bits
                 if (colonIdx3 < 0) break;
-                const port = parseInt(payload.slice(0, colonIdx1), 10);
+                const port       = parseInt(payload.slice(0, colonIdx1), 10);
                 const sampleRate = parseInt(payload.slice(colonIdx1 + 1, colonIdx2), 10) || 44100;
-                const bits = parseInt(payload.slice(colonIdx2 + 1, colonIdx3), 10) || 16;
-                const pcm_b64 = payload.slice(colonIdx3 + 1);
+                const bits       = parseInt(payload.slice(colonIdx2 + 1, colonIdx3), 10) || 16;
+                const pcm_b64    = payload.slice(colonIdx3 + 1);
                 if (pcm_b64) {
                     this._sendWs({ type: 'I2S_AUDIO', port, sampleRate, bits, pcm_b64 });
                 }
@@ -1380,7 +1380,7 @@ export default class QemuRunner {
             case 'LOG': {
                 // payload = "<level>:<message>"
                 const colonIdx = payload.indexOf(':');
-                const level = colonIdx > 0 ? payload.slice(0, colonIdx) : 'INFO';
+                const level   = colonIdx > 0 ? payload.slice(0, colonIdx)  : 'INFO';
                 const message = colonIdx > 0 ? payload.slice(colonIdx + 1) : payload;
                 this._sendWs({ type: 'SERIAL_LOG', level, message });
                 break;
