@@ -12,7 +12,8 @@ const submissionSchema = new mongoose.Schema({
   attachments: [{ type: String, trim: true }],
   files: [{ type: String, trim: true }],
   score: { type: Number },
-  feedback: { type: String }
+  feedback: { type: String },
+  gradingReport: { type: mongoose.Schema.Types.Mixed }
 }, { timestamps: true });
 
 submissionSchema.index({ assignmentId: 1, studentId: 1 }, { unique: true });

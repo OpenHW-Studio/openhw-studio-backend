@@ -78,6 +78,10 @@ const UserProgressSchema = new mongoose.Schema(
 
 // ─── Virtuals ─────────────────────────────────────────────────────────────────
 
+UserProgressSchema.virtual('unlockedComponentTypes').get(function () {
+  return this.unlockedComponents
+})
+
 UserProgressSchema.virtual('completedProjectCount').get(function () {
   return this.completedProjects.length
 })

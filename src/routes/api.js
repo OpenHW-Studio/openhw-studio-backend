@@ -7,6 +7,8 @@ import userRoutes from './user.js';
 import compileRoutes from './compile.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
+import gamificationRouter from './gamification.js'
+import projectBankRouter from './projectBank.js'
 
 import { requireAdmin } from '../middleware/authorization.js';
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
@@ -44,6 +46,11 @@ import { handleVisitorPingExpress } from '../services/telemetryService.js';
 
 // Public Telemetry
 router.post('/public/ping', handleVisitorPingExpress);
+import {
+  getAdminGlobalAdventureConfig,
+  upsertAdminGlobalAdventureConfig,
+  getGlobalAdventureConfig,
+} from '../controllers/globalAdventureController.js';
 
 router.get('/admin/deployments/pending', protectRoute, requireAdmin, getPendingDeployments);
 router.post('/admin/deployments/approve', protectRoute, requireAdmin, approveDeployment);
@@ -63,7 +70,10 @@ router.get('/admin/resource-status', protectRoute, requireAdmin, getResourceStat
 router.get('/admin/host-status', protectRoute, requireAdmin, getHostStatus);
 router.post('/admin/recalibrate', protectRoute, requireAdmin, recalibrate);
 router.get('/admin/recalibrate/scripts', protectRoute, requireAdmin, getCalibrationScripts);
-router.put('/admin/recalibrate/scripts', protectRoute, requireAdmin, updateCalibrationScripts);
+router.put('/admin/recalibrate/scripts', protectRoute, requireAdmin, updateCalibrationScripts);router.get('/admin/adventure/config', protectRoute, requireAdmin, getAdminGlobalAdventureConfig);
+router.put('/admin/adventure/config', protectRoute, requireAdmin, upsertAdminGlobalAdventureConfig);
+router.get('/adventure/config', protectRoute, getGlobalAdventureConfig);
+
 // Sub-repo webhooks and notifications
 router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth required for GitHub Actions)
 router.get('/admin/deployments/notifications', protectRoute, requireAdmin, getNotifications);
@@ -85,7 +95,9 @@ router.post('/validation/run', validateCircuitController);
 router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
-router.use('/progress', progressRouter)
+router.use('/progress', progressRouter);
+router.use('/gamification', gamificationRouter);
+router.use('/project-bank', projectBankRouter);
 
 // Public System Status (for landing page)
 router.get('/public/system-status', getPublicSystemStatus);
