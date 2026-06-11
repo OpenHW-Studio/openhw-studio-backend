@@ -328,7 +328,7 @@ export const getAssignmentSubmissions = async (req, res) => {
     }
 
     const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
-      "_id title dueDate createdAt",
+      "_id title dueDate createdAt isAutogradingEnabled autogradingKey",
     );
 
     if (!assignment) {
@@ -487,7 +487,7 @@ export const createAssignment = async (req, res) => {
     }
 
     const { classId } = req.params;
-    const { title, description, templateProjectId, templateShareId, templateUrl, dueDate, attachments, files, links } = req.body || {};
+    const { title, description, templateProjectId, templateShareId, templateUrl, dueDate, attachments, files, links, isAutogradingEnabled, autogradingKey } = req.body || {};
 
     if (!isValidObjectId(classId)) {
       return res.status(400).json({ message: "Invalid classId." });
@@ -538,6 +538,10 @@ export const createAssignment = async (req, res) => {
       links: sanitizedLinks,
       attachments: sanitizedAttachments,
       createdBy: req.user._id,
+      isAutogradingEnabled: isAutogradingEnabled === true,
+      autogradingKey: typeof autogradingKey === "string" && autogradingKey.trim()
+        ? autogradingKey.trim()
+        : undefined,
     });
 
     await Class.findByIdAndUpdate(classId, {
@@ -927,7 +931,7 @@ export const updateAssignment = async (req, res) => {
     }
 
     const { classId, assignmentId } = req.params;
-    const { title, description, dueDate, attachments, files, links, templateShareId, templateUrl } = req.body || {};
+    const { title, description, dueDate, attachments, files, links, templateShareId, templateUrl, isAutogradingEnabled, autogradingKey } = req.body || {};
 
     if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
       return res.status(400).json({ message: "Invalid classId or assignmentId." });
@@ -982,6 +986,14 @@ export const updateAssignment = async (req, res) => {
       updates.templateShareId = typeof templateShareId === "string" && templateShareId.trim()
         ? templateShareId.trim()
         : (nextTemplateUrl.match(/\/simulator\/share\/([^/?#]+)/)?.[1] || "");
+    }
+    if (isAutogradingEnabled !== undefined) {
+      updates.isAutogradingEnabled = isAutogradingEnabled === true;
+    }
+    if (autogradingKey !== undefined) {
+      updates.autogradingKey = typeof autogradingKey === "string" && autogradingKey.trim()
+        ? autogradingKey.trim()
+        : "";
     }
 
     const updatedAssignment = await Assignment.findByIdAndUpdate(
@@ -1183,7 +1195,7 @@ export const getMyAssignmentSubmission = async (req, res) => {
     }
 
     const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
-      "_id title description dueDate createdAt links attachments files templateShareId templateUrl",
+      "_id title description dueDate createdAt links attachments files templateShareId templateUrl isAutogradingEnabled autogradingKey",
     );
 
     if (!assignment) {
@@ -1335,6 +1347,74 @@ export const getComments = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to fetch comments.", error: error.message });
+  }
+};
+
+export const gradeSubmission = async (req, res) => {
+  try {
+    const { classId, assignmentId } = req.params;
+    const { score, feedback, gradingReport } = req.body || {};
+
+    if (!isValidObjectId(classId) || !isValidObjectId(assignmentId)) {
+      return res.status(400).json({ message: "Invalid classId or assignmentId." });
+    }
+
+    const classroom = await Class.findById(classId).select("teacher students");
+    if (!classroom) {
+      return res.status(404).json({ message: "Class not found." });
+    }
+
+    const isClassTeacher = classroom.teacher.toString() === req.user._id.toString();
+    const isSubmittingStudent = classroom.students.some(
+      (sid) => sid.toString() === req.user._id.toString()
+    );
+
+    if (req.user.role !== "admin" && !isClassTeacher && !isSubmittingStudent) {
+      return res.status(403).json({ message: "You are not part of this class." });
+    }
+
+    const assignment = await Assignment.findOne({ _id: assignmentId, classId }).select(
+      "_id isAutogradingEnabled"
+    );
+    if (!assignment) {
+      return res.status(404).json({ message: "Assignment not found." });
+    }
+
+    const submission = await Submission.findOne({ assignmentId, studentId: req.user._id });
+    if (!submission) {
+      return res.status(404).json({ message: "Submission not found." });
+    }
+
+    const updates = {};
+    if (score !== undefined) {
+      const parsed = Number(score);
+      if (Number.isNaN(parsed) || parsed < 0 || parsed > 100) {
+        return res.status(400).json({ message: "Score must be a number between 0 and 100." });
+      }
+      updates.score = parsed;
+    }
+    if (feedback !== undefined) {
+      updates.feedback = typeof feedback === "string" ? feedback.trim() : "";
+    }
+    if (gradingReport !== undefined) {
+      updates.gradingReport = gradingReport;
+    }
+
+    const updated = await Submission.findByIdAndUpdate(
+      submission._id,
+      updates,
+      { new: true }
+    ).populate("studentId", "name email role image");
+
+    return res.status(200).json({
+      message: "Grading saved successfully.",
+      submission: updated,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      message: "Failed to save grade.",
+      error: error.message,
+    });
   }
 };
 

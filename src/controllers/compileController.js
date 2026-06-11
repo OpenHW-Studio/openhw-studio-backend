@@ -16,9 +16,7 @@ import { getCost } from '../services/resourceManager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
-const ARDUINO_CLI_PATH = 'e:\\FOSSEE\\bin\\arduino-cli.exe';
+const ARDUINO_CLI_PATH = 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
 const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
@@ -703,9 +701,9 @@ function resolveNinjaExecutable() {
     return '';
 }
 
-function execFileAsync(cmd, args, options = {}) {
+function execFileAsync(cmd, args) {
     return new Promise((resolve, reject) => {
-        execFile(cmd, args, options, (error, stdout, stderr) => {
+        execFile(cmd, args, (error, stdout, stderr) => {
             if (error) return reject(new Error(stderr || stdout || error.message));
             resolve({ stdout, stderr });
         });
@@ -956,21 +954,6 @@ export const compileArduinoCode = async (req, res) => {
     }
 
     let targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
-    
-    if (Array.isArray(files)) {
-        const libFile = files.find(f => f.name === 'library.txt' || f.name === 'libraries.txt');
-        if (libFile && typeof libFile.content === 'string') {
-            const requestedLibraries = libFile.content.split('\n').map(l => l.trim()).filter(Boolean);
-            if (requestedLibraries.length > 0) {
-                console.log(`[Compile] Installing requested libraries: ${requestedLibraries.join(', ')}`);
-                try {
-                    await execFileAsync(ARDUINO_CLI_PATH, ['lib', 'install', ...requestedLibraries], { timeout: 60000 });
-                } catch (e) {
-                    console.error("Library install error:", e);
-                }
-            }
-        }
-    }
     
     const normalizedBuilder = String(builder || '').trim() || 'arduino-cli';
     const safeSketchName = sanitizeSketchName(sketchName || 'sketch');

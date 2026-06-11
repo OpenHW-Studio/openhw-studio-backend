@@ -34,7 +34,14 @@ if (googleClientId && googleClientSecret &&
                             user.googleId = profile.id;
                             await user.save();
                         }
-                        // Never overwrite an existing user's role on login
+                        
+                        // Auto-upgrade existing user to admin if email is in VITE_ADMIN_EMAILS
+                        const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+                        if (adminEmails.includes(email.toLowerCase()) && user.role !== 'admin') {
+                            user.role = 'admin';
+                            await user.save();
+                        }
+                        
                         return done(null, user);
                     }
 
@@ -42,7 +49,13 @@ if (googleClientId && googleClientSecret &&
                     // Read the state that was attached in the callback route
                     const state = req.oauthState || {};
                     const allowedRoles = ['student', 'teacher'];
-                    const role = allowedRoles.includes(state.role) ? state.role : 'student';
+                    let role = allowedRoles.includes(state.role) ? state.role : 'student';
+
+                    // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
+                    const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+                    if (adminEmails.includes(email.toLowerCase())) {
+                        role = 'admin';
+                    }
 
                     // Google provides name, email, and picture — use picture as default image
                     const picture = profile.photos?.[0]?.value || '';

@@ -14,6 +14,7 @@ import {
   getAssignmentSubmissions,
   getMyAssignmentSubmission,
   upsertAssignmentSubmission,
+  gradeSubmission,
   getAssignments,
   createNotice,
   updateNotice,
@@ -24,8 +25,18 @@ import {
   uploadClassroomAssets,
   createComment,
   getComments,
-  deleteComment
+  deleteComment,
 } from "../controllers/classroomController.js";
+import {
+  getClassAdventureConfig,
+  upsertClassAdventureConfig,
+  getResolvedClassAdventure,
+  getMyClassAdventureProgress,
+  postClassAdventureProgressEvent,
+  getClassAdventureStudentProgress,
+  unlockAdventureComponents,
+  getAdventureUnlocks,
+} from "../controllers/classAdventureController.js";
 import { classroomUpload } from "../middleware/classroomUpload.js";
 
 const router = Router();
@@ -44,6 +55,7 @@ router.get("/assignments", protectRoute, getAssignments);
 router.get("/:classId/assignments/:assignmentId/submissions", protectRoute, getAssignmentSubmissions);
 router.get("/:classId/assignments/:assignmentId/submission", protectRoute, getMyAssignmentSubmission);
 router.post("/:classId/assignments/:assignmentId/submission", protectRoute, upsertAssignmentSubmission);
+router.post("/:classId/assignments/:assignmentId/submission/grade", protectRoute, gradeSubmission);
 router.delete("/:classId/assignments/:assignmentId", protectRoute, deleteAssignment);
 
 router.post("/:classId/notices", protectRoute, createNotice);
@@ -54,6 +66,15 @@ router.delete("/:classId/notices/:noticeId", protectRoute, deleteNotice);
 router.post("/:classId/comments", protectRoute, createComment);
 router.get("/:classId/comments", protectRoute, getComments);
 router.delete("/:classId/comments/:commentId", protectRoute, deleteComment);
+
+router.get("/:classId/adventure/config", protectRoute, getClassAdventureConfig);
+router.put("/:classId/adventure/config", protectRoute, upsertClassAdventureConfig);
+router.get("/:classId/adventure", protectRoute, getResolvedClassAdventure);
+router.get("/:classId/adventure/progress/me", protectRoute, getMyClassAdventureProgress);
+router.post("/:classId/adventure/progress/events", protectRoute, postClassAdventureProgressEvent);
+router.get("/:classId/adventure/progress/students", protectRoute, getClassAdventureStudentProgress);
+router.get("/:classId/adventure/unlocks", protectRoute, getAdventureUnlocks);
+router.post("/:classId/adventure/unlocks", protectRoute, unlockAdventureComponents);
 
 router.get("/:classId", protectRoute, getClassroomById);
 router.put("/:classId", protectRoute, updateClassroom);

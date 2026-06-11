@@ -15,6 +15,26 @@ const CACHE_DIRS = [
 ];
 
 /**
+ * Recursively sum the byte size of all files in a directory.
+ * This gives the real on-disk cost of a cache entry, not just the binary.
+ */
+function _folderSize(dirPath) {
+    let total = 0;
+    try {
+        for (const name of fs.readdirSync(dirPath)) {
+            const fullPath = path.join(dirPath, name);
+            const st = fs.statSync(fullPath);
+            if (st.isDirectory()) {
+                total += _folderSize(fullPath);
+            } else {
+                total += st.size;
+            }
+        }
+    } catch { /* ignore unreadable entries */ }
+    return total;
+}
+
+/**
  * Calculates total size of the compilation cache pool and evicts least recently
  * used entries if total usage exceeds 900 MB, down to 800 MB.
  * Runs asynchronously to prevent blocking request threads.
@@ -50,8 +70,10 @@ export async function pruneUniversalCachePool() {
 
                 if (!folderStat || !folderStat.isDirectory()) continue;
 
-                // Use binary size if exists, otherwise folder stats
-                const entrySize = binaryStat ? binaryStat.size : 1024; // fallback
+                // Walk the entire folder so we count .elf, .map, .bin etc — not just the binary.
+                // Previously only the binary file (~4 MB) was counted, causing severe undercounting
+                // and the pruner threshold was never reached even when the filesystem was full.
+                const entrySize = _folderSize(folderPath);
                 totalSize += entrySize;
 
                 allCachedEntries.push({
@@ -66,12 +88,16 @@ export async function pruneUniversalCachePool() {
         const sizeInMb = totalSize / (1024 * 1024);
         console.log(`[Compile Cache Pool] Current total storage usage: ${sizeInMb.toFixed(2)} MB`);
 
-        // If cache exceeds 900 MB (943,718,400 bytes), prune down to 800 MB (838,860,800 bytes)
-        const limitBytes = 900 * 1024 * 1024;
-        const targetBytes = 800 * 1024 * 1024;
+        // Each Docker container has its own isolated /app/builds tmpfs, so this
+        // limit applies per-container (esp32-worker and stm32-worker independently).
+        // Cap cache at 500 MB; prune down to 400 MB when exceeded.
+        // This leaves ≥1.5 GB headroom on esp32-worker (2 GB tmpfs)
+        // and ≥500 MB headroom on stm32-worker (1 GB tmpfs) for active builds.
+        const limitBytes  = 500 * 1024 * 1024; // 500 MB
+        const targetBytes = 400 * 1024 * 1024; // 400 MB
 
         if (totalSize > limitBytes) {
-            console.log(`[Compile Cache Pool] ⚠️ Storage limit exceeded (${sizeInMb.toFixed(2)} MB > 900 MB). Starting LRU eviction...`);
+            console.log(`[Compile Cache Pool] ⚠️ Storage limit exceeded (${sizeInMb.toFixed(2)} MB > 500 MB). Starting LRU eviction...`);
             
             // Sort entries ascending (oldest first)
             allCachedEntries.sort((a, b) => a.mtimeMs - b.mtimeMs);

@@ -24,7 +24,7 @@ import WebSocket, { WebSocketServer } from 'ws';
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
 /** Maximum number of messages buffered per session (prevents OOM). */
-const MAX_PENDING_BUFFER = 512;
+const MAX_PENDING_BUFFER = 32768;
 
 /**
  * Maximum age (ms) of a pending buffer whose client never showed up.
@@ -100,7 +100,16 @@ class WebSocketManager {
             return;
         }
 
-        this.wss = new WebSocketServer({ server: httpServer });
+        // Use noServer so we can filter out paths owned by other WS handlers
+        // (e.g. live simulation at /api/live-simulations/ws).
+        this.wss = new WebSocketServer({ noServer: true });
+        httpServer.on('upgrade', (request, socket, head) => {
+            const url = new URL(request.url, 'http://localhost');
+            if (url.pathname === '/api/live-simulations/ws') return;
+            this.wss.handleUpgrade(request, socket, head, (ws) => {
+                this.wss.emit('connection', ws, request);
+            });
+        });
  
         this.wss.on('connection', (ws, req) => {
             const clientIp = req.socket.remoteAddress || 'unknown';
@@ -256,9 +265,14 @@ class WebSocketManager {
             if (entry.msgs.length >= MAX_PENDING_BUFFER) {
                 // Drop the oldest message to make room (ring-buffer behaviour)
                 entry.msgs.shift();
-                console.warn(
-                    `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
-                );
+                
+                const now = Date.now();
+                if (!entry.lastOverflowLog || now - entry.lastOverflowLog > 5000) {
+                    console.warn(
+                        `[WSManager] ⚠️  Pending buffer overflow for ${buildId} — oldest message dropped`,
+                    );
+                    entry.lastOverflowLog = now;
+                }
             }
             entry.msgs.push(payload);
         }

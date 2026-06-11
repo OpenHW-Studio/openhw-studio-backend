@@ -11,7 +11,9 @@ const assignmentSchema = new mongoose.Schema({
   links: [{ type: String, trim: true }],
   attachments: [{ type: String, trim: true }],
   files: [{ type: String, trim: true }],
-  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true }
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+  isAutogradingEnabled: { type: Boolean, default: false },
+  autogradingKey: { type: String, trim: true }
 }, { timestamps: true });
 
 export default mongoose.model("Assignment", assignmentSchema);
