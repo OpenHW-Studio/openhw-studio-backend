@@ -20,8 +20,11 @@
     ],
     "cached": [
         "AccelStepper",
+        "DallasTemperature",
         "ESP32Servo",
         "GxEPD2",
-        "LedControl"
+        "LedControl",
+        "LiquidCrystal",
+        "OneWire"
     ]
 }
