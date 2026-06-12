@@ -20,8 +20,10 @@
     ],
     "cached": [
         "AccelStepper",
-        "ESP32Servo",
-        "GxEPD2",
-        "LedControl"
+        "Adafruit BMP085 Library",
+        "Adafruit PCD8544 Nokia 5110 LCD library",
+        "FastLED",
+        "LiquidCrystal",
+        "SevSeg"
     ]
 }
