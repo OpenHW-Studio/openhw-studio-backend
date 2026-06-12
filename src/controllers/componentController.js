@@ -254,8 +254,18 @@ export const getComponentsVersion = (req, res) => {
             if (!fs.statSync(itemPath).isDirectory()) continue;
             const manifestPath = path.join(itemPath, 'manifest.json');
             if (!fs.existsSync(manifestPath)) continue;
-            const mtime = fs.statSync(manifestPath).mtimeMs;
-            hashInput += `${item}:${mtime}|`;
+            
+            let maxMtime = 0;
+            const dirFiles = fs.readdirSync(itemPath);
+            for (const file of dirFiles) {
+                const filePath = path.join(itemPath, file);
+                const stat = fs.statSync(filePath);
+                if (stat.isFile() && stat.mtimeMs > maxMtime) {
+                    maxMtime = stat.mtimeMs;
+                }
+            }
+            
+            hashInput += `${item}:${maxMtime}|`;
             count++;
         }
 

@@ -331,6 +331,7 @@ for (const dir of [TEMP_DIR, BUILDS_DIR, path.join(TEMP_DIR, 'arduino-cache')]) 
 
 // ─── WebSocket message handler (installed once per connection) ────────────────
 
+if (process.env.ROLE !== 'main') {
 wsManager.onClientConnection((ws) => {
     ws.on('message', (rawMsg) => {
         let data;
@@ -529,6 +530,7 @@ wsManager.onClientConnection((ws) => {
         console.log('[Compile] 📡 Client disconnected — QEMU session preserved for reconnect window');
     });
 });
+}
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
@@ -1002,6 +1004,9 @@ export const compileArduinoCode = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
+                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                        continue;
+                    }
                     if (fs.existsSync(src)) {
                         const destPath = path.join(sketchDir, dst);
                         const rawBytes = fs.readFileSync(src);
@@ -1186,6 +1191,9 @@ export const compileStart = async (req, res) => {
 
             if (!isSharedLibraryMode) {
                 for (const { src, dst } of SHIM_HEADERS) {
+                    if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
+                        continue;
+                    }
                     if (fs.existsSync(src)) {
                         const destPath = path.join(sketchDir, dst);
                         const rawBytes = fs.readFileSync(src);

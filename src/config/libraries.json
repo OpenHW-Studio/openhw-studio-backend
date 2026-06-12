@@ -15,7 +15,8 @@
         "Ticker",
         "DHT sensor library",
         "SparkFun MAX3010x Pulse and Proximity Sensor Library",
-        "ESP32Servo"
+        "AccelStepper",
+        "GxEPD2"
     ],
     "cached": [
         "AccelStepper",

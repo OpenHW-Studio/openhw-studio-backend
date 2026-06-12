@@ -32,6 +32,8 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-$VITE_GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
       - ESP32_WORKER_HTTP_URL=http://openhw-esp32-worker:5001
@@ -67,7 +69,7 @@ services:
       - ./persistent-data/data:/app/data
     tmpfs:
       - /app/temp:size=1G
-      - /app/builds:size=512M
+      - /app/builds:size=2G
     deploy:
       resources:
         limits:
@@ -86,12 +88,27 @@ services:
       - ./persistent-data/data:/app/data
     tmpfs:
       - /app/temp:size=1G
-      - /app/builds:size=512M
+      - /app/builds:size=1G
     deploy:
       resources:
         limits:
           cpus: '2.0'
           memory: 2.5G
+
+  network-gateway:
+    image: ${DOCKER_USERNAME}/openhw-network-gateway:${BACKEND_TAG:-develop}
+    container_name: openhw-network-gateway
+    restart: always
+    environment:
+      - PORT=5099
+      - GATEWAY_MODE=public
+    ports:
+      - "5099:5099"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
 
   frontend:
     image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}

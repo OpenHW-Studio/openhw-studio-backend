@@ -31,6 +31,7 @@ import os from 'os';
 import net from 'net';
 import wsManager from './websocketManager.js';
 import NetworkProxy from './networkProxy.js';
+import GatewayProxy from './gatewayProxy.js';
 import { getCost, acquirePoints, releasePoints } from '../../services/resourceManager.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -521,10 +522,8 @@ export default class QemuRunner {
 
             this._isSharedLibraryMode = false;
             this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
-            this._nicArgs  = this._buildNicArgs();
 
-            // Start the network proxy first
-            this._proxy = new NetworkProxy(this.buildId, (proxyPort) => {
+            const startQemu = (proxyPort) => {
                 this._proxyPort = proxyPort;
                 
                 // Start TCP Server for UART0
@@ -555,9 +554,15 @@ export default class QemuRunner {
                 this._uartServer.listen(0, '127.0.0.1', () => {
                     this._uartPort = this._uartServer.address().port;
                     this._log.info(`🔌 UART0 TCP server listening on port ${this._uartPort}`);
-                    this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, proxyPort, this._uartPort);
+                    });
                 });
-            });
+            };
+            
+            // Start the network proxy first
+            this._proxy = new NetworkProxy(this.buildId, startQemu);
             this._proxy.start();
         }).catch(err => {
             this._log.error('Failed to acquire simulation points:', err.message);
@@ -865,23 +870,13 @@ export default class QemuRunner {
     // ─────────────────────────────────────────────────────────────────────────
 
     /**
-     * Returns the -nic args for QEMU based on the WIFI_MODE env var.
-     *
-     *  slirp (default) — userspace NAT, no root needed, macOS + Linux.
-     *  tap             — kernel-level tap0, Linux production only.
+     * Returns the -nic or -netdev args for QEMU.
+     * Uses GatewayProxy if WOKWI_WSS_URL is set, otherwise SLIRP/TAP.
      */
-    _buildNicArgs() {
-        const wifiMode = (process.env.WIFI_MODE || 'slirp').toLowerCase();
-
-        if (wifiMode === 'tap') {
-            const tapIface = process.env.TAP_INTERFACE || 'tap0';
-            this._log.info(`🌐 WiFi mode: TAP (interface=${tapIface})`);
-            // Prerequisites: ip tuntap add tap0 mode tap && ip link set tap0 up
-            return ['-nic', `tap,ifname=${tapIface},script=no,downscript=no,model=open_eth`];
-        }
-
-        this._log.info('🌐 WiFi mode: SLIRP (userspace NAT)');
-        return ['-nic', 'user,model=open_eth'];
+    async _buildNicArgs() {
+        // QEMU ESP32 does NOT use open_eth! Networking is proxied over UART1 via SimulatorWiFi.h
+        // Attaching open_eth causes unhandled interrupts leading to 'Guru Meditation / Cache Error' panics.
+        return [];
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -942,11 +937,8 @@ export default class QemuRunner {
             const text = data.toString().trim();
             if (!text) return;
 
-            // Only surface genuine errors; suppress QEMU info lines
-            const lower = text.toLowerCase();
-            if (lower.includes('error') || lower.includes('failed') || lower.includes('abort')) {
-                this._log.error('🔴 QEMU stderr:', text);
-            }
+            // Surface ALL QEMU stderr to help debug crashes
+            this._log.error('🔴 QEMU stderr:', text);
         });
 
         // ── Normal or unexpected exit ───────────────────────────────────────────
@@ -1039,7 +1031,10 @@ export default class QemuRunner {
                     const libPath = this._getSharedLibraryPath();
                     this._startSharedLibraryWorker(libPath);
                 } else {
-                    this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    this._buildNicArgs().then(nicArgs => {
+                        this._nicArgs = nicArgs;
+                        this._spawnQemu(this._qemuPath, this._nicArgs, this._proxyPort, this._uartPort);
+                    });
                 }
             }, 1500);
         } else {
@@ -1458,8 +1453,13 @@ export default class QemuRunner {
      */
     _cleanupPipes() {
         if (this._proxy) {
-            try { this._proxy.stop(); } catch { /* best-effort */ }
+            this._proxy.stop();
             this._proxy = null;
+        }
+
+        if (this._gatewayProxy) {
+            this._gatewayProxy.stop();
+            this._gatewayProxy = null;
         }
 
         if (this._uartSocket && !this._uartSocket.destroyed) {
