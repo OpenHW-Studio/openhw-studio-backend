@@ -16,15 +16,13 @@
         "DHT sensor library",
         "SparkFun MAX3010x Pulse and Proximity Sensor Library",
         "AccelStepper",
-        "GxEPD2"
-    ],
-    "cached": [
-        "AccelStepper",
+        "GxEPD2",
         "DallasTemperature",
         "ESP32Servo",
-        "GxEPD2",
         "LedControl",
         "LiquidCrystal",
         "OneWire"
+    ],
+    "cached": [
     ]
 }
