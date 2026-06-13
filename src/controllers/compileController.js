@@ -1382,7 +1382,7 @@ export const flashFirmware = (req, res) => {
         '--verify',
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+    if (Number.isFinite(cleanBaud) && cleanBaud > 0 && String(targetFqbn).toLowerCase().includes('esp32')) {
         args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
     if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
