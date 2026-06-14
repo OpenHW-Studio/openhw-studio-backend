@@ -1398,7 +1398,14 @@ export const flashFirmware = (req, res) => {
                 // Automatically fallback to 57600 baud rate which is used by most cheap clones (Nano Old Bootloader).
                 if (!isRetry && targetFqbn.includes('avr') && outStr.includes('sync byte 0x14')) {
                     console.log('Sync failed at default baud. Auto-retrying at 57600 baud for potential clone bootloader...');
-                    const retryArgs = [...args.filter(a => !a.startsWith('upload.speed='))];
+                    const retryArgs = [];
+                    for (let i = 0; i < args.length; i++) {
+                        if (args[i] === '--upload-property' && args[i + 1] && args[i + 1].startsWith('upload.speed=')) {
+                            i++; // Skip both the flag and the value
+                            continue;
+                        }
+                        retryArgs.push(args[i]);
+                    }
                     retryArgs.push('--upload-property', 'upload.speed=57600');
                     return runFlash(retryArgs, true);
                 }
