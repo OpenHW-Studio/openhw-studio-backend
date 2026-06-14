@@ -1,5 +1,5 @@
-=== ARGS ===
-["upload","--fqbn","arduino:avr:uno","-p","COM18","--input-file","D:\\projects\\fossee\\openhw-studio-backend\\temp\\flash_6eff7c578531d983\\firmware_6eff7c578531d983.hex"]
+=== CMD ===
+arduino-cli "upload" "--fqbn" "arduino:avr:uno" "-p" "COM18" "--input-file" "D:\projects\fossee\openhw-studio-backend\temp\flash_ee8c0b81149130e6\firmware_ee8c0b81149130e6.hex"
 === STDOUT ===
 
 === STDERR ===
@@ -12,7 +12,7 @@ Error: protocol expects sync byte 0x14 but got 0x00
 Failed uploading: uploading error: exit status 1
 
 === ERROR ===
-Command failed: arduino-cli upload --fqbn arduino:avr:uno -p COM18 --input-file D:\projects\fossee\openhw-studio-backend\temp\flash_6eff7c578531d983\firmware_6eff7c578531d983.hex
+Command failed: arduino-cli "upload" "--fqbn" "arduino:avr:uno" "-p" "COM18" "--input-file" "D:\projects\fossee\openhw-studio-backend\temp\flash_ee8c0b81149130e6\firmware_ee8c0b81149130e6.hex"
 
 Error: protocol expects sync byte 0x14 but got 0x10
 Error: programmer is out of sync

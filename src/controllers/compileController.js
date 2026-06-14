@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SerialPort } from 'serialport';
-import { execFile } from 'child_process';
+import { exec, execFile } from 'child_process';
 import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
@@ -1426,14 +1426,20 @@ export const flashFirmware = async (req, res) => {
         args.push('--upload-property', 'upload.disable_flushing=true');
     }
 
-    // Pre-flight sequence to wipe Chrome Web Serial zombie states and flush spamming serial outputs
-    await preFlightReset(cleanPort, cleanBaud);
+    // NOTE: preFlightReset removed — it was causing a double-reset that
+    // confused the bootloader timing. The 4-second frontend delay is
+    // sufficient to let Chrome release the port lock.
 
-    execFile(ARDUINO_CLI_PATH, args, { timeout: 30000 }, (error, stdout, stderr) => {
+    // Use exec (shell) instead of execFile — this matches the exact
+    // environment that works when running arduino-cli from the terminal.
+    const cmdStr = `arduino-cli ${args.map(a => `"${a}"`).join(' ')}`;
+    console.log('[Flash] Running:', cmdStr);
+    
+    exec(cmdStr, { timeout: 30000 }, (error, stdout, stderr) => {
         // Dump log for debugging
         try {
             fs.writeFileSync(path.join(process.cwd(), 'last_avrdude_log.txt'),
-                `=== ARGS ===\n${JSON.stringify(args)}\n=== STDOUT ===\n${stdout}\n=== STDERR ===\n${stderr}\n=== ERROR ===\n${error ? error.message : 'null'}\n=== EXIT CODE ===\n${error ? error.code : 0}\n`);
+                `=== CMD ===\n${cmdStr}\n=== STDOUT ===\n${stdout}\n=== STDERR ===\n${stderr}\n=== ERROR ===\n${error ? error.message : 'null'}\n=== EXIT CODE ===\n${error ? error.code : 0}\n`);
         } catch(e) {}
 
         fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
