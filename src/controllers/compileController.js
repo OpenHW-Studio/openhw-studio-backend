@@ -1382,7 +1382,7 @@ export const flashFirmware = (req, res) => {
         '--verify',
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0 && String(targetFqbn).toLowerCase().includes('esp32')) {
+    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
         args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
     if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
@@ -1390,25 +1390,43 @@ export const flashFirmware = (req, res) => {
         args.push('--upload-property', 'upload.disable_flushing=true');
     }
 
-    execFile(ARDUINO_CLI_PATH, args, (error, stdout, stderr) => {
-        fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-            if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-        });
+    const runFlash = (currentArgs, isRetry = false) => {
+        execFile(ARDUINO_CLI_PATH, currentArgs, (error, stdout, stderr) => {
+            const outStr = stderr || stdout;
+            if (error) {
+                // If it failed with a sync error, and we are flashing an AVR board, and this isn't a retry yet...
+                // Automatically fallback to 57600 baud rate which is used by most cheap clones (Nano Old Bootloader).
+                if (!isRetry && targetFqbn.includes('avr') && outStr.includes('sync byte 0x14')) {
+                    console.log('Sync failed at default baud. Auto-retrying at 57600 baud for potential clone bootloader...');
+                    const retryArgs = [...args.filter(a => !a.startsWith('upload.speed='))];
+                    retryArgs.push('--upload-property', 'upload.speed=57600');
+                    return runFlash(retryArgs, true);
+                }
 
-        if (error) {
-            console.error('Flash error:', stderr || stdout);
-            return res.status(400).json({
-                error: 'Flashing failed',
-                details: stderr || stdout,
+                fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+                    if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
+                });
+
+                console.error('Flash error:', outStr);
+                return res.status(400).json({
+                    error: 'Flashing failed',
+                    details: outStr,
+                });
+            }
+
+            fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+                if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
             });
-        }
 
-        return res.json({
-            ok: true,
-            message: 'Firmware flashed successfully via bootloader uploader.',
-            output: stdout || stderr || '',
+            return res.json({
+                ok: true,
+                message: 'Firmware flashed successfully via bootloader uploader.',
+                output: stdout || stderr || '',
+            });
         });
-    });
+    };
+
+    runFlash(args);
 };
 
 export const listSerialPorts = async (req, res) => {
