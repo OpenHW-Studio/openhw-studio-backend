@@ -1349,40 +1349,29 @@ pico_add_extra_outputs(firmware)
       }));
 };
 
-const preFlightReset = (portName, baudRate) => {
+const waitForPortAccess = (portName, maxAttempts = 15, intervalMs = 1000) => {
     return new Promise((resolve) => {
-        // Open the port, which inherently asserts DTR and RTS on Windows.
-        // We use a high baud rate or the specified one to quickly flush buffers.
-        const port = new SerialPort({ path: portName, baudRate: baudRate || 115200, autoOpen: false });
-        
-        port.open((err) => {
-            if (err) {
-                console.warn(`[PreFlight] Could not open ${portName} for reset:`, err.message);
-                return resolve(); // Proceed anyway, let arduino-cli attempt it
-            }
-
-            console.log(`[PreFlight] Opened ${portName}. Flushing OS buffers...`);
-            // Flush any existing data (e.g. from a spamming Serial.print sketch)
-            port.flush((flushErr) => {
-                if (flushErr) console.warn('[PreFlight] Flush error:', flushErr.message);
-
-                // Force DTR and RTS low to ensure the reset capacitor discharges fully
-                // (Overrides any zombie state left by Chrome Web Serial)
-                port.set({ dtr: false, rts: false }, (setErr) => {
-                    if (setErr) console.warn('[PreFlight] Set signals error:', setErr.message);
-
-                    // Wait 50ms for capacitor to discharge, then close cleanly
-                    setTimeout(() => {
-                        port.close((closeErr) => {
-                            if (closeErr) console.warn('[PreFlight] Close error:', closeErr.message);
-                            console.log(`[PreFlight] Closed ${portName}. Ready for avrdude.`);
-                            // Add a small delay to let Windows fully release the COM handle
-                            setTimeout(resolve, 100);
-                        });
-                    }, 50);
-                });
+        let attempt = 0;
+        const tryCheck = () => {
+            attempt++;
+            // Use PowerShell to test port access without triggering DTR (which resets the board)
+            const checkCmd = `powershell -NoProfile -Command "try { $p = [System.IO.Ports.SerialPort]::new('${portName}', 9600); $p.Open(); $p.Close(); Write-Output 'OK' } catch { Write-Output 'LOCKED' }"`;
+            exec(checkCmd, { timeout: 5000 }, (err, stdout) => {
+                const result = (stdout || '').trim();
+                if (result === 'OK') {
+                    console.log(`[WaitForPort] Port ${portName} is available (attempt ${attempt}).`);
+                    // Give OS a moment after the check
+                    return setTimeout(resolve, 500);
+                }
+                console.log(`[WaitForPort] Attempt ${attempt}/${maxAttempts}: ${portName} not ready — ${result}`);
+                if (attempt >= maxAttempts) {
+                    console.warn(`[WaitForPort] Gave up after ${maxAttempts} attempts. Proceeding anyway.`);
+                    return resolve();
+                }
+                setTimeout(tryCheck, intervalMs);
             });
-        });
+        };
+        tryCheck();
     });
 };
 
@@ -1426,40 +1415,54 @@ export const flashFirmware = async (req, res) => {
         args.push('--upload-property', 'upload.disable_flushing=true');
     }
 
-    // NOTE: preFlightReset removed — it was causing a double-reset that
-    // confused the bootloader timing. The 4-second frontend delay is
-    // sufficient to let Chrome release the port lock.
-
-    // Use exec (shell) instead of execFile — this matches the exact
-    // environment that works when running arduino-cli from the terminal.
-    const cmdStr = `arduino-cli ${args.map(a => `"${a}"`).join(' ')}`;
-    console.log('[Flash] Running:', cmdStr);
+    // Retry loop: Chrome's port release and DTR reset timing can cause the first
+    // attempt to fail. Instead of trying to pre-check (which triggers its own DTR
+    // reset), we simply retry the upload if the first attempt fails.
+    const maxRetries = 3;
+    let retryCount = 0;
     
-    exec(cmdStr, { timeout: 30000 }, (error, stdout, stderr) => {
-        // Dump log for debugging
-        try {
-            fs.writeFileSync(path.join(process.cwd(), 'last_avrdude_log.txt'),
-                `=== CMD ===\n${cmdStr}\n=== STDOUT ===\n${stdout}\n=== STDERR ===\n${stderr}\n=== ERROR ===\n${error ? error.message : 'null'}\n=== EXIT CODE ===\n${error ? error.code : 0}\n`);
-        } catch(e) {}
+    const attemptUpload = () => {
+        const cmdStr = `arduino-cli ${args.map(a => `"${a}"`).join(' ')}`;
+        console.log(`[Flash] Attempt ${retryCount + 1}/${maxRetries}:`, cmdStr);
+        
+        exec(cmdStr, { timeout: 30000 }, (error, stdout, stderr) => {
+            const outStr = stderr || stdout || '';
+            
+            // Dump log for debugging
+            try {
+                fs.writeFileSync(path.join(process.cwd(), 'last_avrdude_log.txt'),
+                    `=== ATTEMPT ${retryCount + 1} ===\n=== CMD ===\n${cmdStr}\n=== STDOUT ===\n${stdout}\n=== STDERR ===\n${stderr}\n=== ERROR ===\n${error ? error.message : 'null'}\n=== EXIT CODE ===\n${error ? error.code : 0}\n`);
+            } catch(e) {}
 
-        fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-            if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-        });
+            if (error) {
+                retryCount++;
+                const isRetryable = outStr.includes('sync byte') || outStr.includes('not in sync') || outStr.includes('Access is denied');
+                
+                if (isRetryable && retryCount < maxRetries) {
+                    console.log(`[Flash] Retryable error detected. Waiting 2s before retry ${retryCount + 1}...`);
+                    return setTimeout(attemptUpload, 2000);
+                }
+                
+                // Final failure
+                fs.rm(flashDir, { recursive: true, force: true }, () => {});
+                console.error('Flash error:', outStr);
+                return res.status(400).json({
+                    error: 'Flashing failed',
+                    details: outStr,
+                });
+            }
 
-        if (error) {
-            console.error('Flash error:', stderr || stdout);
-            return res.status(400).json({
-                error: 'Flashing failed',
-                details: stderr || stdout,
+            // Success!
+            fs.rm(flashDir, { recursive: true, force: true }, () => {});
+            return res.json({
+                ok: true,
+                message: 'Firmware flashed successfully via bootloader uploader.',
+                output: stdout || stderr || '',
             });
-        }
-
-        return res.json({
-            ok: true,
-            message: 'Firmware flashed successfully via bootloader uploader.',
-            output: stdout || stderr || '',
         });
-    });
+    };
+    
+    attemptUpload();
 };
 
 export const listSerialPorts = async (req, res) => {
