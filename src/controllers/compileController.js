@@ -1380,9 +1380,10 @@ export const flashFirmware = (req, res) => {
         '-p', cleanPort,
         '--input-file', hexFile,
         '--verify',
+        '--verbose'
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+    if (Number.isFinite(cleanBaud) && cleanBaud > 0 && String(targetFqbn).toLowerCase().includes('esp32')) {
         args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
     if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
@@ -1407,7 +1408,9 @@ export const flashFirmware = (req, res) => {
                         retryArgs.push(args[i]);
                     }
                     retryArgs.push('--upload-property', 'upload.speed=57600');
-                    return runFlash(retryArgs, true);
+                    return setTimeout(() => {
+                        runFlash(retryArgs, true);
+                    }, 1500);
                 }
 
                 fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
