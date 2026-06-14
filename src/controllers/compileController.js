@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { SerialPort } from 'serialport';
 import { execFile } from 'child_process';
 import crypto from 'crypto';
 import os from 'os';
@@ -1348,7 +1349,44 @@ pico_add_extra_outputs(firmware)
       }));
 };
 
-export const flashFirmware = (req, res) => {
+const preFlightReset = (portName, baudRate) => {
+    return new Promise((resolve) => {
+        // Open the port, which inherently asserts DTR and RTS on Windows.
+        // We use a high baud rate or the specified one to quickly flush buffers.
+        const port = new SerialPort({ path: portName, baudRate: baudRate || 115200, autoOpen: false });
+        
+        port.open((err) => {
+            if (err) {
+                console.warn(`[PreFlight] Could not open ${portName} for reset:`, err.message);
+                return resolve(); // Proceed anyway, let arduino-cli attempt it
+            }
+
+            console.log(`[PreFlight] Opened ${portName}. Flushing OS buffers...`);
+            // Flush any existing data (e.g. from a spamming Serial.print sketch)
+            port.flush((flushErr) => {
+                if (flushErr) console.warn('[PreFlight] Flush error:', flushErr.message);
+
+                // Force DTR and RTS low to ensure the reset capacitor discharges fully
+                // (Overrides any zombie state left by Chrome Web Serial)
+                port.set({ dtr: false, rts: false }, (setErr) => {
+                    if (setErr) console.warn('[PreFlight] Set signals error:', setErr.message);
+
+                    // Wait 50ms for capacitor to discharge, then close cleanly
+                    setTimeout(() => {
+                        port.close((closeErr) => {
+                            if (closeErr) console.warn('[PreFlight] Close error:', closeErr.message);
+                            console.log(`[PreFlight] Closed ${portName}. Ready for avrdude.`);
+                            // Add a small delay to let Windows fully release the COM handle
+                            setTimeout(resolve, 100);
+                        });
+                    }, 50);
+                });
+            });
+        });
+    });
+};
+
+export const flashFirmware = async (req, res) => {
     const { port, fqbn, hex, baudRate, resetMethod } = req.body || {};
     const cleanPort = sanitizePortName(port);
     const targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
@@ -1379,64 +1417,43 @@ export const flashFirmware = (req, res) => {
         '--fqbn', targetFqbn,
         '-p', cleanPort,
         '--input-file', hexFile,
-        '--verify',
-        '--verbose'
     ];
 
     if (Number.isFinite(cleanBaud) && cleanBaud > 0 && String(targetFqbn).toLowerCase().includes('esp32')) {
         args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
     if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-        // Core-dependent, may be ignored by some board packages.
         args.push('--upload-property', 'upload.disable_flushing=true');
     }
 
-    const runFlash = (currentArgs, isRetry = false) => {
-        execFile(ARDUINO_CLI_PATH, currentArgs, (error, stdout, stderr) => {
-            const outStr = stderr || stdout;
-            if (error) {
-                // If it failed with a sync error, and we are flashing an AVR board, and this isn't a retry yet...
-                // Automatically fallback to 57600 baud rate which is used by most cheap clones (Nano Old Bootloader).
-                if (!isRetry && targetFqbn.includes('avr') && outStr.includes('sync byte 0x14')) {
-                    console.log('Sync failed at default baud. Auto-retrying at 57600 baud for potential clone bootloader...');
-                    const retryArgs = [];
-                    for (let i = 0; i < args.length; i++) {
-                        if (args[i] === '--upload-property' && args[i + 1] && args[i + 1].startsWith('upload.speed=')) {
-                            i++; // Skip both the flag and the value
-                            continue;
-                        }
-                        retryArgs.push(args[i]);
-                    }
-                    retryArgs.push('--upload-property', 'upload.speed=57600');
-                    return setTimeout(() => {
-                        runFlash(retryArgs, true);
-                    }, 1500);
-                }
+    // Pre-flight sequence to wipe Chrome Web Serial zombie states and flush spamming serial outputs
+    await preFlightReset(cleanPort, cleanBaud);
 
-                fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-                    if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-                });
+    execFile(ARDUINO_CLI_PATH, args, { timeout: 30000 }, (error, stdout, stderr) => {
+        // Dump log for debugging
+        try {
+            fs.writeFileSync(path.join(process.cwd(), 'last_avrdude_log.txt'),
+                `=== ARGS ===\n${JSON.stringify(args)}\n=== STDOUT ===\n${stdout}\n=== STDERR ===\n${stderr}\n=== ERROR ===\n${error ? error.message : 'null'}\n=== EXIT CODE ===\n${error ? error.code : 0}\n`);
+        } catch(e) {}
 
-                console.error('Flash error:', outStr);
-                return res.status(400).json({
-                    error: 'Flashing failed',
-                    details: outStr,
-                });
-            }
-
-            fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-                if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-            });
-
-            return res.json({
-                ok: true,
-                message: 'Firmware flashed successfully via bootloader uploader.',
-                output: stdout || stderr || '',
-            });
+        fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+            if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
         });
-    };
 
-    runFlash(args);
+        if (error) {
+            console.error('Flash error:', stderr || stdout);
+            return res.status(400).json({
+                error: 'Flashing failed',
+                details: stderr || stdout,
+            });
+        }
+
+        return res.json({
+            ok: true,
+            message: 'Firmware flashed successfully via bootloader uploader.',
+            output: stdout || stderr || '',
+        });
+    });
 };
 
 export const listSerialPorts = async (req, res) => {
