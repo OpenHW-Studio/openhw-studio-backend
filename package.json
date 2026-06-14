@@ -32,6 +32,7 @@
     "nodemailer": "^8.0.4",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
+    "serialport": "^13.0.0",
     "tcpip": "^0.4.0",
     "ws": "^8.20.0"
   },
