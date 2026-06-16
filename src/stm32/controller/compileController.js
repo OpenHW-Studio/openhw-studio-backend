@@ -267,6 +267,7 @@ wsManager.onClientConnection((ws) => {
 function buildCodeHash(mainCode, req) {
     const payload = {
         code: mainCode,
+        targetEngine: req.body.targetEngine || '',
         libraries_txt: req.body.libraries_txt || '',
         files: req.body.files || []
     };
@@ -388,58 +389,60 @@ export const compileArduinoCode = async (req, res) => {
         }
 
         // ── Build the injected sketch ─────────────────────────────────────────
-        // The user's setup() / loop() are renamed via #define macros so the
-        // compiler sees them as _sim_user_setup() / _sim_user_loop(), and our
-        // injected setup() / loop() call them as sub-functions.
-        const preamble = [
-            '#define setup _sim_user_setup',
-            '#define loop  _sim_user_loop',
-            '',
-        ].join('\n');
+        let finalCode = mainCode;
+        if (req.body.targetEngine !== 'hardware') {
+            const preamble = [
+                '#define setup _sim_user_setup',
+                '#define loop  _sim_user_loop',
+                '',
+            ].join('\n');
 
-        const suffix = [
-            '',
-            '#undef setup',
-            '#undef loop',
-            '#include "SimulatorBridge.h"',
-            '',
-            'void setup() {',
-            '    _simBridgeInit_Early();',
-            '    _sim_user_setup();',
-            '    _simBridgeInit_Late();',
-            '    if (!_sim_ready_sent) sim_ready();',
-            '}',
-            '',
-            'void loop() {',
-            '    _sim_user_loop();',
-            '}',
-            '',
-        ].join('\n');
+            const suffix = [
+                '',
+                '#undef setup',
+                '#undef loop',
+                '#include "SimulatorBridge.h"',
+                '',
+                'void setup() {',
+                '    _simBridgeInit_Early();',
+                '    _sim_user_setup();',
+                '    _simBridgeInit_Late();',
+                '    if (!_sim_ready_sent) sim_ready();',
+                '}',
+                '',
+                'void loop() {',
+                '    _sim_user_loop();',
+                '}',
+                '',
+            ].join('\n');
 
-        const finalCode = preamble + mainCode + suffix;
+            finalCode = preamble + mainCode + suffix;
+        }
 
         console.log(`\n\n[STM32 COMPILE] Received Code:\n${mainCode}\n[END CODE]\n`);
 
         fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
         // Copy shim headers into the sketch directory
-        for (const { src, dst } of SHIM_HEADERS) {
-            if (fs.existsSync(src)) {
-                const destPath = path.join(sketchDir, dst);
-                const rawBytes = fs.readFileSync(src);
+        if (req.body.targetEngine !== 'hardware') {
+            for (const { src, dst } of SHIM_HEADERS) {
+                if (fs.existsSync(src)) {
+                    const destPath = path.join(sketchDir, dst);
+                    const rawBytes = fs.readFileSync(src);
 
-                // Strip UTF-8 BOM if present
-                const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
+                    // Strip UTF-8 BOM if present
+                    const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
 
-                // Copy only ASCII bytes to prevent gcc "extended character" errors
-                const asciiBytes = [];
-                for (let i = startIdx; i < rawBytes.length; i++) {
-                    if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                    // Copy only ASCII bytes to prevent gcc "extended character" errors
+                    const asciiBytes = [];
+                    for (let i = startIdx; i < rawBytes.length; i++) {
+                        if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                    }
+
+                    fs.writeFileSync(destPath, Buffer.from(asciiBytes));
+                } else {
+                    console.warn(`[STM32:Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
                 }
-
-                fs.writeFileSync(destPath, Buffer.from(asciiBytes));
-            } else {
-                console.warn(`[STM32:Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
             }
         }
     } catch (err) {
@@ -475,7 +478,7 @@ export const compileArduinoCode = async (req, res) => {
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
         '--jobs',             '4',
-        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...(req.body.targetEngine === 'hardware' ? [] : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h']),
         ...ccacheProps,
         ...libraryFlags,
         sketchFile,
