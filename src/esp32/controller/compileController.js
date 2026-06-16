@@ -210,6 +210,7 @@ function buildCodeHash(code, req) {
     const payload = {
         code,
         builder,
+        targetEngine: req.body.targetEngine || '',
         libraries_txt: req.body.libraries_txt || '',
         board_options: req.body.board_options || null,
         spiffs_files: req.body.spiffs_files || null
@@ -760,7 +761,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
         '--jobs',             '4',
-        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...(req.body.targetEngine === 'hardware' ? [] : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h']),
         ...ccacheProps,
         ...libraryFlags,
         sketchFile,
@@ -968,9 +969,9 @@ export const compileArduinoCode = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode) {
+            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
             } else {
                 const preamble = [
                     '#define setup _sim_user_setup',
@@ -1002,7 +1003,7 @@ export const compileArduinoCode = async (req, res) => {
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-            if (!isSharedLibraryMode) {
+            if (!isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
                 for (const { src, dst } of SHIM_HEADERS) {
                     if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
                         continue;
@@ -1155,9 +1156,9 @@ export const compileStart = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode) {
+            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
             } else {
                 const preamble = [
                     '#define setup _sim_user_setup',
@@ -1189,7 +1190,7 @@ export const compileStart = async (req, res) => {
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-            if (!isSharedLibraryMode) {
+            if (!isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
                 for (const { src, dst } of SHIM_HEADERS) {
                     if (req.body.targetEngine === 'frontend' && dst.includes('WiFi')) {
                         continue;
