@@ -746,7 +746,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
     let isSharedLibraryMode = fs.existsSync(libPath);
 
-    const COMPILE_CACHE_DIR = path.join(DATA_DIR, 'arduino-cache');
+    const cacheFolderName = req.body.targetEngine === 'hardware' ? 'arduino-cache-hw' : 'arduino-cache';
+    const COMPILE_CACHE_DIR = path.join(DATA_DIR, cacheFolderName);
 
     const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);

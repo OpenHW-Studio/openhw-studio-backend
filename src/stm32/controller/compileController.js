@@ -462,7 +462,8 @@ export const compileArduinoCode = async (req, res) => {
     });
 
     // ── Async: compile → launch Renode ───────────────────────────────────────
-    const COMPILE_CACHE_DIR = path.join(DATA_DIR, 'arduino-cache');
+    const cacheFolderName = req.body.targetEngine === 'hardware' ? 'arduino-cache-hw' : 'arduino-cache';
+    const COMPILE_CACHE_DIR = path.join(DATA_DIR, cacheFolderName);
 
     // Parse and resolve libraries from the optional libraries_txt field
     const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
