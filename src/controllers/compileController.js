@@ -16,7 +16,7 @@ import { getCost } from '../services/resourceManager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
+const ARDUINO_CLI_PATH = 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
 const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
@@ -1297,7 +1297,7 @@ pico_add_extra_outputs(firmware)
         }
 
         if (error) {
-            console.error('Compile error:', error || stdout);
+            console.error('Compile error:', stderr || stdout);
             return sendCompileFailure(
                 res,
                 400,

@@ -176,8 +176,9 @@ async function _buildEsp32Dummy() {
 
     const cliArgs = [
         'compile',
-        '--fqbn',       ESP32_FQBN,
-        '--output-dir', buildDir,
+        '--fqbn',             ESP32_FQBN,
+        '--build-cache-path', path.join(DATA_DIR, 'arduino-cache'),
+        '--output-dir',       buildDir,
         '--libraries',        path.join(DATA_DIR, 'libraries/permanent'),
         '--libraries',        path.join(DATA_DIR, 'libraries/cache'),
         '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
@@ -260,8 +261,9 @@ async function _buildStm32Dummy() {
 
     const cliArgs = [
         'compile',
-        '--fqbn',       STM32_FQBN,
-        '--output-dir', buildDir,
+        '--fqbn',             STM32_FQBN,
+        '--build-cache-path', path.join(DATA_DIR, 'arduino-cache'),
+        '--output-dir',       buildDir,
         '--libraries',        path.join(DATA_DIR, 'libraries/permanent'),
         '--libraries',        path.join(DATA_DIR, 'libraries/cache'),
         '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
