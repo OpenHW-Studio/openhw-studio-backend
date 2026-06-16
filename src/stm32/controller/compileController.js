@@ -471,9 +471,8 @@ export const compileArduinoCode = async (req, res) => {
 
     const compileArgs = [
         'compile',
-        '--fqbn',             STM32_FQBN,
-        '--build-cache-path', COMPILE_CACHE_DIR,
-        '--output-dir',       buildDir,
+        '--fqbn',       STM32_FQBN,
+        '--output-dir', buildDir,
         '--jobs',             '4',
         '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
         ...ccacheProps,

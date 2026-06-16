@@ -756,9 +756,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
 
     const compileArgs = [
         'compile',
-        '--fqbn',             ESP32_FQBN,
-        '--build-cache-path', COMPILE_CACHE_DIR,
-        '--output-dir',       buildDir,
+        '--fqbn',       ESP32_FQBN,
+        '--output-dir', buildDir,
         '--jobs',             '4',
         '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
         ...ccacheProps,

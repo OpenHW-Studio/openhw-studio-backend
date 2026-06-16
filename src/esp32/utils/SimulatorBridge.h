@@ -183,11 +183,14 @@ void _simBridgeInit_Late();
 
 // ── Watchdog shims ───────────────────────────────────────────────────────────
 // WDT is already disabled in _simBridgeInit_Early; stubs prevent linker errors
+// Only define for non-ESP32 platforms — ESP32 core provides these functions natively
+#if !defined(ESP32) && !defined(ARDUINO_ARCH_ESP32)
 #define esp_task_wdt_init(timeout,panic)  ((void)0)
 #define esp_task_wdt_deinit()             ((void)0)
 #define esp_task_wdt_add(task)            ((void)0)
 #define esp_task_wdt_delete(task)         ((void)0)
 #define esp_task_wdt_reset()              ((void)0)
+#endif
 
 // ── RTC memory attribute ─────────────────────────────────────────────────────
 // In simulation, RTC_DATA_ATTR variables are just normal static variables.

@@ -33,7 +33,8 @@ const __dirname  = path.dirname(__filename);
 const DATA_DIR      = path.resolve(__dirname, '../../../data');
 const CACHE_DIR     = path.join(DATA_DIR, 'libraries/cache');
 const PERM_DIR      = path.join(DATA_DIR, 'libraries/permanent');
-const CONFIG_FILE   = path.resolve(__dirname, '../config/libraries.json');
+const CONFIG_FILE      = path.resolve(__dirname, '../config/libraries.json');
+const CACHE_INDEX_FILE = path.join(DATA_DIR, 'libraries/cache_index.json');
 const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 
 const MAX_CACHE_SIZE   = 512 * 1024 * 1024; // 512 MB  (cache only)
@@ -86,16 +87,12 @@ function pruneCache() {
 // ─── Sync Index File ─────────────────────────────────────────────────────────
 
 /**
- * Updates src/config/libraries.json to reflect the current state of both
- * permanent and cached libraries, serving as a live index for the UI.
+ * Writes the list of cached libraries to data/libraries/cache_index.json so
+ * the UI can discover available libraries without writing back to the src/
+ * directory (which would trigger nodemon restarts).
  */
 export function syncLibrariesIndexFile() {
     try {
-        let config = { permanent: [] };
-        if (fs.existsSync(CONFIG_FILE)) {
-            config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
-        }
-
         const cached = [];
         if (fs.existsSync(CACHE_DIR)) {
             for (const entry of fs.readdirSync(CACHE_DIR, { withFileTypes: true })) {
@@ -105,14 +102,13 @@ export function syncLibrariesIndexFile() {
             }
         }
 
-        const newConfig = {
-            permanent: config.permanent || [],
-            cached
-        };
-
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 4));
+        const dir = path.dirname(CACHE_INDEX_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(CACHE_INDEX_FILE, JSON.stringify(cached, null, 4));
     } catch (err) {
-        console.error('[LibrarySync] Failed to sync libraries.json index:', err.message);
+        console.error('[LibrarySync] Failed to write cache index file:', err.message);
     }
 }
 
