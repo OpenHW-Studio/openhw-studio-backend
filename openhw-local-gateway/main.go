@@ -56,6 +56,37 @@ func main() {
 	fmt.Println("===================================================")
 
 	http.HandleFunc("/api/network-gateway", func(w http.ResponseWriter, r *http.Request) {
+		bridgeMutex.Lock()
+		if bridgeEnabled {
+			if bridgeTAP == nil {
+				bt, err := createBridgeTAP(context.Background())
+				if err != nil {
+					bridgeMutex.Unlock()
+					fmt.Printf("[Bridge] Failed to create TAP: %v\n", err)
+					http.Error(w, "Failed to create TAP interface. On Windows, install the TAP driver from OpenVPN.", http.StatusInternalServerError)
+					return
+				}
+				bridgeTAP = bt
+			}
+			bt := bridgeTAP
+			bridgeMutex.Unlock()
+
+			wsConn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				fmt.Printf("[Bridge] WS upgrade error: %v\n", err)
+				return
+			}
+
+			client := &Client{Conn: wsConn}
+			bt.mutex.Lock()
+			bt.clients[client] = true
+			bt.mutex.Unlock()
+
+			handleBridgeClient(client, bt)
+			return
+		}
+		bridgeMutex.Unlock()
+
 		sessionId := r.URL.Query().Get("sessionId")
 		if sessionId == "" {
 			b := make([]byte, 8)
@@ -163,6 +194,9 @@ func main() {
 	if os.Getenv("GATEWAY_MODE") == "public" {
 		listenAddr = ":" + PORT
 	}
+
+	// Start terminal command loop for bridge mode control
+	go startCommandLoop()
 
 	fmt.Printf("[Network Gateway] Server running on ws://%s/api/network-gateway\n", listenAddr)
 	if err := http.ListenAndServe(listenAddr, nil); err != nil {

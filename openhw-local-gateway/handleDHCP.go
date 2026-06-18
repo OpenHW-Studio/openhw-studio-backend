@@ -61,6 +61,10 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 		}
 		assignedIP = ip
 		room.Unlock()
+
+		client.WriteMutex.Lock()
+		client.Conn.WriteMessage(websocket.TextMessage, []byte("BOARD_IP:"+assignedIP.String()))
+		client.WriteMutex.Unlock()
 	} else {
 		dhcpMutex.Lock()
 		ip, exists := globalMacToIP[macString]
@@ -93,12 +97,12 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 						}
 					}(ln, ipStr, port)
 
-					msg := fmt.Sprintf("[Port Forward] Mapped 127.0.0.1:%d -> %s:80", port, ipStr)
-					fmt.Println(msg)
-					
-					// Send notification to the frontend
+								fmt.Printf("[Port Forward] Mapped 127.0.0.1:%d -> %s:80\n", port, ipStr)
+
+					// Send structured messages to the frontend
 					client.WriteMutex.Lock()
-					client.Conn.WriteMessage(websocket.TextMessage, []byte(msg))
+					client.Conn.WriteMessage(websocket.TextMessage, []byte("BOARD_IP:"+ipStr))
+					client.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("PORT_FORWARD:http://127.0.0.1:%d", port)))
 					client.WriteMutex.Unlock()
 					break
 				}
