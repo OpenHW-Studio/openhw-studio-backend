@@ -1348,6 +1348,62 @@ pico_add_extra_outputs(firmware)
       }));
 };
 
+function resolveAvrdudeExecutable() {
+    const isWin = os.platform() === 'win32';
+    const exeName = isWin ? 'avrdude.exe' : 'avrdude';
+    const explicitExe = String(process.env.AVRDUDE_PATH || '').trim();
+    if (explicitExe && fs.existsSync(explicitExe)) return explicitExe;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const exePath = path.join(toolsRoot, version, 'bin', exeName);
+            if (fs.existsSync(exePath)) return exePath;
+        }
+    }
+    return exeName; // fallback to PATH
+}
+
+function resolveAvrdudeConf() {
+    const explicit = String(process.env.AVRDUDE_CONF || '').trim();
+    if (explicit && fs.existsSync(explicit)) return explicit;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const confPath = path.join(toolsRoot, version, 'etc', 'avrdude.conf');
+            if (fs.existsSync(confPath)) return confPath;
+        }
+    }
+    return '';
+}
+
 export const flashFirmware = (req, res) => {
     const { port, fqbn, hex, baudRate, resetMethod } = req.body || {};
     const cleanPort = sanitizePortName(port);
@@ -1411,41 +1467,100 @@ export const flashFirmware = (req, res) => {
         return res.status(500).json({ error: 'Failed to create temporary flash files.' });
     }
 
-    const args = [
-        'upload',
-        '--fqbn', targetFqbn,
-        '-p', cleanPort,
-        '--input-file', hexFile,
-        '--verify',
-    ];
+    let execArgs = [];
+    let execCmd = ARDUINO_CLI_PATH;
+    let isAvrdude = false;
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-        args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
+    if (targetFqbn.toLowerCase().includes('avr')) {
+        isAvrdude = true;
+        execCmd = resolveAvrdudeExecutable();
+        const confPath = resolveAvrdudeConf();
+        execArgs = [
+            '-v',
+            '-p', 'atmega328p',
+            '-c', 'arduino',
+            '-P', cleanPort,
+            '-b', Number.isFinite(cleanBaud) && cleanBaud > 0 ? String(Math.trunc(cleanBaud)) : '115200',
+            '-D',
+            '-U', `flash:w:${hexFile}:i`
+        ];
+        // Allow custom conf path
+        if (confPath) {
+            execArgs.unshift('-C', confPath);
+        }
+    } else {
+        execArgs = [
+            'upload',
+            '--fqbn', targetFqbn,
+            '-p', cleanPort,
+            '--input-file', hexFile,
+            '--verify',
+        ];
+        if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+            execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
+        }
+        if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
+            execArgs.push('--upload-property', 'upload.disable_flushing=true');
+        }
     }
-    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-        // Core-dependent, may be ignored by some board packages.
-        args.push('--upload-property', 'upload.disable_flushing=true');
-    }
 
-    execFile(ARDUINO_CLI_PATH, args, (error, stdout, stderr) => {
-        fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-            if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-        });
+    const MAX_RETRIES = 3;
+    let attempt = 0;
 
-        if (error) {
-            console.error('Flash error:', stderr || stdout);
-            return res.status(400).json({
-                error: 'Flashing failed',
-                details: stderr || stdout,
-            });
+    const attemptFlash = () => {
+        attempt++;
+
+        // Smart fallback: If native avrdude fails (common with CH340 drivers dropping sync at 85%),
+        // fall back to arduino-cli which handles pre-flight DTR/RTS serial touches differently.
+        if (attempt === 2 && isAvrdude) {
+            console.log('Falling back to arduino-cli for safer port handling...');
+            execCmd = ARDUINO_CLI_PATH;
+            execArgs = [
+                'upload',
+                '--fqbn', targetFqbn,
+                '-p', cleanPort,
+                '--input-file', hexFile,
+                '--verify',
+            ];
+            if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+                execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
+            }
+            if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
+                execArgs.push('--upload-property', 'upload.disable_flushing=true');
+            }
         }
 
-        return res.json({
-            ok: true,
-            message: 'Firmware flashed successfully via bootloader uploader.',
-            output: stdout || stderr || '',
+        execFile(execCmd, execArgs, (error, stdout, stderr) => {
+            if (error) {
+                const output = stderr || stdout || error.message || 'Unknown error';
+                console.error(`Flash error (Attempt ${attempt}):`, output);
+
+                // If we haven't exhausted retries, try again
+                if (attempt < MAX_RETRIES) {
+                    console.log(`Retrying flash... (${attempt}/${MAX_RETRIES})`);
+                    // Larger delay before retrying allows the port/bootloader to settle
+                    return setTimeout(attemptFlash, 2000);
+                }
+
+                // Exhausted retries, clean up and fail
+                fs.rm(flashDir, { recursive: true, force: true }, () => {});
+                return res.status(400).json({
+                    error: 'Flashing failed after multiple attempts',
+                    details: output,
+                });
+            }
+
+            // Success
+            fs.rm(flashDir, { recursive: true, force: true }, () => {});
+            return res.json({
+                ok: true,
+                message: `Firmware flashed successfully via ${isAvrdude ? 'avrdude' : 'arduino-cli'}.`,
+                output: stdout || stderr || '',
+            });
         });
-    });
+    };
+
+    attemptFlash();
 };
 
 export const listSerialPorts = async (req, res) => {
