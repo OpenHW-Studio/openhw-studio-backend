@@ -1510,10 +1510,17 @@ export const flashFirmware = (req, res) => {
     const attemptFlash = () => {
         attempt++;
 
-        // Smart fallback: If native avrdude fails (common with CH340 drivers dropping sync at 85%),
-        // fall back to arduino-cli which handles pre-flight DTR/RTS serial touches differently.
+        // Smart fallback logic for Windows OS port locking and Arduino Clone baud rate mismatches.
         if (attempt === 2 && isAvrdude) {
-            console.log('Falling back to arduino-cli for safer port handling...');
+            // Attempt 2: Try 57600 baud rate (fixes 'Old Bootloader' clones)
+            console.log('Attempt 2: Falling back to 57600 baud rate for older Arduino clones...');
+            const bIndex = execArgs.indexOf('-b');
+            if (bIndex !== -1) {
+                execArgs[bIndex + 1] = '57600';
+            }
+        } else if (attempt === 3 && isAvrdude) {
+            // Attempt 3: Fall back to native arduino-cli
+            console.log('Attempt 3: Falling back to arduino-cli for safer port handling...');
             execCmd = ARDUINO_CLI_PATH;
             execArgs = [
                 'upload',
@@ -1538,8 +1545,8 @@ export const flashFirmware = (req, res) => {
                 // If we haven't exhausted retries, try again
                 if (attempt < MAX_RETRIES) {
                     console.log(`Retrying flash... (${attempt}/${MAX_RETRIES})`);
-                    // Larger delay before retrying allows the port/bootloader to settle
-                    return setTimeout(attemptFlash, 2000);
+                    // Larger delay before retrying allows Windows to fully release the COM port lock
+                    return setTimeout(attemptFlash, 4000);
                 }
 
                 // Exhausted retries, clean up and fail
