@@ -1467,107 +1467,41 @@ export const flashFirmware = (req, res) => {
         return res.status(500).json({ error: 'Failed to create temporary flash files.' });
     }
 
-    let execArgs = [];
-    let execCmd = ARDUINO_CLI_PATH;
-    let isAvrdude = false;
+    const execArgs = [
+        'upload',
+        '--fqbn', targetFqbn,
+        '-p', cleanPort,
+        '--input-file', hexFile,
+        '--verify',
+    ];
 
-    if (targetFqbn.toLowerCase().includes('avr')) {
-        isAvrdude = true;
-        execCmd = resolveAvrdudeExecutable();
-        const confPath = resolveAvrdudeConf();
-        execArgs = [
-            '-v',
-            '-p', 'atmega328p',
-            '-c', 'arduino',
-            '-P', cleanPort,
-            '-b', Number.isFinite(cleanBaud) && cleanBaud > 0 ? String(Math.trunc(cleanBaud)) : '115200',
-            '-D',
-            '-U', `flash:w:${hexFile}:i`
-        ];
-        // Allow custom conf path
-        if (confPath) {
-            execArgs.unshift('-C', confPath);
-        }
-    } else {
-        execArgs = [
-            'upload',
-            '--fqbn', targetFqbn,
-            '-p', cleanPort,
-            '--input-file', hexFile,
-            '--verify',
-        ];
-        if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-            execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
-        }
-        if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-            execArgs.push('--upload-property', 'upload.disable_flushing=true');
-        }
+    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+        execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
 
-    const MAX_RETRIES = 3;
-    let attempt = 0;
+    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
+        execArgs.push('--upload-property', 'upload.disable_flushing=true');
+    }
 
-    const attemptFlash = () => {
-        attempt++;
+    execFile(ARDUINO_CLI_PATH, execArgs, (error, stdout, stderr) => {
+        fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+            if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
+        });
 
-        // Smart fallback logic for Windows OS port locking and Arduino Clone baud rate mismatches.
-        if (attempt === 2 && isAvrdude) {
-            // Attempt 2: Try 57600 baud rate (fixes 'Old Bootloader' clones)
-            console.log('Attempt 2: Falling back to 57600 baud rate for older Arduino clones...');
-            const bIndex = execArgs.indexOf('-b');
-            if (bIndex !== -1) {
-                execArgs[bIndex + 1] = '57600';
-            }
-        } else if (attempt === 3 && isAvrdude) {
-            // Attempt 3: Fall back to native arduino-cli
-            console.log('Attempt 3: Falling back to arduino-cli for safer port handling...');
-            execCmd = ARDUINO_CLI_PATH;
-            execArgs = [
-                'upload',
-                '--fqbn', targetFqbn,
-                '-p', cleanPort,
-                '--input-file', hexFile,
-                '--verify',
-            ];
-            if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-                execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
-            }
-            if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-                execArgs.push('--upload-property', 'upload.disable_flushing=true');
-            }
+        if (error) {
+            console.error('Flash error:', stderr || stdout || error.message);
+            return res.status(400).json({
+                error: 'Flashing failed',
+                details: stderr || stdout || error.message,
+            });
         }
 
-        execFile(execCmd, execArgs, (error, stdout, stderr) => {
-            if (error) {
-                const output = stderr || stdout || error.message || 'Unknown error';
-                console.error(`Flash error (Attempt ${attempt}):`, output);
-
-                // If we haven't exhausted retries, try again
-                if (attempt < MAX_RETRIES) {
-                    console.log(`Retrying flash... (${attempt}/${MAX_RETRIES})`);
-                    // Larger delay before retrying allows Windows to fully release the COM port lock
-                    return setTimeout(attemptFlash, 4000);
-                }
-
-                // Exhausted retries, clean up and fail
-                fs.rm(flashDir, { recursive: true, force: true }, () => {});
-                return res.status(400).json({
-                    error: 'Flashing failed after multiple attempts',
-                    details: output,
-                });
-            }
-
-            // Success
-            fs.rm(flashDir, { recursive: true, force: true }, () => {});
-            return res.json({
-                ok: true,
-                message: `Firmware flashed successfully via ${isAvrdude ? 'avrdude' : 'arduino-cli'}.`,
-                output: stdout || stderr || '',
-            });
+        return res.json({
+            ok: true,
+            message: 'Firmware flashed successfully via arduino-cli.',
+            output: stdout || stderr || '',
         });
-    };
-
-    attemptFlash();
+    });
 };
 
 export const listSerialPorts = async (req, res) => {

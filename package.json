@@ -16,6 +16,7 @@
   "author": "FOSSEE",
   "license": "MIT",
   "dependencies": {
+    "@duinoapp/upload-multitool": "^0.0.3",
     "adm-zip": "^0.5.17",
     "argon2": "^0.44.0",
     "bcryptjs": "^2.4.3",
