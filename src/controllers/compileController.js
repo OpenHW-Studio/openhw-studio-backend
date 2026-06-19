@@ -1475,7 +1475,8 @@ export const flashFirmware = (req, res) => {
         '--verify',
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+    const isAvr = targetFqbn.toLowerCase().includes(':avr:');
+    if (!isAvr && Number.isFinite(cleanBaud) && cleanBaud > 0) {
         execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
 
