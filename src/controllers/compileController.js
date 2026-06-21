@@ -1297,7 +1297,7 @@ pico_add_extra_outputs(firmware)
         }
 
         if (error) {
-            console.error('Compile error:', stderr || stdout);
+            console.error('Compile error:', error || stdout);
             return sendCompileFailure(
                 res,
                 400,
@@ -1368,6 +1368,43 @@ export const flashFirmware = (req, res) => {
 
     try {
         fs.mkdirSync(flashDir, { recursive: true });
+        
+        if (targetFqbn.toLowerCase().includes('esp32')) {
+            const binFile = path.join(flashDir, `firmware_${flashId}.bin`);
+            const binaryBuffer = Buffer.from(hexContent, 'base64');
+            fs.writeFileSync(binFile, binaryBuffer);
+
+            const args = [
+                '-m', 'esptool',
+                '--port', cleanPort,
+            ];
+            if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+                args.push('--baud', String(Math.trunc(cleanBaud)));
+            }
+            args.push('write_flash', '-z', '0x0', binFile);
+
+            execFile('python', args, (error, stdout, stderr) => {
+                fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+                    if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
+                });
+
+                if (error) {
+                    console.error('Flash error:', stderr || stdout);
+                    return res.status(400).json({
+                        error: 'Flashing failed',
+                        details: stderr || stdout,
+                    });
+                }
+
+                return res.json({
+                    ok: true,
+                    message: 'Firmware flashed successfully via esptool.',
+                    output: stdout || stderr || '',
+                });
+            });
+            return;
+        }
+
         fs.writeFileSync(hexFile, hexContent, 'utf8');
     } catch (err) {
         console.error('Error creating flash temp files:', err);
