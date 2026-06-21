@@ -18,10 +18,5 @@
         "AccelStepper",
         "GxEPD2"
     ],
-    "cached": [
-        "AccelStepper",
-        "ESP32Servo",
-        "GxEPD2",
-        "LedControl"
-    ]
+    "cached": []
 }
