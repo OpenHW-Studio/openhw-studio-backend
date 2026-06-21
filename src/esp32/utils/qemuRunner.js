@@ -173,6 +173,7 @@ export default class QemuRunner {
         this._destroyed        = false;  // set to true after kill() to prevent double-cleanup
         this._bootDetected     = false;  // true once ROM boot signatures seen
         this._heartbeatTimer   = null;   // setTimeout handle for heartbeat watchdog
+        this._readySince       = null;   // timestamp when FIRMWARE_READY was received (crash grace period)
 
         // Emulation dynamic supervisor & sandboxing state
         this._restartCount     = 0;
@@ -440,7 +441,7 @@ export default class QemuRunner {
         }
 
         this._isSharedLibraryMode = false;
-        this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/qemu/bin/qemu-system-xtensa');
+        this._qemuPath = process.env.QEMU_ESP32_PATH || path.resolve(__dirname, '../../../../external/qemu/bin/qemu-system-xtensa');
         this._nicArgs  = this._buildNicArgs();
 
         // Start the network proxy first
@@ -914,6 +915,7 @@ export default class QemuRunner {
             this.phase = 'booting';
             this._bootDetected = false;
             this.isReady = false;
+            this._readySince = null;
             this._sendWs({ type: 'QEMU_BOOTING' });
 
             // Teardown the current process context cleanly
@@ -988,7 +990,6 @@ export default class QemuRunner {
     }
 
 
-
     // ─────────────────────────────────────────────────────────────────────────
     // Private — UART data parser
     // ─────────────────────────────────────────────────────────────────────────
@@ -1054,7 +1055,13 @@ export default class QemuRunner {
         }
 
         // ── Crash / Core Panic detection ──────────────────────────────────────
-        if (CRASH_PATTERNS.some(re => re.test(line))) {
+        // Only detect crashes once the firmware is fully running AND a 2-second
+        // grace period has passed after FIRMWARE_READY. This prevents UART lines
+        // that were buffered during the ROM boot phase (e.g. "Cache error") from
+        // triggering a false-positive crash milliseconds after the phase changes.
+        const _crashGraceMs = 2000;
+        const _pastGrace = this._readySince && (Date.now() - this._readySince > _crashGraceMs);
+        if (this.phase === 'running' && _pastGrace && CRASH_PATTERNS.some(re => re.test(line))) {
             this._log.error('🔴 Crash pattern detected in serial output:', line);
             // Propagate the crash event, but skip raw trace serialization to prevent lag
             setTimeout(() => {
@@ -1107,6 +1114,11 @@ export default class QemuRunner {
             for (let i = 0; i < hexStr.length; i += 2) {
                 data.push(parseInt(hexStr.substring(i, i + 2), 16));
             }
+            // Save the last written register for dumb legacy reads
+            if (!this._i2cLastReg) this._i2cLastReg = new Map();
+            if (data.length > 0) {
+                this._i2cLastReg.set(addr, data[0]);
+            }
             this._sendWs({ type: 'I2C_TRANSACTION', addr, data });
             return;
         }
@@ -1119,8 +1131,22 @@ export default class QemuRunner {
             const qty  = parseInt(i2cReadMatch[2], 16);
             // Also notify frontend so it can update component state
             this._sendWs({ type: 'I2C_READ_REQ', addr, qty });
+            
+            // Legacy shim register spoofing: intercept WHO_AM_I reads to prevent begin() crashes
+            let respBytes = this._i2cResponses?.get(addr) || [];
+            const lastReg = this._i2cLastReg?.get(addr);
+            
+            if (addr === 0x68 || addr === 0x69) { // MPU6050
+                if (lastReg === 0x75 && qty === 1) { // WHO_AM_I
+                    respBytes = [0x68];
+                }
+            } else if (addr === 0x53 || addr === 0x1D) { // ADXL345
+                if (lastReg === 0x00 && qty === 1) { // DEVID
+                    respBytes = [0xE5];
+                }
+            }
+            
             // Inject cached response if available
-            const respBytes = this._i2cResponses?.get(addr);
             if (respBytes && respBytes.length > 0) {
                 const hex = Array.from(respBytes.slice(0, qty))
                     .map(b => b.toString(16).padStart(2, '0')).join('');
@@ -1181,8 +1207,9 @@ export default class QemuRunner {
         switch (cmd) {
             case 'READY':
                 if (this.phase === 'running') return; // Idempotent
-                this.phase   = 'running';
-                this.isReady = true;
+                this.phase      = 'running';
+                this.isReady    = true;
+                this._readySince = Date.now(); // Grace-period start for crash detection
                 this._log.info('✅ FIRMWARE_READY — device handshake received');
                 this._sendWs({ type: 'FIRMWARE_READY' });
                 // Also send legacy QEMU_READY for backward compat

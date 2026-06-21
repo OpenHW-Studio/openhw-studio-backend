@@ -113,9 +113,102 @@ class MPU6050Slave:
         self._write_i16(0x41, (temp - 36.53) * 340)
 
 
+# ── ADXL345 3-axis Accelerometer ──────────────────────────────────────────────
+
+class ADXL345Slave:
+    """Full ADXL345 register-map I2C slave (address 0x53 or 0x1D).
+
+    Key registers:
+      0x00 DEVID        → always 0xE5
+      0x2D POWER_CTL   → bit 3 (Measure) must be set by firmware to start measurements
+      0x31 DATA_FORMAT → full-res / range config (passthrough)
+      0x32-0x37        → DATAX0/1, DATAY0/1, DATAZ0/1 (little-endian signed 16-bit)
+
+    The Adafruit_ADXL345 begin() reads DEVID; if it is not 0xE5 the call returns false
+    (accel.begin() == false → "No ADXL345 detected").  Returning ACK + 0xE5 is all that
+    is needed to pass begin().  Measurement data is only non-zero after the firmware writes
+    POWER_CTL[3]=1 (Measure bit), matching real hardware behaviour.
+    """
+
+    # Scale factor: ±2g full-scale, 10-bit, default sensitivity = 256 LSB/g
+    # (matches ADXL345 datasheet default ±2g range / full-resolution off)
+    ACCEL_SCALE = 256.0
+
+    def __init__(self, addr: int = 0x53):
+        self.addr       = addr
+        self.regs       = bytearray(256)
+        self.reg_ptr    = 0
+        self.first_byte = True
+
+        # DEVID — always 0xE5
+        self.regs[0x00] = 0xE5
+        # BW_RATE — default 100 Hz output data rate (0x0A)
+        self.regs[0x2C] = 0x0A
+        # POWER_CTL — standby by default (Measure bit 3 = 0)
+        self.regs[0x2D] = 0x00
+        # INT_SOURCE — DATA_READY bit set so library doesn't spin
+        self.regs[0x30] = 0x80
+        # DATA_FORMAT — default (±2g, right-justified, 10-bit)
+        self.regs[0x31] = 0x00
+        # Default accel: 0g X, 0g Y, +1g Z (flat on table)
+        self._set_accel(0.0, 0.0, 1.0)
+
+    def _write_i16le(self, reg_lo: int, value: float) -> None:
+        """Write a signed 16-bit value in little-endian format at reg_lo:reg_lo+1."""
+        raw = int(round(value)) & 0xFFFF
+        self.regs[reg_lo]     = raw & 0xFF
+        self.regs[reg_lo + 1] = (raw >> 8) & 0xFF
+
+    def _set_accel(self, ax: float, ay: float, az: float) -> None:
+        measuring = bool(self.regs[0x2D] & 0x08)
+        self._write_i16le(0x32, ax * self.ACCEL_SCALE if measuring else 0)
+        self._write_i16le(0x34, ay * self.ACCEL_SCALE if measuring else 0)
+        self._write_i16le(0x36, az * self.ACCEL_SCALE if measuring else 0)
+        self._ax, self._ay, self._az = ax, ay, az
+
+    def update(self, accel_x: float = 0.0, accel_y: float = 0.0,
+               accel_z: float = 1.0) -> None:
+        """Called by esp32_worker when the frontend updates sensor values."""
+        self._set_accel(accel_x, accel_y, accel_z)
+
+    def handle_event(self, event: int) -> int:
+        op   = event & 0xFF
+        data = (event >> 8) & 0xFF
+
+        if op in (I2C_START_RECV, I2C_START_SEND):
+            self.first_byte = True
+            return 0   # ACK
+
+        elif op == I2C_WRITE:
+            if self.first_byte:
+                self.reg_ptr    = data
+                self.first_byte = False
+            else:
+                self.regs[self.reg_ptr] = data
+                # If firmware wrote POWER_CTL, refresh measurement data
+                if self.reg_ptr == 0x2D:
+                    self._set_accel(
+                        getattr(self, '_ax', 0.0),
+                        getattr(self, '_ay', 0.0),
+                        getattr(self, '_az', 1.0),
+                    )
+                self.reg_ptr = (self.reg_ptr + 1) & 0xFF
+            return 0   # ACK
+
+        elif op == I2C_READ:
+            val = self.regs[self.reg_ptr]
+            self.reg_ptr = (self.reg_ptr + 1) & 0xFF
+            return val
+
+        else:   # I2C_FINISH / NACK / unknown
+            self.first_byte = True
+            return 0
+
+
 # ── BMP280 Barometric Pressure + Temperature Sensor ───────────────────────────
 
 class BMP280Slave:
+
     """Full BMP280 register-map I2C slave (address 0x76 or 0x77).
 
     Uses BMP280 datasheet Section 8.2 example calibration constants.

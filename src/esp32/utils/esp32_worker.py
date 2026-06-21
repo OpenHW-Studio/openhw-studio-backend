@@ -46,12 +46,13 @@ import time
 # I2C slave state machines — extracted to a standalone module for testability
 try:
     from app.services.esp32_i2c_slaves import (
-        MPU6050Slave as _MPU6050Slave,
-        BMP280Slave  as _BMP280Slave,
-        DS1307Slave  as _DS1307Slave,
-        DS3231Slave  as _DS3231Slave,
-        I2CWriteSink as _I2CWriteSink,
-        ProxySlave   as _ProxySlave,
+        MPU6050Slave  as _MPU6050Slave,
+        ADXL345Slave  as _ADXL345Slave,
+        BMP280Slave   as _BMP280Slave,
+        DS1307Slave   as _DS1307Slave,
+        DS3231Slave   as _DS3231Slave,
+        I2CWriteSink  as _I2CWriteSink,
+        ProxySlave    as _ProxySlave,
     )
 except ImportError:
     # Fallback: direct import when running from backend/ directory as subprocess
@@ -64,6 +65,7 @@ except ImportError:
     _sys.modules['esp32_i2c_slaves'] = _mod
     _spec.loader.exec_module(_mod)  # type: ignore[union-attr]
     _MPU6050Slave = _mod.MPU6050Slave  # type: ignore[assignment]
+    _ADXL345Slave = _mod.ADXL345Slave  # type: ignore[assignment]
     _BMP280Slave  = _mod.BMP280Slave   # type: ignore[assignment]
     _DS1307Slave  = _mod.DS1307Slave   # type: ignore[assignment]
     _DS3231Slave  = _mod.DS3231Slave   # type: ignore[assignment]
@@ -1197,6 +1199,13 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
                 _i2c_slaves[i2c_addr] = slave
                 sensor_data['i2c_addr'] = i2c_addr
                 sensor_data['slave'] = slave
+            elif sensor_type == 'adxl345':
+                i2c_addr = int(s.get('addr', 0x53))
+                slave = _ADXL345Slave(i2c_addr)
+                if 'accelX' in s: slave.update(float(s['accelX']), float(s.get('accelY', 0)), float(s.get('accelZ', 1)))
+                _i2c_slaves[i2c_addr] = slave
+                sensor_data['i2c_addr'] = i2c_addr
+                sensor_data['slave'] = slave
             elif sensor_type == 'bmp280':
                 i2c_addr = int(s.get('addr', 0x76))
                 slave = _BMP280Slave(i2c_addr)
@@ -1618,6 +1627,13 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
                     _i2c_slaves[i2c_addr] = slave
                     sensor_data['i2c_addr'] = i2c_addr
                     sensor_data['slave'] = slave
+                elif sensor_type == 'adxl345':
+                    i2c_addr = int(cmd.get('addr', 0x53))
+                    slave = _ADXL345Slave(i2c_addr)
+                    if 'accelX' in cmd: slave.update(float(cmd['accelX']), float(cmd.get('accelY', 0)), float(cmd.get('accelZ', 1)))
+                    _i2c_slaves[i2c_addr] = slave
+                    sensor_data['i2c_addr'] = i2c_addr
+                    sensor_data['slave'] = slave
                 elif sensor_type == 'bmp280':
                     i2c_addr = int(cmd.get('addr', 0x76))
                     slave = _BMP280Slave(i2c_addr)
@@ -1729,6 +1745,12 @@ def main() -> None:  # noqa: C901  (complexity OK for inline worker)
                             gyro_y =float(sensor.get('gyroY',  0)),
                             gyro_z =float(sensor.get('gyroZ',  0)),
                             temp   =float(sensor.get('temp',   25.0)),
+                        )
+                    elif stype == 'adxl345' and slave is not None:
+                        slave.update(
+                            accel_x=float(sensor.get('accelX', 0)),
+                            accel_y=float(sensor.get('accelY', 0)),
+                            accel_z=float(sensor.get('accelZ', 1)),
                         )
                     elif stype == 'bmp280' and slave is not None:
                         slave.update(

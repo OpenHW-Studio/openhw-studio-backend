@@ -71,11 +71,9 @@ static void _simulatorHeartbeatTask(void*) {
 }
 #endif
 
-#ifdef TwoWire_h
 extern volatile uint8_t  sim_wire_rx_buf[];
 extern volatile uint8_t  sim_wire_rx_len;
 extern volatile bool     sim_wire_rx_ready;
-#endif
 
 uint8_t           _sim_spi_rx_buf[SIM_SPI_RX_MAX];
 volatile uint16_t _sim_spi_rx_head = 0;
@@ -116,7 +114,6 @@ static void _simulatorUARTTask(void*) {
                             }
                         }
                         else if (rxBuf.length() > 10 && rxBuf.startsWith("<I2C_RESP:")) {
-#ifdef TwoWire_h
                             const int c1 = rxBuf.indexOf(':');
                             const int c2 = rxBuf.indexOf(':', c1 + 1);
                             const int cl = rxBuf.indexOf('>', c2);
@@ -131,7 +128,6 @@ static void _simulatorUARTTask(void*) {
                                 sim_wire_rx_len   = n;
                                 sim_wire_rx_ready = true;
                             }
-#endif
                         }
                         else if (rxBuf.length() > 10 && rxBuf.startsWith("<SPI_RESP:")) {
                             const int c1 = rxBuf.indexOf(':');

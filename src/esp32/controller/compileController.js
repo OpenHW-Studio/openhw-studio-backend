@@ -519,6 +519,7 @@ export const compileArduinoCode = (req, res) => {
     try {
         esptoolRunner = _requireEsptool();
     } catch (err) {
+        console.error('[COMPILE ERROR] _requireEsptool failed:', err.message);
         return res.status(500).json({ error: err.message });
     }
 
@@ -639,6 +640,7 @@ export const compileArduinoCode = (req, res) => {
             }
         }
     } catch (err) {
+        console.error(`[Compile:${buildId}] ❌ Failed to create build environment:`, err);
         wsManager.unregisterSession(buildId);
         _cleanup(buildId);
         return res.status(500).json({
@@ -648,11 +650,13 @@ export const compileArduinoCode = (req, res) => {
     }
 
     // ── Respond immediately — compilation continues async ─────────────────────
-    res.json({
-        success: true,
-        buildId,
-        message: 'Compilation started. Connect via WebSocket and send REGISTER_SESSION.',
-    });
+    if (!req.body.isFrontendEsp32) {
+        res.json({
+            success: true,
+            buildId,
+            message: 'Compilation started. Connect via WebSocket and send REGISTER_SESSION.',
+        });
+    }
 
     // ── Async: compile → merge → launch QEMU ─────────────────────────────────
     const CACHE_DIR = path.join(buildDir, 'cache');
@@ -687,7 +691,11 @@ export const compileArduinoCode = (req, res) => {
                     : 'No application binary was produced. Check that the ESP32 board core is installed:\n  arduino-cli core install esp32:esp32';
 
                 console.error(`[Compile:${buildId}] ❌ Compile failed — ${reason}\n\nCompiler Output:\n${output}\n`);
-                _sendErrorAndCleanup(buildId, output || reason);
+                if (req.body.isFrontendEsp32) {
+                    res.status(500).json({ error: 'Compilation Failed', details: output || reason });
+                } else {
+                    _sendErrorAndCleanup(buildId, output || reason);
+                }
                 return;
             }
 
@@ -703,6 +711,19 @@ export const compileArduinoCode = (req, res) => {
             }
 
             // ── Notify client that compilation succeeded ───────────────────────
+            if (req.body.isFrontendEsp32) {
+                try {
+                    const raw = fs.readFileSync(mergedFlash);
+                    const b64 = raw.toString('base64');
+                    res.json({ success: true, hex: b64, buildId });
+                } catch (e) {
+                    res.status(500).json({ error: 'Failed to read merged flash', details: e.message });
+                } finally {
+                    try { fs.rmSync(sketchDir, { recursive: true, force: true }); } catch (e) {}
+                }
+                return;
+            }
+
             wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
             // ── Launch QEMU ───────────────────────────────────────────────────

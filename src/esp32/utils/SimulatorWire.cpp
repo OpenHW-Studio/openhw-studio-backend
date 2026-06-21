@@ -120,12 +120,14 @@ uint8_t TwoWire::requestFrom(uint8_t address, uint8_t size, bool sendStop) {
     frame[pos++] = '<';
     frame[pos]   = '\0';
 
-    sim_wire_emit(frame);
-
-    // Clear ready flag, then spin-wait 8 ms for UART task to fill buffer
+    // Clear ready flag BEFORE emitting, because the UART task has higher priority
+    // and might parse the synchronous WASM response and set the flag to true
+    // before sim_wire_emit() even returns!
     sim_wire_rx_ready = false;
     sim_wire_rx_len   = 0;
     _rx_pos           = 0;
+
+    sim_wire_emit(frame);
 
     const uint32_t deadline = millis() + 8;
     while (millis() < deadline) {
