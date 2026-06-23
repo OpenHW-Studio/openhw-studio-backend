@@ -7,7 +7,7 @@ function getUserId(req) {
 export async function getUserUnlocks(req, res) {
   try {
     const userId = getUserId(req)
-    console.log('Received PUT /state for', userId, req.body.state); const progress = await UserProgress.findOrCreate(userId)
+    const progress = await UserProgress.findOrCreate(userId)
     return res.json({ 
       success: true, 
       unlockedComponentTypes: progress.unlockedComponents || [] 
@@ -24,7 +24,7 @@ export async function updateUserUnlocks(req, res) {
     
     // Handle wildcard case ('*' means all components unlocked)
     if (unlockedComponentTypes === '*') {
-      console.log('Received PUT /state for', userId, req.body.state); const progress = await UserProgress.findOrCreate(userId)
+      const progress = await UserProgress.findOrCreate(userId)
       // Store '*' as a special marker in the array
       progress.unlockedComponents = ['*']
       await progress.save()
@@ -39,7 +39,7 @@ export async function updateUserUnlocks(req, res) {
       return res.status(400).json({ success: false, error: 'unlockedComponentTypes must be an array or string' })
     }
     
-    console.log('Received PUT /state for', userId, req.body.state); const progress = await UserProgress.findOrCreate(userId)
+    const progress = await UserProgress.findOrCreate(userId)
     progress.unlockedComponents = unlockedComponentTypes
     await progress.save()
     
@@ -55,7 +55,7 @@ export async function updateUserUnlocks(req, res) {
 export async function getUserGamificationState(req, res) {
   try {
     const userId = getUserId(req)
-    console.log('Received PUT /state for', userId, req.body.state); const progress = await UserProgress.findOrCreate(userId)
+    const progress = await UserProgress.findOrCreate(userId)
     
     return res.json({ 
       success: true, 
