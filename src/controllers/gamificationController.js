@@ -13,7 +13,6 @@ export async function getUserUnlocks(req, res) {
       unlockedComponentTypes: progress.unlockedComponents || [] 
     })
   } catch (err) {
-    console.error('[getUserUnlocks]', err)
     return res.status(500).json({ success: false, error: 'Failed to fetch user unlocks' })
   }
 }
@@ -69,7 +68,6 @@ export async function getUserGamificationState(req, res) {
       }
     })
   } catch (err) {
-    console.error('[getUserGamificationState]', err)
     return res.status(500).json({ success: false, error: 'Failed to fetch user gamification state' })
   }
 }
@@ -79,7 +77,7 @@ export async function updateUserGamificationState(req, res) {
     const userId = getUserId(req)
     const { xp, currentLevel, earnedBadges, completedProjects, unlockedComponentTypes } = req.body.state || {}
     
-    console.log('Received PUT /state for', userId, req.body.state); const progress = await UserProgress.findOrCreate(userId)
+    const progress = await UserProgress.findOrCreate(userId)
     
     if (xp !== undefined) progress.xp = xp
     if (currentLevel !== undefined) progress.level = currentLevel
@@ -105,7 +103,6 @@ export async function updateUserGamificationState(req, res) {
     
     return res.json({ success: true, state: req.body.state })
   } catch (err) {
-    console.error('[updateUserGamificationState]', err)
     return res.status(500).json({ success: false, error: 'Failed to save user gamification state' })
   }
 }
