@@ -59,12 +59,12 @@ const signinUser = async (req, res) => {
       // 1. Admin Superpower Bypass
       if (user.role === 'admin') {
         // Admin allowed everywhere
-      } 
+      }
       // 2. The Strict Wall: Teacher vs Student
-      else if ((user.role === 'teacher' && role === 'student') || 
-               (user.role === 'student' && role === 'teacher')) {
-        return res.status(403).json({ 
-          message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.` 
+      else if ((user.role === 'teacher' && role === 'student') ||
+        (user.role === 'student' && role === 'teacher')) {
+        return res.status(403).json({
+          message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.`
         });
       }
       // 3. General User Upgrade Path
@@ -74,8 +74,8 @@ const signinUser = async (req, res) => {
       }
       // 4. Fallback for any other unauthorized cross-portal attempts
       else if (user.role !== role) {
-         return res.status(403).json({ 
-          message: `Access Denied: This portal is for ${role}s only.` 
+        return res.status(403).json({
+          message: `Access Denied: This portal is for ${role}s only.`
         });
       }
     }
@@ -108,11 +108,11 @@ const signinUser = async (req, res) => {
       message: "Login successful",
       token,
       user: responseUser,
-      });
+    });
   } catch (error) {
     res.status(500).json({ message: "Server error", error: error.message });
   }
-}; 
+};
 
 const signupUser = async (req, res) => {
   try {
@@ -136,12 +136,12 @@ const signupUser = async (req, res) => {
         error: "Name, email, and password must be non-empty strings.",
       });
     }
-if (!isStrongPassword(password)) {
-  return res.status(400).json({
-    error:
-      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
-  });
-}
+    if (!isStrongPassword(password)) {
+      return res.status(400).json({
+        error:
+          "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+      });
+    }
 
     const sanitizedEmail =
       typeof email === "string" ? normalizeEmail(email) : "";
@@ -180,7 +180,7 @@ if (!isStrongPassword(password)) {
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
-const token = generateToken(user, selectedRole);
+    const token = generateToken(user, selectedRole);
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
@@ -190,7 +190,7 @@ const token = generateToken(user, selectedRole);
     return res.status(201).json({
       message: "User registered successfully.",
       user: serializeUser(user),
-       token,
+      token,
     });
   } catch (error) {
     if (error && (error.code === 11000 || error.code === 11001)) {
@@ -335,7 +335,7 @@ const googleLogin = async (req, res) => {
       // If user doesn't exist, create them
       const allowedRoles = ["student", "teacher", "user", "admin"];
       let selectedRole = allowedRoles.includes(role) ? role : "user";
-      
+
       // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
       const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
       if (adminEmails.includes(email.toLowerCase())) {
@@ -361,12 +361,12 @@ const googleLogin = async (req, res) => {
         // 1. Admin Superpower Bypass
         if (user.role === 'admin') {
           // Admin allowed everywhere
-        } 
+        }
         // 2. The Strict Wall: Teacher vs Student
-        else if ((user.role === 'teacher' && role === 'student') || 
-                 (user.role === 'student' && role === 'teacher')) {
-          return res.status(403).json({ 
-            message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.` 
+        else if ((user.role === 'teacher' && role === 'student') ||
+          (user.role === 'student' && role === 'teacher')) {
+          return res.status(403).json({
+            message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.`
           });
         }
         // 3. General User Upgrade Path
@@ -376,8 +376,8 @@ const googleLogin = async (req, res) => {
         }
         // 4. Fallback for any other unauthorized cross-portal attempts
         else if (user.role !== role) {
-           return res.status(403).json({ 
-            message: `Access Denied: This portal is for ${role}s only.` 
+          return res.status(403).json({
+            message: `Access Denied: This portal is for ${role}s only.`
           });
         }
       }
@@ -483,11 +483,11 @@ const resetPassword = async (req, res) => {
     // Set new password
     const { password } = req.body;
     if (!isStrongPassword(password)) {
-  return res.status(400).json({
-    error:
-      "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
-  });
-}
+      return res.status(400).json({
+        error:
+          "Password must be at least 8 characters long and include uppercase, lowercase, number, and special symbol.",
+      });
+    }
 
     user.password = await argon2.hash(password);
     user.resetPasswordToken = undefined;
