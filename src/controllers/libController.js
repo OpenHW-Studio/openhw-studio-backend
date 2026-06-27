@@ -7,7 +7,7 @@ import { searchLibrariesLocal, getLibraryMetadata } from '../services/libraryInd
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const ARDUINO_CLI_PATH = 'arduino-cli';
+const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 
 // Simple in-memory cache for library searches to boost performance
 const searchCache = new Map();

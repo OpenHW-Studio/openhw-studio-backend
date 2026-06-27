@@ -210,6 +210,7 @@ function buildCodeHash(code, req) {
     const payload = {
         code,
         builder,
+        targetEngine: req.body.targetEngine || '',
         libraries_txt: req.body.libraries_txt || '',
         board_options: req.body.board_options || null,
         spiffs_files: req.body.spiffs_files || null
@@ -278,7 +279,7 @@ function _requireEsptool() {
  * @param {object} esptoolRunner - {cmd, args} from _requireEsptool
  * @returns {string} Absolute path to the merged-flash.bin
  */
-function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, targetFqbn = 'esp32:esp32:esp32') {
+function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = false, targetFqbn = 'esp32:esp32:esp32') {
     const isC3 = targetFqbn.includes('esp32c3');
     const bootloaderOffset = isC3 ? '0x0000' : '0x1000';
     
@@ -317,7 +318,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, targetFqbn = 'esp
         '--chip',          'esp32',
         'merge_bin',
         '--output',        mergedOut,
-        '--fill-flash-size', '4MB',
+        ...(isHardware ? [] : ['--fill-flash-size', '4MB']),
         '--flash_mode',    'dio',
         '--flash_size',    '4MB',
         '--flash_freq',    '40m',
@@ -758,7 +759,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
     let isSharedLibraryMode = fs.existsSync(libPath);
 
-    const COMPILE_CACHE_DIR = path.join(DATA_DIR, 'arduino-cache');
+    const cacheFolderName = req.body.targetEngine === 'hardware' ? 'arduino-cache-hw' : 'arduino-cache';
+    const COMPILE_CACHE_DIR = path.join(DATA_DIR, cacheFolderName);
 
     const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
@@ -767,7 +769,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     // ccache is disabled for arduino-cli here because platform.txt prepends {compiler.path}, breaking it.
     const ccacheProps = [];
 
-    const extraFlagsProps = req.body.targetEngine === 'frontend' 
+    const isFrontendOrHardware = req.body.targetEngine === 'frontend' || req.body.targetEngine === 'hardware';
+    const extraFlagsProps = isFrontendOrHardware
         ? [] 
         : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'];
 
@@ -824,7 +827,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
 
         let mergedFlash;
         try {
-            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner, targetFqbn);
+            const isHardware = req.body.targetEngine === 'hardware';
+            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner, isHardware, targetFqbn);
             console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
 
             try {
@@ -987,9 +991,9 @@ export const compileArduinoCode = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode) {
+            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
             } else {
                 // inside class bodies are NOT matched because they have a return type
                 // other than void or are preceded by a class/struct scope.
@@ -1030,7 +1034,7 @@ export const compileArduinoCode = async (req, res) => {
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-            if (!isSharedLibraryMode) {
+            if (!isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
                 for (const { src, dst } of SHIM_HEADERS) {
                     if (req.body.targetEngine === 'frontend') {
                         continue;
@@ -1189,9 +1193,9 @@ export const compileStart = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode) {
+            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Shared-Library Pure Emulation Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
             } else {
                 // ── Rename ONLY the user's global setup()/loop() definitions ────
                 const renamedCode = code
@@ -1231,7 +1235,7 @@ export const compileStart = async (req, res) => {
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-            if (!isSharedLibraryMode) {
+            if (!isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
                 for (const { src, dst } of SHIM_HEADERS) {
                     if (req.body.targetEngine === 'frontend') {
                         continue;

@@ -23,7 +23,7 @@ const __dirname = path.dirname(__filename);
 const backendRoot = path.resolve(__dirname, '..');
 
 const resolveConfiguredPath = (rawPath, fallbackCandidates = []) => {
-  const candidates = rawPath ? [rawPath] : fallbackCandidates;
+  const candidates = rawPath ? [rawPath, ...fallbackCandidates] : fallbackCandidates;
 
   for (const candidate of candidates) {
     const resolvedCandidate = path.isAbsolute(candidate)
@@ -195,6 +195,8 @@ app.use(createInMemoryRateLimiter({
 }));
 app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
 
 app.use('/api', apiRoutes);
 app.use('/auth', authRoutes);

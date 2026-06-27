@@ -16,9 +16,7 @@ import { getCost } from '../services/resourceManager.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Find arduino-cli locally in the bin directory
-// const ARDUINO_CLI_PATH = path.resolve(__dirname, '../../../bin/arduino-cli.exe');
-const ARDUINO_CLI_PATH = 'arduino-cli';
+const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
 const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
 const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
@@ -1299,7 +1297,7 @@ pico_add_extra_outputs(firmware)
         }
 
         if (error) {
-            console.error('Compile error:', stderr || stdout);
+            console.error('Compile error:', error || stdout);
             return sendCompileFailure(
                 res,
                 400,
@@ -1350,6 +1348,62 @@ pico_add_extra_outputs(firmware)
       }));
 };
 
+function resolveAvrdudeExecutable() {
+    const isWin = os.platform() === 'win32';
+    const exeName = isWin ? 'avrdude.exe' : 'avrdude';
+    const explicitExe = String(process.env.AVRDUDE_PATH || '').trim();
+    if (explicitExe && fs.existsSync(explicitExe)) return explicitExe;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const exePath = path.join(toolsRoot, version, 'bin', exeName);
+            if (fs.existsSync(exePath)) return exePath;
+        }
+    }
+    return exeName; // fallback to PATH
+}
+
+function resolveAvrdudeConf() {
+    const explicit = String(process.env.AVRDUDE_CONF || '').trim();
+    if (explicit && fs.existsSync(explicit)) return explicit;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const confPath = path.join(toolsRoot, version, 'etc', 'avrdude.conf');
+            if (fs.existsSync(confPath)) return confPath;
+        }
+    }
+    return '';
+}
+
 export const flashFirmware = (req, res) => {
     const { port, fqbn, hex, baudRate, resetMethod } = req.body || {};
     const cleanPort = sanitizePortName(port);
@@ -1370,13 +1424,50 @@ export const flashFirmware = (req, res) => {
 
     try {
         fs.mkdirSync(flashDir, { recursive: true });
+        
+        if (targetFqbn.toLowerCase().includes('esp32')) {
+            const binFile = path.join(flashDir, `firmware_${flashId}.bin`);
+            const binaryBuffer = Buffer.from(hexContent, 'base64');
+            fs.writeFileSync(binFile, binaryBuffer);
+
+            const args = [
+                '-m', 'esptool',
+                '--port', cleanPort,
+            ];
+            if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
+                args.push('--baud', String(Math.trunc(cleanBaud)));
+            }
+            args.push('write_flash', '-z', '0x0', binFile);
+
+            execFile('python', args, (error, stdout, stderr) => {
+                fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
+                    if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
+                });
+
+                if (error) {
+                    console.error('Flash error:', stderr || stdout);
+                    return res.status(400).json({
+                        error: 'Flashing failed',
+                        details: stderr || stdout,
+                    });
+                }
+
+                return res.json({
+                    ok: true,
+                    message: 'Firmware flashed successfully via esptool.',
+                    output: stdout || stderr || '',
+                });
+            });
+            return;
+        }
+
         fs.writeFileSync(hexFile, hexContent, 'utf8');
     } catch (err) {
         console.error('Error creating flash temp files:', err);
         return res.status(500).json({ error: 'Failed to create temporary flash files.' });
     }
 
-    const args = [
+    const execArgs = [
         'upload',
         '--fqbn', targetFqbn,
         '-p', cleanPort,
@@ -1384,30 +1475,31 @@ export const flashFirmware = (req, res) => {
         '--verify',
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-        args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
-    }
-    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-        // Core-dependent, may be ignored by some board packages.
-        args.push('--upload-property', 'upload.disable_flushing=true');
+    const isAvr = targetFqbn.toLowerCase().includes(':avr:');
+    if (!isAvr && Number.isFinite(cleanBaud) && cleanBaud > 0) {
+        execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
 
-    execFile(ARDUINO_CLI_PATH, args, (error, stdout, stderr) => {
+    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
+        execArgs.push('--upload-property', 'upload.disable_flushing=true');
+    }
+
+    execFile(ARDUINO_CLI_PATH, execArgs, (error, stdout, stderr) => {
         fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
             if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
         });
 
         if (error) {
-            console.error('Flash error:', stderr || stdout);
+            console.error('Flash error:', stderr || stdout || error.message);
             return res.status(400).json({
                 error: 'Flashing failed',
-                details: stderr || stdout,
+                details: stderr || stdout || error.message,
             });
         }
 
         return res.json({
             ok: true,
-            message: 'Firmware flashed successfully via bootloader uploader.',
+            message: 'Firmware flashed successfully via arduino-cli.',
             output: stdout || stderr || '',
         });
     });
