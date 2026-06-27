@@ -15,6 +15,8 @@
 import wsManager from './utils/websocketManager.js';
 import {
     compileArduinoCode,
+    compileStart,
+    compileStatus,
     stopSession,
 } from './controller/compileController.js';
 
@@ -57,6 +59,46 @@ export const handleSTM32Compile = async (req, res) => {
         }
     }
     return compileArduinoCode(req, res);
+};
+
+/** Express route handler: start compilation (polling mode). */
+export const handleSTM32CompileStart = async (req, res) => {
+    if (process.env.ROLE === 'main') {
+        const workerUrl = process.env.STM32_WORKER_HTTP_URL || 'http://stm32-worker:5002';
+        try {
+            const response = await fetch(`${workerUrl}/api/compile/stm32/start`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(req.body),
+            });
+            const data = await response.json();
+            if (response.ok && data.success && data.buildId) {
+                wsManager.setTarget(data.buildId, 'stm32');
+            }
+            return res.status(response.status).json(data);
+        } catch (err) {
+            console.error(`[STM32 Proxy] Compile Start proxy failed:`, err);
+            return res.status(502).json({ error: 'STM32 simulation worker is offline or unavailable.', details: err.message });
+        }
+    }
+    return compileStart(req, res);
+};
+
+/** Express route handler: get compilation status. */
+export const handleSTM32CompileStatus = async (req, res) => {
+    if (process.env.ROLE === 'main') {
+        const { jobId } = req.params;
+        const workerUrl = process.env.STM32_WORKER_HTTP_URL || 'http://stm32-worker:5002';
+        try {
+            const response = await fetch(`${workerUrl}/api/compile/stm32/status/${jobId}`);
+            const data = await response.json();
+            return res.status(response.status).json(data);
+        } catch (err) {
+            console.error(`[STM32 Proxy] Compile Status proxy failed:`, err);
+            return res.status(502).json({ error: 'STM32 simulation worker is offline or unavailable.', details: err.message });
+        }
+    }
+    return compileStatus(req, res);
 };
 
 /** Express route handler: stop a running Renode session by buildId. */

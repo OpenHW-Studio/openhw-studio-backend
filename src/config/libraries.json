@@ -17,5 +17,10 @@
         "SparkFun MAX3010x Pulse and Proximity Sensor Library",
         "ESP32Servo"
     ],
-    "cached": []
+    "cached": [
+        "Adafruit SoftServo@1.0.4",
+        "ESP32Servo",
+        "IRremote@4.7.1",
+        "PubSubClient@2.8.0"
+    ]
 }

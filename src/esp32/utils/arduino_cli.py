@@ -386,6 +386,11 @@ class ArduinoCLIService:
                         partitions_file = build_dir / "sketch.ino.partitions.bin"
                         merged_file     = build_dir / "sketch.ino.merged.bin"
 
+                        is_c3 = self._is_esp32c3_board(board_fqbn)
+                        if is_c3 and not bootloader_file.exists():
+                            # Fallback to our bundled bootloader if arduino-cli didn't emit one
+                            bootloader_file = Path(__file__).parent / "esp32c3_bootloader.bin"
+
                         print(f"[ESP32] Build dir contents: {[f.name for f in build_dir.iterdir()]}")
 
                         # Merge individual .bin files into a single 4MB flash image in pure Python.
@@ -398,7 +403,7 @@ class ArduinoCLIService:
                             try:
                                 FLASH_SIZE = 4 * 1024 * 1024  # 4 MB
                                 flash = bytearray(b'\xff' * FLASH_SIZE)
-                                bootloader_offset = 0x0000 if self._is_esp32c3_board(board_fqbn) else 0x1000
+                                bootloader_offset = 0x0000 if is_c3 else 0x1000
                                 for offset, path in [
                                     (bootloader_offset, bootloader_file),
                                     (0x8000,            partitions_file),

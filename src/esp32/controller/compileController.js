@@ -278,11 +278,23 @@ function _requireEsptool() {
  * @param {object} esptoolRunner - {cmd, args} from _requireEsptool
  * @returns {string} Absolute path to the merged-flash.bin
  */
-function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
-    const bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
+function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, targetFqbn = 'esp32:esp32:esp32') {
+    const isC3 = targetFqbn.includes('esp32c3');
+    const bootloaderOffset = isC3 ? '0x0000' : '0x1000';
+    
+    let bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
     const partTable  = path.join(buildDir, `${sketchBase}.partitions.bin`);
     const appBin     = path.join(buildDir, `${sketchBase}.bin`);
     const mergedOut  = path.join(buildDir, 'merged-flash.bin');
+
+    // Fallback for ESP32-C3 bootloader bug in arduino-cli core v3.x
+    if (isC3 && !fs.existsSync(bootloader)) {
+        const fallbackBootloader = path.resolve(__dirname, '../utils/esp32c3_bootloader.bin');
+        if (fs.existsSync(fallbackBootloader)) {
+            console.log(`[Compile] Using fallback ESP32-C3 bootloader from ${fallbackBootloader}`);
+            fs.copyFileSync(fallbackBootloader, bootloader);
+        }
+    }
 
     // Validate all required artifacts exist before calling esptool
     const artifacts = [
@@ -309,7 +321,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
         '--flash_mode',    'dio',
         '--flash_size',    '4MB',
         '--flash_freq',    '40m',
-        '0x1000',  bootloader,
+        bootloaderOffset,  bootloader,
         '0x8000',  partTable,
         '0x10000', appBin,
     ];
@@ -595,14 +607,15 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
         fs.mkdirSync(env.OPENHW_BUILD_ROOT, { recursive: true });
         fs.mkdirSync(env.CCACHE_DIR, { recursive: true });
 
-        // Build file list
         const files = Array.isArray(req.body.files) && req.body.files.length > 0
             ? req.body.files
             : [{ name: 'sketch.ino', content: code }];
 
+        const targetFqbn = req.body.fqbn || ESP32_FQBN;
+
         const inputData = {
             files,
-            board_fqbn: ESP32_FQBN,
+            board_fqbn: targetFqbn,
             board_options: req.body.board_options || null,
             spiffs_files: req.body.spiffs_files || null
         };
@@ -758,9 +771,11 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         ? [] 
         : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'];
 
+    const targetFqbn = req.body.fqbn || ESP32_FQBN;
+
     const compileArgs = [
         'compile',
-        '--fqbn',             ESP32_FQBN,
+        '--fqbn',             targetFqbn,
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
         '--jobs',             '4',
@@ -770,7 +785,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         sketchFile,
     ];
 
-    console.log(`[Compile:${buildId}] 🔨 Queuing compile task (fqbn=${ESP32_FQBN})`);
+    console.log(`[Compile:${buildId}] 🔨 Queuing compile task (fqbn=${targetFqbn})`);
 
     try {
         // Wrap Arduino compile in global queue
@@ -809,7 +824,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
 
         let mergedFlash;
         try {
-            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
+            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner, targetFqbn);
             console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
 
             try {
@@ -1072,7 +1087,13 @@ export const compileStart = async (req, res) => {
         return res.status(400).json({ error: 'Request body must include a non-empty "code" string.' });
     }
 
-    console.log('\n\n[ESP32 COMPILE START] Received Code:\n', code, '\n[END CODE]\n');
+    const engine = req.body.targetEngine || 'backend';
+    const fqbn = req.body.fqbn || 'esp32:esp32:esp32';
+    
+    console.log(`\n\n[ESP32 COMPILE START]`);
+    console.log(`- Target Engine: ${engine}`);
+    console.log(`- FQBN: ${fqbn}`);
+    console.log(`- Code Snippet: ${code.substring(0, 100).replace(/\n/g, ' ')}...`);
 
     if (target !== 'esp32') {
         return res.status(400).json({ error: 'This handler only supports target="esp32".' });

@@ -12,7 +12,7 @@ import { searchLibrary, installLibrary, listLibraries } from '../controllers/lib
 import { protectRoute } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/authorization.js';
 import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary, handleESP32CompileStart, handleESP32CompileStatus } from '../esp32/index.js';
-import { handleSTM32Stop } from '../stm32/index.js';
+import { handleSTM32Stop, handleSTM32CompileStart, handleSTM32CompileStatus } from '../stm32/index.js';
 import { compileTelemetryMiddleware } from '../services/telemetryService.js';
 
 const router = Router();
@@ -38,6 +38,8 @@ router.post('/esp32/run-binary', handleESP32RunBinary);
 
 // STM32 Renode routes
 router.post('/stm32/stop/:buildId', handleSTM32Stop);
+router.post('/stm32/start', handleSTM32CompileStart);
+router.get('/stm32/status/:jobId', handleSTM32CompileStatus);
 
 // Library Management
 router.get('/lib-search', searchLibrary);

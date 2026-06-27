@@ -26,8 +26,8 @@ export function loadCalibratedBudget() {
     return DEFAULT_BUDGET;
 }
 
-// Calculate global points pool (Total memory minus 2000MB system reserve)
-const SYSTEM_RESERVE_MB = 2000;
+// Calculate global points pool
+const SYSTEM_RESERVE_MB = parseInt(process.env.SYSTEM_RESERVE_MB || '500', 10);
 const TOTAL_PHYSICAL_MB = Math.round(os.totalmem() / (1024 * 1024));
 export const GLOBAL_POOL_LIMIT = Math.max(1000, TOTAL_PHYSICAL_MB - SYSTEM_RESERVE_MB);
 

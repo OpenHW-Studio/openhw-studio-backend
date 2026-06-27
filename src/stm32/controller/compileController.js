@@ -275,6 +275,25 @@ function buildCodeHash(mainCode, req) {
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
+// ── Asynchronous Compile Jobs Map & State ────────────────────────────────────
+const compileJobs = new Map();
+
+function getOrCreateJob(jobId) {
+    if (!compileJobs.has(jobId)) {
+        compileJobs.set(jobId, {
+            id: jobId,
+            status: 'queued', // queued, compiling, success, failed
+            progress: [],
+            error: null,
+            stdout: '',
+            stderr: '',
+            result: null,
+            createdAt: Date.now()
+        });
+    }
+    return compileJobs.get(jobId);
+}
+
 /**
  * POST /api/compile  { code: string, target: 'stm32' }
  */
@@ -331,6 +350,10 @@ export const compileArduinoCode = async (req, res) => {
             const elfPath = path.join(buildDir, 'firmware.elf');
             fs.copyFileSync(cachedElf, elfPath);
 
+            // Update job status
+            const job = getOrCreateJob(buildId);
+            job.status = 'success';
+
             // Respond immediately — compilation is bypassed
             res.json({
                 success: true,
@@ -343,23 +366,27 @@ export const compileArduinoCode = async (req, res) => {
             setTimeout(() => {
                 wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-                if (_activeRunners.has(buildId)) {
-                    console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
-                    const existingRunner = _activeRunners.get(buildId);
-                    existingRunner.reload(elfPath);
-                } else {
-                    const pooledRunner = acquireStm32Runner();
-                    if (pooledRunner) {
-                        console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
-                        pooledRunner.assignSession(buildId);
-                        _activeRunners.set(buildId, pooledRunner);
-                        pooledRunner.reload(elfPath);
+                if (req.body.targetEngine !== 'frontend') {
+                    if (_activeRunners.has(buildId)) {
+                        console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
+                        const existingRunner = _activeRunners.get(buildId);
+                        existingRunner.reload(elfPath);
                     } else {
-                        console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty - Cache Hit)`);
-                        const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
-                        _activeRunners.set(buildId, runner);
-                        runner.start();
+                        const pooledRunner = acquireStm32Runner();
+                        if (pooledRunner) {
+                            console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot - Cache Hit)`);
+                            pooledRunner.assignSession(buildId);
+                            _activeRunners.set(buildId, pooledRunner);
+                            pooledRunner.reload(elfPath);
+                        } else {
+                            console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty - Cache Hit)`);
+                            const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
+                            _activeRunners.set(buildId, runner);
+                            runner.start();
+                        }
                     }
+                } else {
+                    console.log(`[STM32:Compile:${buildId}] ⚡ Target is frontend, skipping Renode start for Cache Hit`);
                 }
             }, 100);
             return;
@@ -388,58 +415,64 @@ export const compileArduinoCode = async (req, res) => {
         }
 
         // ── Build the injected sketch ─────────────────────────────────────────
-        // The user's setup() / loop() are renamed via #define macros so the
-        // compiler sees them as _sim_user_setup() / _sim_user_loop(), and our
-        // injected setup() / loop() call them as sub-functions.
-        const preamble = [
-            '#define setup _sim_user_setup',
-            '#define loop  _sim_user_loop',
-            '',
-        ].join('\n');
+        let finalCode = mainCode;
 
-        const suffix = [
-            '',
-            '#undef setup',
-            '#undef loop',
-            '#include "SimulatorBridge.h"',
-            '',
-            'void setup() {',
-            '    _simBridgeInit_Early();',
-            '    _sim_user_setup();',
-            '    _simBridgeInit_Late();',
-            '    if (!_sim_ready_sent) sim_ready();',
-            '}',
-            '',
-            'void loop() {',
-            '    _sim_user_loop();',
-            '}',
-            '',
-        ].join('\n');
+        if (req.body.targetEngine !== 'frontend') {
+            // The user's setup() / loop() are renamed via #define macros so the
+            // compiler sees them as _sim_user_setup() / _sim_user_loop(), and our
+            // injected setup() / loop() call them as sub-functions.
+            const preamble = [
+                '#define setup _sim_user_setup',
+                '#define loop  _sim_user_loop',
+                '',
+            ].join('\n');
 
-        const finalCode = preamble + mainCode + suffix;
+            const suffix = [
+                '',
+                '#undef setup',
+                '#undef loop',
+                '#include "SimulatorBridge.h"',
+                '',
+                'void setup() {',
+                '    _simBridgeInit_Early();',
+                '    _sim_user_setup();',
+                '    _simBridgeInit_Late();',
+                '    if (!_sim_ready_sent) sim_ready();',
+                '}',
+                '',
+                'void loop() {',
+                '    _sim_user_loop();',
+                '}',
+                '',
+            ].join('\n');
+
+            finalCode = preamble + mainCode + suffix;
+        }
 
         console.log(`\n\n[STM32 COMPILE] Received Code:\n${mainCode}\n[END CODE]\n`);
 
         fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-        // Copy shim headers into the sketch directory
-        for (const { src, dst } of SHIM_HEADERS) {
-            if (fs.existsSync(src)) {
-                const destPath = path.join(sketchDir, dst);
-                const rawBytes = fs.readFileSync(src);
+        if (req.body.targetEngine !== 'frontend') {
+            // Copy shim headers into the sketch directory
+            for (const { src, dst } of SHIM_HEADERS) {
+                if (fs.existsSync(src)) {
+                    const destPath = path.join(sketchDir, dst);
+                    const rawBytes = fs.readFileSync(src);
 
-                // Strip UTF-8 BOM if present
-                const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
+                    // Strip UTF-8 BOM if present
+                    const startIdx = (rawBytes[0] === 0xEF && rawBytes[1] === 0xBB && rawBytes[2] === 0xBF) ? 3 : 0;
 
-                // Copy only ASCII bytes to prevent gcc "extended character" errors
-                const asciiBytes = [];
-                for (let i = startIdx; i < rawBytes.length; i++) {
-                    if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                    // Copy only ASCII bytes to prevent gcc "extended character" errors
+                    const asciiBytes = [];
+                    for (let i = startIdx; i < rawBytes.length; i++) {
+                        if (rawBytes[i] <= 0x7F) asciiBytes.push(rawBytes[i]);
+                    }
+
+                    fs.writeFileSync(destPath, Buffer.from(asciiBytes));
+                } else {
+                    console.warn(`[STM32:Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
                 }
-
-                fs.writeFileSync(destPath, Buffer.from(asciiBytes));
-            } else {
-                console.warn(`[STM32:Compile:${buildId}] ⚠️  Shim header not found: ${src}`);
             }
         }
     } catch (err) {
@@ -475,13 +508,17 @@ export const compileArduinoCode = async (req, res) => {
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
         '--jobs',             '4',
-        '--build-property',   'compiler.cpp.extra_flags=-include SimulatorBridge.h',
+        ...(req.body.targetEngine !== 'frontend' ? ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'] : []),
         ...ccacheProps,
         ...libraryFlags,
         sketchFile,
     ];
 
     console.log(`[STM32:Compile:${buildId}] 🔨 Queuing compile task (fqbn=${STM32_FQBN})`);
+
+    const jobId = buildId;
+    const job = getOrCreateJob(jobId);
+    job.status = 'compiling';
 
     // Wrap Arduino compile in global queue
     enqueueCompile(getCost('stm32', 'compile'), () => {
@@ -499,6 +536,9 @@ export const compileArduinoCode = async (req, res) => {
         const rawOutput = [stdout, stderr].filter(Boolean).join('\n').trim();
             const output    = _shiftLineNumbers(rawOutput, sketchFile);
 
+            job.stdout = stdout || '';
+            job.stderr = stderr || '';
+
             // Find the .elf artifact (not .bin — Renode loads .elf directly)
             const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
             const elfFile  = outFiles.find(f => f.toLowerCase().endsWith('.elf'));
@@ -509,6 +549,8 @@ export const compileArduinoCode = async (req, res) => {
                     : 'No .elf binary was produced. Check that the STM32 board core is installed:\n  arduino-cli core install STM32:stm32';
 
                 console.error(`[STM32:Compile:${buildId}] ❌ Compile failed — ${reason}\n\nOutput:\n${output}\n`);
+                job.status = 'failed';
+                job.error = output || reason;
                 _sendErrorAndCleanup(buildId, output || reason);
                 return;
             }
@@ -528,40 +570,150 @@ export const compileArduinoCode = async (req, res) => {
                 console.error(`[STM32:Compile:${buildId}] ⚠️ Failed to save STM32 cache:`, cacheErr.message);
             }
 
+            job.status = 'success';
+
             // ── Notify client that compilation succeeded ───────────────────────
             wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-            // ── Launch or Reload Renode ─────────────────────────────────────────────
-            if (_activeRunners.has(buildId)) {
-                // Hot-reload: user recompiled within same session
-                console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner`);
-                const existingRunner = _activeRunners.get(buildId);
-                existingRunner.reload(elfPath);
-            } else {
-                // Try to grab a pre-warmed pool instance first
-                const pooledRunner = acquireStm32Runner();
-                if (pooledRunner) {
-                    console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
-                    pooledRunner.assignSession(buildId);
-                    _activeRunners.set(buildId, pooledRunner);
-                    wsManager.createPendingSession(buildId);
-                    pooledRunner.reload(elfPath);
+            if (req.body.targetEngine !== 'frontend') {
+                // ── Launch or Reload Renode ─────────────────────────────────────────────
+                if (_activeRunners.has(buildId)) {
+                    // Hot-reload: user recompiled within same session
+                    console.log(`[STM32:Compile:${buildId}] 🔄 Hot-reloading existing runner`);
+                    const existingRunner = _activeRunners.get(buildId);
+                    existingRunner.reload(elfPath);
                 } else {
-                    // No pool instance — cold start
-                    console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty)`);
-                    const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
-                    _activeRunners.set(buildId, runner);
-                    
-                    // We must catch the connection promise or Renode connection failures crash the process
-                    runner.start();
-                    runner.connectionPromise.catch((err) => {
-                        console.error(`[STM32:Compile:${buildId}] ❌ Cold-start failed:`, err.message);
-                        try { runner.kill(); } catch {}
-                        _activeRunners.delete(buildId);
-                    });
+                    // Try to grab a pre-warmed pool instance first
+                    const pooledRunner = acquireStm32Runner();
+                    if (pooledRunner) {
+                        console.log(`[STM32:Compile:${buildId}] ⚡ Using pre-warmed pool runner (instant boot)`);
+                        pooledRunner.assignSession(buildId);
+                        _activeRunners.set(buildId, pooledRunner);
+                        wsManager.createPendingSession(buildId);
+                        pooledRunner.reload(elfPath);
+                    } else {
+                        // No pool instance — cold start
+                        console.log(`[STM32:Compile:${buildId}] 🚀 Cold-starting Renode (pool empty)`);
+                        const runner = new RenodeRunner(buildId, elfPath, buildDir, wsManager);
+                        _activeRunners.set(buildId, runner);
+                        
+                        // We must catch the connection promise or Renode connection failures crash the process
+                        runner.start();
+                        runner.connectionPromise.catch((err) => {
+                            console.error(`[STM32:Compile:${buildId}] ❌ Cold-start failed:`, err.message);
+                            try { runner.kill(); } catch {}
+                            _activeRunners.delete(buildId);
+                        });
+                    }
                 }
+            } else {
+                console.log(`[STM32:Compile:${buildId}] ⚡ Target is frontend, skipping Renode start`);
             }
     });
+};
+
+/**
+ * POST /api/compile/stm32/start
+ */
+export const compileStart = async (req, res) => {
+    // We can reuse the compileArduinoCode logic, but respond immediately and let it run
+    // Since compileArduinoCode already responds immediately and runs in background,
+    // we can just wrap it and ensure the response contains jobId.
+    
+    // We will just call the main handler, but first we need to make sure 
+    // it returns jobId. Wait, compileArduinoCode already returns buildId.
+    // Let's just create a modified version of compileArduinoCode's setup:
+    const { code, files, target, fqbn } = req.body || {};
+
+    const isStm32 = target === 'stm32' || String(fqbn || '').toLowerCase().includes('stm32');
+    if (!isStm32) {
+        return res.status(400).json({ error: 'This handler only supports target="stm32" or STM32 FQBN.' });
+    }
+
+    let mainCode = typeof code === 'string' ? code : '';
+    const fileList = Array.isArray(files) ? files : [];
+
+    if (!mainCode && fileList.length > 0) {
+        const firstIno = fileList.find(f => f && typeof f.name === 'string' && f.name.toLowerCase().endsWith('.ino'));
+        if (firstIno && typeof firstIno.content === 'string') {
+            mainCode = firstIno.content;
+        }
+    }
+
+    if (!mainCode) {
+        return res.status(400).json({ error: 'Request body must include a non-empty "code" string or a main ".ino" file.' });
+    }
+
+    if (_activeRunners.size >= MAX_SESSIONS) {
+        return res.status(503).json({
+            error: `STM32 server at capacity. Please try again in a moment.`,
+        });
+    }
+
+    const sessionId = req.body.sessionId;
+    const buildId   = sessionId || crypto.randomUUID();
+    
+    // Initialize the job immediately so compileStatus won't 404
+    getOrCreateJob(buildId);
+    
+    // We will just let compileArduinoCode do the work, it intercepts the request.
+    // However, compileArduinoCode sends res.json(). We'll mock the res to intercept it.
+    let responseSent = false;
+    const mockRes = {
+        status: (code) => {
+            if (!responseSent) { res.status(code); return mockRes; }
+            return mockRes;
+        },
+        json: (data) => {
+            if (!responseSent) {
+                responseSent = true;
+                if (data.success) {
+                    res.json({ ...data, jobId: data.buildId });
+                } else {
+                    res.json(data);
+                }
+            }
+        }
+    };
+    
+    await compileArduinoCode(req, mockRes);
+};
+
+/**
+ * GET /api/compile/stm32/status/:jobId
+ */
+export const compileStatus = (req, res) => {
+    const { jobId } = req.params;
+    const job = compileJobs.get(jobId);
+    
+    if (!job) {
+        return res.status(404).json({ error: 'Compile job not found.' });
+    }
+
+    const responseData = {
+        jobId: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        stdout: job.stdout,
+        stderr: job.stderr
+    };
+
+    if (job.status === 'success') {
+        const buildDir = path.join(BUILDS_DIR, jobId, 'build');
+        const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
+        const elfFile  = outFiles.find(f => f.toLowerCase().endsWith('.elf'));
+        if (elfFile) {
+            const elfPath = path.join(buildDir, elfFile);
+            try {
+                responseData.binary_content = fs.readFileSync(elfPath).toString('base64');
+            } catch (err) {
+                console.error(`[STM32:compileStatus] Failed to read ELF:`, err.message);
+            }
+        }
+    }
+
+    return res.json(responseData);
 };
 
 /**

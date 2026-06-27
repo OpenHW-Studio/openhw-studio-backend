@@ -73,8 +73,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 3.5G
+          cpus: '4.0'
+          memory: 6G
 
   stm32-worker:
     image: ${DOCKER_USERNAME}/openhw-stm32-worker:${BACKEND_TAG:-develop}
@@ -92,8 +92,8 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 2.5G
+          cpus: '4.0'
+          memory: 6G
 
   network-gateway:
     image: ${DOCKER_USERNAME}/openhw-network-gateway:${BACKEND_TAG:-develop}
