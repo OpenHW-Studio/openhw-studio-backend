@@ -80,12 +80,12 @@ void loop() { delay(1000); }
 // ─── Shim headers to copy into sketch dir ─────────────────────────────────────
 
 const ESP32_SHIMS = [
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorBridge.h'),   dst: 'SimulatorBridge.h'   },
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorBridge.cpp'), dst: 'SimulatorBridge.cpp'  },
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorWire.h'),     dst: 'Wire.h'               },
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorWire.cpp'),   dst: 'Wire.cpp'             },
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorSPI.h'),      dst: 'SPI.h'                },
-    { src: path.resolve(__dirname, '../esp32/utils/SimulatorSPI.cpp'),    dst: 'SPI.cpp'              },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorBridge.h'),   dst: 'SimulatorBridge.h'   },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorBridge.cpp'), dst: 'SimulatorBridge.cpp'  },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorWire.h'),     dst: 'Wire.h'               },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorWire.cpp'),   dst: 'Wire.cpp'             },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorSPI.h'),      dst: 'SPI.h'                },
+    { src: path.resolve(__dirname, '../compiler(esp32)/utils/SimulatorSPI.cpp'),    dst: 'SPI.cpp'              },
 ];
 
 const STM32_SHIMS = [
@@ -99,7 +99,7 @@ const STM32_SHIMS = [
 
 // ─── Pool state ───────────────────────────────────────────────────────────────
 
-/** @type {import('../esp32/utils/qemuRunner.js').default[]} */
+/** @type {import('../compiler(esp32)/utils/qemuRunner.js').default[]} */
 let _esp32Pool = [];
 
 /** @type {import('../stm32/utils/renodeRunner.js').default[]} */
@@ -295,7 +295,7 @@ async function _replenishEsp32(flashImage) {
     _esp32Replenishing = true;
     try {
         // Lazy import to avoid circular dependency
-        const { default: QemuRunner } = await import('../esp32/utils/qemuRunner.js');
+        const { default: QemuRunner } = await import('../compiler(esp32)/utils/qemuRunner.js');
         const poolId   = `pool-esp32-${crypto.randomUUID()}`;
         const pipesDir = path.join(os.tmpdir(), `openhw-pool-${poolId}`);
         fs.mkdirSync(pipesDir, { recursive: true });
@@ -388,8 +388,8 @@ export async function initPools() {
 
     const tasks = [];
 
-    // Only replenish ESP32 pool if we are esp32-worker or running everything locally without role set
-    if (!role || role === 'esp32-worker') {
+    // Only replenish ESP32 pool if we are compiler-worker or running everything locally without role set
+    if (!role || role === 'compiler-worker') {
         tasks.push((async () => {
             try {
                 const flash = await _buildEsp32Dummy();
@@ -423,7 +423,7 @@ export async function initPools() {
  * async background replenishment so the next user also gets a warm instance.
  * Returns null if the pool is empty.
  *
- * @returns {import('../esp32/utils/qemuRunner.js').default | null}
+ * @returns {import('../compiler(esp32)/utils/qemuRunner.js').default | null}
  */
 export function acquireEsp32Runner() {
     while (_esp32Pool.length > 0) {

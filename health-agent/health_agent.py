@@ -327,10 +327,10 @@ def execute_calibration_suite():
         "stm32_compile": 400, "stm32_sim": 150
     }
     
-    # We use esp32-worker for esp32/uno/pico, stm32-worker for stm32 (they have arduino-cli)
-    budget["esp32_compile"] = run_calibration_test("esp32", "openhw-esp32-worker:develop", "esp32:esp32:esp32", scripts.get("esp32", DEFAULT_SCRIPTS["esp32"]))
-    budget["uno_compile"] = run_calibration_test("uno", "openhw-esp32-worker:develop", "arduino:avr:uno", scripts.get("uno", DEFAULT_SCRIPTS["uno"]))
-    budget["pico_compile"] = run_calibration_test("pico", "openhw-esp32-worker:develop", "rp2040:rp2040:rpipico", scripts.get("pico", DEFAULT_SCRIPTS["pico"]))
+    # We use compile-server for esp32/uno/pico, stm32-worker for stm32 (they have arduino-cli)
+    budget["esp32_compile"] = run_calibration_test("esp32", "openhw-compile-server:develop", "esp32:esp32:esp32", scripts.get("esp32", DEFAULT_SCRIPTS["esp32"]))
+    budget["uno_compile"] = run_calibration_test("uno", "openhw-compile-server:develop", "arduino:avr:uno", scripts.get("uno", DEFAULT_SCRIPTS["uno"]))
+    budget["pico_compile"] = run_calibration_test("pico", "openhw-compile-server:develop", "rp2040:rp2040:rpipico", scripts.get("pico", DEFAULT_SCRIPTS["pico"]))
     budget["stm32_compile"] = run_calibration_test("stm32", "openhw-stm32-worker:develop", "STMicroelectronics:stm32:GenF1", scripts.get("stm32", DEFAULT_SCRIPTS["stm32"]))
     
     os.makedirs(os.path.dirname(BUDGET_FILE), exist_ok=True)

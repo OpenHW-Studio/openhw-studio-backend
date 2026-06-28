@@ -11,7 +11,7 @@ import session from 'express-session';
 import passport from './config/passport.js';
 import authRoutes from './routes/auth.js';
 import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
-import { initESP32Module } from './esp32/index.js';
+import { initESP32Module } from './compiler(esp32)/index.js';
 import { initSTM32Module } from './stm32/index.js';
 import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
 import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';

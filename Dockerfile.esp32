@@ -1,7 +1,7 @@
 # Use Node.js as the base image
 FROM node:20
 
-# Install dependencies for QEMU, Python, and esptool
+# Install dependencies for QEMU, Python, esptool, and GCC-ARM (RP2040/AVR)
 RUN apt-get update && apt-get install -y \
     curl \
     python3 \
@@ -11,8 +11,12 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     git \
     make \
+    cmake \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
     build-essential \
     ca-certificates \
+    gnupg \
     ccache \
     psmisc \
     iproute2 \
@@ -22,6 +26,12 @@ RUN apt-get update && apt-get install -y \
     libpixman-1-0 \
     libfdt1 \
     zlib1g \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y docker-ce-cli docker-compose-plugin \
     && pip3 install --break-system-packages esptool \
     && rm -rf /var/lib/apt/lists/*
 
@@ -39,12 +49,27 @@ ENV CCACHE_MAXSIZE=2G
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 ENV PATH=$PATH:/root/bin
 
-# Initialize arduino-cli and install ESP32 core
+# Initialize arduino-cli and install cores (ESP32, AVR, RP2040)
 RUN arduino-cli config init && \
+    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
     arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json && \
     arduino-cli core update-index && \
+    arduino-cli core install arduino:avr && \
+    arduino-cli core install rp2040:rp2040 && \
     arduino-cli core install esp32:esp32 && \
+    mkdir -p /tmp/dummy_rp2040/dummy_rp2040 && \
+    echo 'void setup(){} void loop(){}' > /tmp/dummy_rp2040/dummy_rp2040/dummy_rp2040.ino && \
+    arduino-cli compile --fqbn rp2040:rp2040:rpipico /tmp/dummy_rp2040/dummy_rp2040 || true && \
+    rm -rf /tmp/dummy_rp2040 && \
     rm -rf /root/.arduino15/staging/*
+
+# Install Raspberry Pi Pico SDK
+ENV PICO_SDK_PATH=/opt/pico-sdk
+RUN git clone --depth 1 -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
+    cd $PICO_SDK_PATH && \
+    git submodule update --init --depth 1
+
+
 
 # Set working directory
 WORKDIR /app
@@ -68,7 +93,7 @@ EXPOSE 5001
 
 # Set environment variables
 ENV PORT=5001
-ENV ROLE=esp32-worker
+ENV ROLE=compiler-worker
 
 # Start the application
 CMD ["npm", "start"]

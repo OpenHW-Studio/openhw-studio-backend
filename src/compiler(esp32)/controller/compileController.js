@@ -67,6 +67,29 @@ const SHIM_HEADERS = Object.freeze([
     { src: path.resolve(__dirname, '../utils/SimulatorWiFiServer.h'),        dst: 'WiFiServer.h'         },
 ]);
 
+// RV32 WASM engine — single bridge header, no QEMU shims needed
+const RV32_SHIM_HEADERS = Object.freeze([
+    { src: path.resolve(__dirname, '../utils/RV32BridgeHelper.h'), dst: 'RV32BridgeHelper.h' },
+]);
+
+// Map chip name (from req.body.chip) to arduino-cli FQBN
+const RV32_FQBN_MAP = Object.freeze({
+    'esp32c3':  'esp32:esp32:esp32c3',
+    'esp32c6':  'esp32:esp32:esp32c6',
+    'esp32p4':  'esp32:esp32:esp32p4',
+    // esp32s31 is not in arduino-cli core; proxy via esp32c3 FQBN (same ISA)
+    'esp32s31': 'esp32:esp32:esp32c3',
+});
+
+/** Derive chip name from req for RV32 builds */
+function _rv32ChipName(req) {
+    const raw = String(req.body.chip || req.body.board || '').toLowerCase();
+    if (raw.includes('c6'))  return 'esp32c6';
+    if (raw.includes('p4'))  return 'esp32p4';
+    if (raw.includes('s31')) return 'esp32s31';
+    return 'esp32c3'; // default
+}
+
 // ─── Configuration constants (all overridable via env) ────────────────────────
 
 /**
@@ -315,7 +338,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = fals
 
     const args = [
         ...esptoolRunner.args,
-        '--chip',          'esp32',
+        '--chip',          isC3 ? 'esp32c3' : 'esp32',
         'merge_bin',
         '--output',        mergedOut,
         ...(isHardware ? [] : ['--fill-flash-size', '4MB']),
@@ -704,7 +727,7 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
 
         wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-        if (req.body.targetEngine !== 'frontend') {
+        if (req.body.targetEngine !== 'frontend' && req.body.targetEngine !== 'rv32') {
             if (_activeRunners.has(buildId)) {
                 console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
                 const existingRunner = _activeRunners.get(buildId);
@@ -770,11 +793,15 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const ccacheProps = [];
 
     const isFrontendOrHardware = req.body.targetEngine === 'frontend' || req.body.targetEngine === 'hardware';
-    const extraFlagsProps = isFrontendOrHardware
+    const extraFlagsProps = (isFrontendOrHardware || req.body.targetEngine === 'rv32')
         ? [] 
         : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'];
 
-    const targetFqbn = req.body.fqbn || ESP32_FQBN;
+    let targetFqbn = req.body.fqbn || ESP32_FQBN;
+    if (req.body.targetEngine === 'rv32') {
+        const chip = _rv32ChipName(req);
+        targetFqbn = RV32_FQBN_MAP[chip] || 'esp32:esp32:esp32c3';
+    }
 
     const compileArgs = [
         'compile',
@@ -853,7 +880,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         job.status = 'success';
         wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-        if (req.body.targetEngine !== 'frontend') {
+        if (req.body.targetEngine !== 'frontend' && req.body.targetEngine !== 'rv32') {
             if (_activeRunners.has(buildId)) {
                 console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner`);
                 const existingRunner = _activeRunners.get(buildId);
@@ -946,7 +973,7 @@ export const compileArduinoCode = async (req, res) => {
             setTimeout(() => {
                 wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-                if (req.body.targetEngine !== 'frontend') {
+                if (req.body.targetEngine !== 'frontend' && req.body.targetEngine !== 'rv32') {
                     if (_activeRunners.has(buildId)) {
                         console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
                         const existingRunner = _activeRunners.get(buildId);
@@ -991,9 +1018,9 @@ export const compileArduinoCode = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
+            if (isSharedLibraryMode || req.body.targetEngine === 'hardware' || req.body.targetEngine === 'frontend') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware, Frontend, or Shared-Library Mode enabled. Skipping shim headers and wrappers.`);
             } else {
                 // inside class bodies are NOT matched because they have a return type
                 // other than void or are preceded by a class/struct scope.
@@ -1001,18 +1028,7 @@ export const compileArduinoCode = async (req, res) => {
                     .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
                     .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
-                const isFrontend = req.body.targetEngine === 'frontend';
-                const suffix = isFrontend ? [
-                    '',
-                    'void setup() {',
-                    '    _sim_user_setup();',
-                    '}',
-                    '',
-                    'void loop() {',
-                    '    _sim_user_loop();',
-                    '}',
-                    '',
-                ].join('\n') : [
+                const suffix = [
                     '',
                     '#include "SimulatorBridge.h"',
                     '',
@@ -1148,7 +1164,7 @@ export const compileStart = async (req, res) => {
             setTimeout(() => {
                 wsManager.sendToSession(buildId, { type: 'COMPILE_SUCCESS', buildId });
 
-                if (req.body.targetEngine !== 'frontend') {
+                if (req.body.targetEngine !== 'frontend' && req.body.targetEngine !== 'rv32') {
                     if (_activeRunners.has(buildId)) {
                         console.log(`[Compile:${buildId}] 🔄 Hot-reloading existing runner (Cache Hit)`);
                         const existingRunner = _activeRunners.get(buildId);
@@ -1193,27 +1209,39 @@ export const compileStart = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode || req.body.targetEngine === 'hardware') {
+            const isRv32 = req.body.targetEngine === 'rv32';
+
+            if (isRv32) {
+                // ── RV32 / WASM engine path ──────────────────────────────────
+                // Inject RV32BridgeHelper.h at the top so all peripheral hooks
+                // are active. The firmware runs natively inside the WASM emulator;
+                // the shim just adds $PROTO: UART reporting on top.
+                // Also define RV32_BRIDGE_IMPL so global objects are instantiated
+                // in this translation unit.
+                finalCode = [
+                    '#define RV32_BRIDGE_IMPL',
+                    '#include "RV32BridgeHelper.h"',
+                    '',
+                    code,
+                ].join('\n');
+                console.log(`[Compile:${buildId}] 🔬 RV32/WASM engine: injecting RV32BridgeHelper.h`);
+
+                // Copy the bridge helper into the sketch folder
+                for (const { src, dst } of RV32_SHIM_HEADERS) {
+                    if (fs.existsSync(src)) {
+                        fs.copyFileSync(src, path.join(sketchDir, dst));
+                    }
+                }
+            } else if (isSharedLibraryMode || req.body.targetEngine === 'hardware' || req.body.targetEngine === 'frontend') {
                 finalCode = code;
-                console.log(`[Compile:${buildId}] ⚡ Hardware or Shared-Library Mode enabled. Skipping shim headers.`);
+                console.log(`[Compile:${buildId}] ⚡ Hardware, Frontend, or Shared-Library Mode enabled. Skipping shim headers and wrappers.`);
             } else {
                 // ── Rename ONLY the user's global setup()/loop() definitions ────
                 const renamedCode = code
                     .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
                     .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
 
-                const isFrontend = req.body.targetEngine === 'frontend';
-                const suffix = isFrontend ? [
-                    '',
-                    'void setup() {',
-                    '    _sim_user_setup();',
-                    '}',
-                    '',
-                    'void loop() {',
-                    '    _sim_user_loop();',
-                    '}',
-                    '',
-                ].join('\n') : [
+                const suffix = [
                     '',
                     '#include "SimulatorBridge.h"',
                     '',
@@ -1235,7 +1263,7 @@ export const compileStart = async (req, res) => {
 
             fs.writeFileSync(sketchFile, finalCode, 'utf8');
 
-            if (!isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
+            if (!isRv32 && !isSharedLibraryMode && req.body.targetEngine !== 'hardware') {
                 for (const { src, dst } of SHIM_HEADERS) {
                     if (req.body.targetEngine === 'frontend') {
                         continue;

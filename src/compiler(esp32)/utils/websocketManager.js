@@ -358,7 +358,7 @@ class WebSocketManager {
         console.log(`[WSManager] 🔀 Proxying session ${buildId} to ${target} worker`);
         
         const workerUrl = target === 'esp32' 
-            ? (process.env.ESP32_WORKER_WS_URL || 'ws://esp32-worker:5001')
+            ? (process.env.COMPILE_SERVER_WS_URL || 'ws://compile-server:5001')
             : (process.env.STM32_WORKER_WS_URL || 'ws://stm32-worker:5002');
             
         const workerWs = new WebSocket(workerUrl);

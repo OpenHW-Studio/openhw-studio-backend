@@ -62,7 +62,7 @@ async function proxyPost(url, req, res) {
 /** Express route handler: compile Arduino/ESP32 code and launch QEMU. */
 export const handleESP32Compile = async (req, res) => {
     if (process.env.ROLE === 'main') {
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         try {
             const response = await fetch(`${workerUrl}/api/compile`, {
                 method: 'POST',
@@ -86,7 +86,7 @@ export const handleESP32Compile = async (req, res) => {
 export const handleESP32Stop = async (req, res) => {
     if (process.env.ROLE === 'main') {
         const { buildId } = req.params;
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         return proxyPost(`${workerUrl}/api/compile/esp32/stop/${buildId}`, req, res);
     }
     return stopSession(req, res);
@@ -95,7 +95,7 @@ export const handleESP32Stop = async (req, res) => {
 /** Express route handler: boot QEMU directly from a pre-compiled .bin. */
 export const handleESP32DirectBoot = async (req, res) => {
     if (process.env.ROLE === 'main') {
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         try {
             const response = await fetch(`${workerUrl}/api/compile/esp32/direct-boot`, {
                 method: 'POST',
@@ -118,7 +118,7 @@ export const handleESP32DirectBoot = async (req, res) => {
 /** Express route handler: boot QEMU directly from a dynamic base64-encoded .bin. */
 export const handleESP32RunBinary = async (req, res) => {
     if (process.env.ROLE === 'main') {
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         try {
             const response = await fetch(`${workerUrl}/api/compile/esp32/run-binary`, {
                 method: 'POST',
@@ -141,7 +141,7 @@ export const handleESP32RunBinary = async (req, res) => {
 /** Express route handler: compile start */
 export const handleESP32CompileStart = async (req, res) => {
     if (process.env.ROLE === 'main') {
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         try {
             const response = await fetch(`${workerUrl}/api/compile/start`, {
                 method: 'POST',
@@ -165,7 +165,7 @@ export const handleESP32CompileStart = async (req, res) => {
 export const handleESP32CompileStatus = async (req, res) => {
     const { jobId } = req.params;
     if (process.env.ROLE === 'main') {
-        const workerUrl = process.env.ESP32_WORKER_HTTP_URL || 'http://esp32-worker:5001';
+        const workerUrl = process.env.COMPILE_SERVER_HTTP_URL || 'http://compile-server:5001';
         try {
             const response = await fetch(`${workerUrl}/api/compile/status/${jobId}`, {
                 method: 'GET',

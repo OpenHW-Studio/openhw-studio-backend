@@ -86,7 +86,7 @@ export const getInfrastructureStatus = async (req, res) => {
         });
 
         // Ensure we include the requested services even if not found in docker ps
-        const targetServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
+        const targetServices = ['frontend', 'backend', 'mongodb', 'compile-server', 'stm32-worker', 'health-agent'];
         const services = targetServices.map(target => {
             const found = containers.find(c => c.name.includes(target));
             if (found) {
@@ -148,7 +148,7 @@ export const getInfrastructureStatus = async (req, res) => {
                 resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
             },
             {
-                name: 'esp32-worker',
+                name: 'compile-server',
                 status: 'offline (local)',
                 version: 'local-dev',
                 hash: 'N/A',
@@ -242,7 +242,7 @@ export const getSystemLogs = async (req, res) => {
                     else if (containerName.includes('backend')) msgType = 'backend';
                     else if (containerName.includes('mongo')) msgType = 'mongodb';
                     else if (containerName.includes('stm32')) msgType = 'stm32-worker';
-                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
+                    else if (containerName.includes('compile')) msgType = 'compile-server';
                     else if (containerName.includes('health')) msgType = 'health-agent';
                     else msgType = containerName;
                 } else {
@@ -332,7 +332,7 @@ export const streamSystemLogs = (req, res) => {
                     else if (containerName.includes('backend')) msgType = 'backend';
                     else if (containerName.includes('mongo')) msgType = 'mongodb';
                     else if (containerName.includes('stm32')) msgType = 'stm32-worker';
-                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
+                    else if (containerName.includes('compile')) msgType = 'compile-server';
                     else if (containerName.includes('health')) msgType = 'health-agent';
                     else msgType = containerName;
                 }
@@ -400,7 +400,7 @@ export const streamSystemLogs = (req, res) => {
  */
 export const restartService = async (req, res) => {
     const { name } = req.body;
-    const allowedServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
+    const allowedServices = ['frontend', 'backend', 'mongodb', 'compile-server', 'stm32-worker', 'health-agent'];
     
     if (!name || !allowedServices.includes(name)) {
         return res.status(403).json({ error: 'Invalid or restricted service name.' });

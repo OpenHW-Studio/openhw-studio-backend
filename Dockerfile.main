@@ -1,7 +1,7 @@
 # Use Node.js as the base image
 FROM node:20
 
-# Install basic dependencies and GCC-ARM for RP2040/Pico
+# Install basic dependencies
 RUN apt-get update && apt-get install -y \
     curl \
     python3 \
@@ -9,13 +9,9 @@ RUN apt-get update && apt-get install -y \
     xz-utils \
     git \
     make \
-    cmake \
-    gcc-arm-none-eabi \
-    libnewlib-arm-none-eabi \
     build-essential \
     ca-certificates \
     gnupg \
-    ccache \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \
@@ -23,28 +19,6 @@ RUN apt-get update && apt-get install -y \
     && apt-get update \
     && apt-get install -y docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
-
-# Install arduino-cli
-RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-ENV PATH=$PATH:/root/bin
-
-# Initialize arduino-cli and install AVR and RP2040/Pico cores
-RUN arduino-cli config init && \
-    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
-    arduino-cli core update-index && \
-    arduino-cli core install arduino:avr && \
-    arduino-cli core install rp2040:rp2040 && \
-    mkdir -p /tmp/dummy_rp2040/dummy_rp2040 && \
-    echo 'void setup(){} void loop(){}' > /tmp/dummy_rp2040/dummy_rp2040/dummy_rp2040.ino && \
-    arduino-cli compile --fqbn rp2040:rp2040:rpipico /tmp/dummy_rp2040/dummy_rp2040 || true && \
-    rm -rf /tmp/dummy_rp2040 && \
-    rm -rf /root/.arduino15/staging/*
-
-# Install Raspberry Pi Pico SDK
-ENV PICO_SDK_PATH=/opt/pico-sdk
-RUN git clone --depth 1 -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
-    cd $PICO_SDK_PATH && \
-    git submodule update --init --depth 1
 
 # ccache stores compiled objects on the persistent data volume
 ENV CCACHE_DIR=/app/data/ccache
