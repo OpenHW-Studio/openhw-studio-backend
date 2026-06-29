@@ -842,13 +842,17 @@ static void _my_npl_event_reset(struct ble_npl_event *ev) {
 }
 
 static ble_npl_error_t _my_npl_mutex_init(struct ble_npl_mutex *mu) {
-    mu->mutex = xSemaphoreCreateRecursiveMutex();
-    return mu->mutex ? BLE_NPL_OK : BLE_NPL_ERROR;
+    // Simple non-blocking mutex for cooperative mode
+    uint32_t *flag = (uint32_t *)malloc(sizeof(uint32_t));
+    if (!flag) return BLE_NPL_ENOMEM;
+    *flag = 0;
+    mu->mutex = flag;
+    return BLE_NPL_OK;
 }
 
 static ble_npl_error_t _my_npl_mutex_deinit(struct ble_npl_mutex *mu) {
     if (mu->mutex) {
-        vSemaphoreDelete((QueueHandle_t)mu->mutex);
+        free(mu->mutex);
         mu->mutex = NULL;
     }
     return BLE_NPL_OK;
@@ -857,28 +861,27 @@ static ble_npl_error_t _my_npl_mutex_deinit(struct ble_npl_mutex *mu) {
 static ble_npl_error_t _my_npl_mutex_pend(struct ble_npl_mutex *mu,
                                            ble_npl_time_t timeout) {
     if (!mu->mutex) return BLE_NPL_ERROR;
-    if (xSemaphoreTakeRecursive((QueueHandle_t)mu->mutex, timeout) == pdTRUE) {
-        return BLE_NPL_OK;
-    }
-    return BLE_NPL_TIMEOUT;
+    // Cooperative mode: always succeed
+    return BLE_NPL_OK;
 }
 
 static ble_npl_error_t _my_npl_mutex_release(struct ble_npl_mutex *mu) {
     if (!mu->mutex) return BLE_NPL_ERROR;
-    if (xSemaphoreGiveRecursive((QueueHandle_t)mu->mutex) == pdTRUE) {
-        return BLE_NPL_OK;
-    }
-    return BLE_NPL_ERROR;
+    return BLE_NPL_OK;
 }
 
 static ble_npl_error_t _my_npl_sem_init(struct ble_npl_sem *sem, uint16_t tokens) {
-    sem->sem = xSemaphoreCreateCounting(tokens, tokens);
-    return sem->sem ? BLE_NPL_OK : BLE_NPL_ERROR;
+    // Use a simple counter instead of FreeRTOS semaphore (cooperative mode)
+    uint32_t *cnt = (uint32_t *)malloc(sizeof(uint32_t));
+    if (!cnt) return BLE_NPL_ENOMEM;
+    *cnt = tokens;
+    sem->sem = cnt;
+    return BLE_NPL_OK;
 }
 
 static ble_npl_error_t _my_npl_sem_deinit(struct ble_npl_sem *sem) {
     if (sem->sem) {
-        vSemaphoreDelete((QueueHandle_t)sem->sem);
+        free(sem->sem);
         sem->sem = NULL;
     }
     return BLE_NPL_OK;
@@ -887,18 +890,20 @@ static ble_npl_error_t _my_npl_sem_deinit(struct ble_npl_sem *sem) {
 static ble_npl_error_t _my_npl_sem_pend(struct ble_npl_sem *sem,
                                          ble_npl_time_t timeout) {
     if (!sem->sem) return BLE_NPL_ERROR;
-    if (xSemaphoreTake((QueueHandle_t)sem->sem, timeout) == pdTRUE) {
+    uint32_t *cnt = (uint32_t *)sem->sem;
+    if (*cnt > 0) {
+        (*cnt)--;
         return BLE_NPL_OK;
     }
+    // In cooperative mode, non-blocking = return immediately
     return BLE_NPL_TIMEOUT;
 }
 
 static ble_npl_error_t _my_npl_sem_release(struct ble_npl_sem *sem) {
     if (!sem->sem) return BLE_NPL_ERROR;
-    if (xSemaphoreGive((QueueHandle_t)sem->sem) == pdTRUE) {
-        return BLE_NPL_OK;
-    }
-    return BLE_NPL_ERROR;
+    uint32_t *cnt = (uint32_t *)sem->sem;
+    (*cnt)++;
+    return BLE_NPL_OK;
 }
 
 // Minimal callout stubs to avoid calling broken library entries
@@ -1199,7 +1204,17 @@ int __wrap_r_os_mempool_init(void *mp, uint16_t blocks, uint32_t block_size, voi
 }
 
 void __wrap_ble_hs_hci_init(void) {
-    _RV32_EMIT("TEST:__wrap_ble_hs_hci_init called - bypassing");
+    _RV32_EMIT("TEST:__wrap_ble_hs_hci_init called - calling real");
+    extern void __real_ble_hs_hci_init(void);
+    __real_ble_hs_hci_init();
+    _RV32_EMIT("TEST:__wrap_ble_hs_hci_init done");
+}
+
+// Bypass HCI command/response cycle — return 0 (success) immediately
+int __wrap_ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len,
+                              void *rsp, uint8_t rsp_len) {
+    _RV32_EMIT("TEST:__wrap_ble_hs_hci_cmd_tx opcode=0x%04x", opcode);
+    return 0;
 }
 
 void __wrap_ble_transport_hs_init(void) {
@@ -1226,6 +1241,24 @@ int __wrap_ble_phy_init(void) {
 #ifdef __cplusplus
 }
 #endif
+
+// Cooperative NimBLE event processing — called from loop() in place of a
+// real host task. Drains all pending events from the default event queue
+// without blocking, then returns. Uses npl_funcs directly to avoid
+// depending on NimBLE inline wrappers not yet declared.
+#ifdef __cplusplus
+extern "C"
+#endif
+void _rv32_process_ble_events(void) {
+    if (!npl_funcs) return;
+    struct ble_npl_eventq *evq = nimble_port_get_dflt_eventq();
+    if (!evq) return;
+    while (1) {
+        struct ble_npl_event *ev = npl_funcs->p_ble_npl_eventq_get(evq, 0);
+        if (!ev) break;
+        npl_funcs->p_ble_npl_event_run(ev);
+    }
+}
 
 // ── PATH B: NimBLE native HCI (ESP32-C6/C3/S3 — SOC_ESP_NIMBLE_CONTROLLER) ──
 //
