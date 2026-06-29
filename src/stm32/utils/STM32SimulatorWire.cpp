@@ -110,12 +110,12 @@ uint8_t TwoWire::requestFrom(uint8_t address, uint8_t size, bool sendStop) {
 
     sim_wire_emit(frame);
 
-    // Clear ready flag, then spin-wait 12ms for UART processing to fill buffer
+    // Clear ready flag, then spin-wait 250ms for UART processing to fill buffer
     sim_wire_rx_ready = false;
     sim_wire_rx_len   = 0;
     _rx_pos           = 0;
 
-    const uint32_t deadline = millis() + 12;
+    const uint32_t deadline = millis() + 250;
     while (millis() < deadline) {
         yield(); // calls _process_serial_input() via our yield() override
         if (sim_wire_rx_ready) break;

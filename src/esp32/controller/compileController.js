@@ -568,7 +568,7 @@ export const compileArduinoCode = (req, res) => {
         const codeInput = req.body.code || '';
         console.log('\n\n[ESP32 COMPILE] Received Code:\n', codeInput, '\n[END CODE]\n');
         
-        isSharedLibraryMode = fs.existsSync(libPath);
+        isSharedLibraryMode = fs.existsSync(libPath) && req.body.isFrontendEsp32 !== true;
 
         let finalCode;
         if (isSharedLibraryMode) {

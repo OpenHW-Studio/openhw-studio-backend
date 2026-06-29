@@ -129,10 +129,10 @@ uint8_t TwoWire::requestFrom(uint8_t address, uint8_t size, bool sendStop) {
 
     sim_wire_emit(frame);
 
-    const uint32_t deadline = millis() + 8;
+    const uint32_t deadline = millis() + 250;
     while (millis() < deadline) {
         if (sim_wire_rx_ready) break;
-        vTaskDelay(pdMS_TO_TICKS(1));
+        taskYIELD();
     }
 
     if (!sim_wire_rx_ready) return 0;
