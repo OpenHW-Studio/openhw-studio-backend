@@ -11,7 +11,7 @@ import {
 import { searchLibrary, installLibrary, listLibraries } from '../controllers/libController.js';
 import { protectRoute } from '../middleware/authMiddleware.js';
 import { requireAdmin } from '../middleware/authorization.js';
-import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary, handleESP32CompileStart, handleESP32CompileStatus } from '../esp32/index.js';
+import { handleESP32Stop, handleESP32DirectBoot, handleESP32RunBinary, handleESP32CompileStart, handleESP32CompileStatus } from '../compiler(esp32)/index.js';
 import { handleSTM32Stop, handleSTM32CompileStart, handleSTM32CompileStatus } from '../stm32/index.js';
 import { compileTelemetryMiddleware } from '../services/telemetryService.js';
 

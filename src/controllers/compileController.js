@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
 
-import { handleESP32Compile } from '../esp32/index.js';
+import { handleESP32Compile } from '../compiler(esp32)/index.js';
 import { handleSTM32Compile } from '../stm32/index.js';
 import { parseLibrariesTxt } from '../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../services/dynamicLibraryManager.js';

@@ -52,7 +52,7 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 		room.Lock()
 		ip, exists := room.MacToIP[macString]
 		if !exists {
-			ip = net.IPv4(192, 168, 127, room.NextIP)
+			ip = net.IPv4(192, 168, 4, room.NextIP)
 			room.NextIP++
 			if room.NextIP > 250 {
 				room.NextIP = 2
@@ -69,7 +69,7 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 		dhcpMutex.Lock()
 		ip, exists := globalMacToIP[macString]
 		if !exists {
-			ip = net.IPv4(192, 168, 127, globalNextIP)
+			ip = net.IPv4(192, 168, 4, globalNextIP)
 			globalNextIP++
 			if globalNextIP > 250 {
 				globalNextIP = 2
@@ -113,8 +113,8 @@ func handleDHCP(msg []byte, packet gopacket.Packet, client *Client, room *Room) 
 	}
 
 	var replyDHCP *dhcpv4.DHCPv4
-	serverIP := net.IPv4(192, 168, 127, 1)
-	routerIP := net.IPv4(192, 168, 127, 1)
+	serverIP := net.IPv4(192, 168, 4, 1)
+	routerIP := net.IPv4(192, 168, 4, 1)
 	dnsIP := net.IPv4(8, 8, 8, 8)
 	netmask := net.IPv4Mask(255, 255, 255, 0)
 

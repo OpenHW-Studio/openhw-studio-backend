@@ -83,7 +83,7 @@ const RV32_FQBN_MAP = Object.freeze({
 
 /** Derive chip name from req for RV32 builds */
 function _rv32ChipName(req) {
-    const raw = String(req.body.chip || req.body.board || '').toLowerCase();
+    const raw = String(req.body.chip || req.body.board || req.body.fqbn || '').toLowerCase();
     if (raw.includes('c6'))  return 'esp32c6';
     if (raw.includes('p4'))  return 'esp32p4';
     if (raw.includes('s31')) return 'esp32s31';
@@ -113,7 +113,7 @@ const SIMULATION_INACTIVITY_MS = 60 * 1000;
  * arduino-cli compile timeout (ms).
  * Prevents a hung compiler from blocking a slot indefinitely.
  */
-const COMPILE_TIMEOUT_MS = parseInt(process.env.COMPILE_TIMEOUT_MS || '120000', 10);
+const COMPILE_TIMEOUT_MS = parseInt(process.env.COMPILE_TIMEOUT_MS || '300000', 10);
 
 /**
  * Grace period (ms) before cleaning up a session after a compile error.
@@ -230,13 +230,26 @@ function _sendErrorAndCleanup(buildId, output) {
 
 function buildCodeHash(code, req) {
     const builder = req.body.builder || req.body.compiler || 'arduino-cli';
+
+    // Include content of all shim/helper files so cache is busted when they change
+    const shimContents = {};
+    const allShims = [...SHIM_HEADERS, ...RV32_SHIM_HEADERS];
+    for (const { src, dst } of allShims) {
+        try {
+            shimContents[dst] = fs.readFileSync(src, 'utf8');
+        } catch {
+            shimContents[dst] = '';
+        }
+    }
+
     const payload = {
         code,
         builder,
         targetEngine: req.body.targetEngine || '',
         libraries_txt: req.body.libraries_txt || '',
         board_options: req.body.board_options || null,
-        spiffs_files: req.body.spiffs_files || null
+        spiffs_files: req.body.spiffs_files || null,
+        shimContents,
     };
     return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -303,8 +316,8 @@ function _requireEsptool() {
  * @returns {string} Absolute path to the merged-flash.bin
  */
 function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = false, targetFqbn = 'esp32:esp32:esp32') {
-    const isC3 = targetFqbn.includes('esp32c3');
-    const bootloaderOffset = isC3 ? '0x0000' : '0x1000';
+    const isRiscV = targetFqbn.includes('esp32c3') || targetFqbn.includes('esp32c6') || targetFqbn.includes('esp32h2') || targetFqbn.includes('esp32p4') || targetFqbn.includes('esp32s31');
+    const bootloaderOffset = isRiscV ? '0x0000' : '0x1000';
     
     let bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
     const partTable  = path.join(buildDir, `${sketchBase}.partitions.bin`);
@@ -312,7 +325,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = fals
     const mergedOut  = path.join(buildDir, 'merged-flash.bin');
 
     // Fallback for ESP32-C3 bootloader bug in arduino-cli core v3.x
-    if (isC3 && !fs.existsSync(bootloader)) {
+    if (targetFqbn.includes('esp32c3') && !fs.existsSync(bootloader)) {
         const fallbackBootloader = path.resolve(__dirname, '../utils/esp32c3_bootloader.bin');
         if (fs.existsSync(fallbackBootloader)) {
             console.log(`[Compile] Using fallback ESP32-C3 bootloader from ${fallbackBootloader}`);
@@ -335,10 +348,17 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = fals
             );
         }
     }
+    
+    let chipFlag = 'esp32';
+    if (targetFqbn.includes('esp32c3')) chipFlag = 'esp32c3';
+    else if (targetFqbn.includes('esp32c6')) chipFlag = 'esp32c6';
+    else if (targetFqbn.includes('esp32p4')) chipFlag = 'esp32p4';
+    else if (targetFqbn.includes('esp32s2')) chipFlag = 'esp32s2';
+    else if (targetFqbn.includes('esp32s3')) chipFlag = 'esp32s3';
 
     const args = [
         ...esptoolRunner.args,
-        '--chip',          isC3 ? 'esp32c3' : 'esp32',
+        '--chip',          chipFlag,
         'merge_bin',
         '--output',        mergedOut,
         ...(isHardware ? [] : ['--fill-flash-size', '4MB']),
@@ -607,6 +627,7 @@ async function runEspIdfCompileAsync(buildId, code, req, sketchDir, buildDir, pi
     const jobId = buildId;
     const job = getOrCreateJob(jobId);
     job.status = 'compiling';
+    job.targetEngine = req.body.targetEngine;
     
     wsManager.sendToSession(buildId, { type: 'COMPILE_START', buildId });
     
@@ -762,6 +783,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const jobId = buildId;
     const job = getOrCreateJob(jobId);
     job.status = 'compiling';
+    job.targetEngine = req.body.targetEngine;
     
     wsManager.sendToSession(buildId, { type: 'COMPILE_START', buildId });
 
@@ -782,7 +804,9 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     const libPath = process.env.QEMU_ESP32_LIB || path.resolve(__dirname, '../utils', libName);
     let isSharedLibraryMode = fs.existsSync(libPath);
 
-    const cacheFolderName = req.body.targetEngine === 'hardware' ? 'arduino-cache-hw' : 'arduino-cache';
+    let cacheFolderName = 'arduino-cache';
+    if (req.body.targetEngine === 'hardware') cacheFolderName = 'arduino-cache-hw';
+    if (req.body.targetEngine === 'rv32') cacheFolderName = 'arduino-cache-rv32';
     const COMPILE_CACHE_DIR = path.join(DATA_DIR, cacheFolderName);
 
     const libraryEntries = parseLibrariesTxt(req.body.libraries_txt);
@@ -797,10 +821,22 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         ? [] 
         : ['--build-property', 'compiler.cpp.extra_flags=-include SimulatorBridge.h'];
 
+    if (req.body.targetEngine === 'rv32') {
+        extraFlagsProps.push(
+            '--build-property', 
+            'compiler.c.elf.extra_flags=-Wl,--wrap=ble_transport_to_ll_cmd_impl -Wl,--wrap=ble_transport_to_ll_acl_impl -Wl,--wrap=esp_vhci_host_send_packet -Wl,--wrap=esp_vhci_host_register_callback -Wl,--wrap=esp_vhci_host_check_send_available -Wl,--wrap=esp_bt_controller_init -Wl,--wrap=esp_bt_controller_enable -Wl,--wrap=esp_bt_controller_disable -Wl,--wrap=esp_bt_controller_deinit -Wl,--wrap=esp_bt_controller_get_status -Wl,--wrap=ble_buf_alloc -Wl,--wrap=ble_buf_free -Wl,--wrap=ble_vhci_disc_duplicate_mode_disable -Wl,--wrap=ble_vhci_disc_duplicate_mode_enable -Wl,--wrap=ble_vhci_disc_duplicate_set_max_cache_size -Wl,--wrap=ble_vhci_disc_duplicate_set_period_refresh_time -Wl,--wrap=ble_transport_ll_init -Wl,--wrap=ble_phy_init -Wl,--wrap=na_npl_freertos_eventq_init -Wl,--wrap=os_mempool_init -Wl,--wrap=os_msys_init -Wl,--wrap=ble_hs_init -Wl,--wrap=nimble_port_init -Wl,--wrap=ble_transport_init -Wl,--wrap=ble_store_init -Wl,--wrap=ble_hs_start -Wl,--wrap=ble_npl_eventq_init -Wl,--wrap=ble_npl_sem_init -Wl,--wrap=ble_npl_mutex_init'
+        );
+    }
+
     let targetFqbn = req.body.fqbn || ESP32_FQBN;
     if (req.body.targetEngine === 'rv32') {
         const chip = _rv32ChipName(req);
         targetFqbn = RV32_FQBN_MAP[chip] || 'esp32:esp32:esp32c3';
+    }
+    
+    // Always use huge_app partition scheme to prevent emulator bootROM from rejecting large simulated firmware
+    if (!targetFqbn.includes('PartitionScheme')) {
+        targetFqbn += ':PartitionScheme=huge_app';
     }
 
     const compileArgs = [
@@ -808,7 +844,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         '--fqbn',             targetFqbn,
         '--build-cache-path', COMPILE_CACHE_DIR,
         '--output-dir',       buildDir,
-        '--jobs',             '4',
+        '--jobs',             os.cpus().length.toString(),
+        '--build-property',   'upload.maximum_size=3145728',
         ...extraFlagsProps,
         ...ccacheProps,
         ...libraryFlags,
@@ -862,9 +899,14 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
                 const codeHash = buildCodeHash(code, req);
                 const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
                 const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
+                const cachedElf = path.join(cacheDir, 'app.elf');
                 fs.mkdirSync(cacheDir, { recursive: true });
                 fs.copyFileSync(mergedFlash, cachedFlash);
-                console.log(`[Compile:${buildId}] 💾 Saved Arduino compiled binary to Fast-Bypass cache: ${cachedFlash}`);
+                const appElf = path.join(buildDir, `${sketchName}.ino.elf`);
+                if (fs.existsSync(appElf)) {
+                    fs.copyFileSync(appElf, cachedElf);
+                }
+                console.log(`[Compile:${buildId}] 💾 Saved Arduino compiled binary and ELF to Fast-Bypass cache`);
                 pruneUniversalCachePool();
             } catch (cacheErr) {
                 console.error(`[Compile:${buildId}] ⚠️ Failed to save Arduino cache:`, cacheErr.message);
@@ -947,7 +989,7 @@ export const compileArduinoCode = async (req, res) => {
     const cacheDir = path.join(BUILDS_DIR, 'esp32-compile-cache', codeHash);
     const cachedFlash = path.join(cacheDir, 'merged-flash.bin');
 
-    if (fs.existsSync(cachedFlash)) {
+    if (false && fs.existsSync(cachedFlash)) {
         console.log(`[Compile Cache] 🟢 Cache hit! Skipping compilation for ESP32.`);
         wsManager.createPendingSession(buildId);
 
@@ -956,10 +998,17 @@ export const compileArduinoCode = async (req, res) => {
             fs.mkdirSync(buildDir,  { recursive: true });
             const mergedFlash = path.join(buildDir, 'merged-flash.bin');
             fs.copyFileSync(cachedFlash, mergedFlash);
+            
+            const cachedElf = path.join(cacheDir, 'app.elf');
+            const appElf = path.join(buildDir, `${buildId}.ino.elf`);
+            if (fs.existsSync(cachedElf)) {
+                fs.copyFileSync(cachedElf, appElf);
+            }
 
             // Update job status
             const job = getOrCreateJob(buildId);
             job.status = 'success';
+            job.targetEngine = req.body.targetEngine;
 
             // Respond to client
             res.json({
@@ -1018,7 +1067,39 @@ export const compileArduinoCode = async (req, res) => {
 
         if (builder === 'arduino-cli') {
             let finalCode;
-            if (isSharedLibraryMode || req.body.targetEngine === 'hardware' || req.body.targetEngine === 'frontend') {
+            const isRv32 = req.body.targetEngine === 'rv32';
+
+            if (isRv32) {
+                // ── RV32 / WASM engine path ──────────────────────────────────
+                const renamedCode = code
+                    .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
+                    .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
+
+                finalCode = [
+                    '#define RV32_BRIDGE_IMPL',
+                    '#include "RV32BridgeHelper.h"',
+                    '',
+                    renamedCode,
+                    '',
+                    'void setup() {',
+                    '    _rv32_bridge_init();',
+                    '    _sim_user_setup();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    ''
+                ].join('\n');
+                console.log(`[Compile:${buildId}] 🔬 RV32/WASM engine: injecting RV32BridgeHelper.h and wrappers`);
+
+                // Copy the bridge helper into the sketch folder
+                for (const { src, dst } of RV32_SHIM_HEADERS) {
+                    if (fs.existsSync(src)) {
+                        fs.copyFileSync(src, path.join(sketchDir, dst));
+                    }
+                }
+            } else if (isSharedLibraryMode || req.body.targetEngine === 'hardware' || req.body.targetEngine === 'frontend') {
                 finalCode = code;
                 console.log(`[Compile:${buildId}] ⚡ Hardware, Frontend, or Shared-Library Mode enabled. Skipping shim headers and wrappers.`);
             } else {
@@ -1147,10 +1228,17 @@ export const compileStart = async (req, res) => {
             fs.mkdirSync(buildDir,  { recursive: true });
             const mergedFlash = path.join(buildDir, 'merged-flash.bin');
             fs.copyFileSync(cachedFlash, mergedFlash);
+            
+            const cachedElf = path.join(cacheDir, 'app.elf');
+            const appElf = path.join(buildDir, `${buildId}.ino.elf`);
+            if (fs.existsSync(cachedElf)) {
+                fs.copyFileSync(cachedElf, appElf);
+            }
 
             // Initialize job state as success
             const job = getOrCreateJob(buildId);
             job.status = 'success';
+            job.targetEngine = req.body.targetEngine;
 
             // Respond immediately with jobId
             res.json({
@@ -1213,18 +1301,27 @@ export const compileStart = async (req, res) => {
 
             if (isRv32) {
                 // ── RV32 / WASM engine path ──────────────────────────────────
-                // Inject RV32BridgeHelper.h at the top so all peripheral hooks
-                // are active. The firmware runs natively inside the WASM emulator;
-                // the shim just adds $PROTO: UART reporting on top.
-                // Also define RV32_BRIDGE_IMPL so global objects are instantiated
-                // in this translation unit.
+                const renamedCode = code
+                    .replace(/\bvoid\s+setup\s*\(\s*\)/g, 'void _sim_user_setup()')
+                    .replace(/\bvoid\s+loop\s*\(\s*\)/g,  'void _sim_user_loop()');
+
                 finalCode = [
                     '#define RV32_BRIDGE_IMPL',
                     '#include "RV32BridgeHelper.h"',
                     '',
-                    code,
+                    renamedCode,
+                    '',
+                    'void setup() {',
+                    '    _rv32_bridge_init();',
+                    '    _sim_user_setup();',
+                    '}',
+                    '',
+                    'void loop() {',
+                    '    _sim_user_loop();',
+                    '}',
+                    ''
                 ].join('\n');
-                console.log(`[Compile:${buildId}] 🔬 RV32/WASM engine: injecting RV32BridgeHelper.h`);
+                console.log(`[Compile:${buildId}] 🔬 RV32/WASM engine: injecting RV32BridgeHelper.h and wrappers`);
 
                 // Copy the bridge helper into the sketch folder
                 for (const { src, dst } of RV32_SHIM_HEADERS) {
@@ -1297,7 +1394,8 @@ export const compileStart = async (req, res) => {
     }
 
     // Initialize job state
-    getOrCreateJob(buildId);
+    const job = getOrCreateJob(buildId);
+    job.targetEngine = req.body.targetEngine;
     
     // Start compilation in background
     const builder = req.body.builder || req.body.compiler || 'arduino-cli';
@@ -1342,6 +1440,17 @@ export const compileStatus = (req, res) => {
                 responseData.binary_content = fs.readFileSync(mergedFlash).toString('base64');
             } catch (err) {
                 console.error(`[compileStatus] Failed to read merged-flash.bin:`, err.message);
+            }
+        }
+        
+        if (job.targetEngine === 'rv32' || job.targetEngine === 'frontend') {
+            const appElf = path.join(buildDir, `${jobId}.ino.elf`);
+            if (fs.existsSync(appElf)) {
+                try {
+                    responseData.elf_content = fs.readFileSync(appElf).toString('base64');
+                } catch (err) {
+                    console.error(`[compileStatus] Failed to read ${jobId}.ino.elf:`, err.message);
+                }
             }
         }
     }

@@ -1,38 +1,11 @@
 {
-    "preinstalled": [
-        "Wire",
-        "SPI",
-        "SD",
-        "WiFi",
-        "Ticker",
-        "DHT sensor library",
-        "SparkFun MAX3010x Pulse and Proximity Sensor Library",
-        "AccelStepper",
-        "GxEPD2",
-        "DallasTemperature",
-        "ESP32Servo",
-        "LedControl",
-        "LiquidCrystal",
-        "OneWire"
-    ],
+    "permanent": [],
     "cached": [
-        "AccelStepper",
-        "Adafruit BMP085 Library",
-        "Adafruit IntelliKeys",
-        "Adafruit LiquidCrystal",
-        "Adafruit MCP23017 Arduino Library",
-        "Adafruit PCD8544 Nokia 5110 LCD library",
-        "Adafruit SH110X",
-        "Adafruit STMPE610",
-        "Adafruit TouchScreen",
-        "Adafruit TSC2007",
         "Adafruit SoftServo@1.0.4",
         "ESP32Servo",
-        "FastLED",
         "IRremote@4.7.1",
-        "LiquidCrystal",
-        "PubSubClient@2.8.0",
-        "SdFat___Adafruit_Fork-2.3.103",
-        "SevSeg"
+        "NimBLE-Arduino",
+        "NimBLE-Arduino@2.5.0",
+        "PubSubClient@2.8.0"
     ]
 }
