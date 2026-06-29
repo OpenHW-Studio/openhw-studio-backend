@@ -781,6 +781,7 @@ void __wrap_ble_vhci_disc_duplicate_set_period_refresh_time(uint32_t period) {
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 
 struct ble_npl_eventq;
 struct npl_funcs_t;
@@ -798,6 +799,229 @@ struct ble_npl_eventq *nimble_port_get_dflt_eventq(void);
 #endif
 
 
+
+// Custom NPL function implementations. These replace broken library entries in the function table.
+// We use malloc/free for event alloc (avoids depending on os_mempool.h which is not yet included)
+// and cast void pointers from the opaque struct to FreeRTOS handles for mutex/sem calls.
+static void _my_npl_event_init(struct ble_npl_event *ev, ble_npl_event_fn *fn,
+                                void *arg) {
+    ev->event = malloc(12);
+    if (ev->event) {
+        memset(ev->event, 0, 12);
+        *(ble_npl_event_fn **)((char*)ev->event + 4) = fn;
+        *(void **)((char*)ev->event + 8) = arg;
+    }
+}
+
+static void _my_npl_event_deinit(struct ble_npl_event *ev) {
+    if (ev->event) {
+        free(ev->event);
+        ev->event = NULL;
+    }
+}
+
+static void _my_npl_event_run(struct ble_npl_event *ev) {
+    if (!ev->event) return;
+    ble_npl_event_fn *fn = *(ble_npl_event_fn **)((char*)ev->event + 4);
+    if (fn) fn(ev);
+}
+
+static void *_my_npl_event_get_arg(struct ble_npl_event *ev) {
+    return ev->event ? *(void **)((char*)ev->event + 8) : NULL;
+}
+
+static void _my_npl_event_set_arg(struct ble_npl_event *ev, void *arg) {
+    if (ev->event) *(void **)((char*)ev->event + 8) = arg;
+}
+
+static void _my_npl_event_reset(struct ble_npl_event *ev) {
+    if (ev->event) {
+        free(ev->event);
+        ev->event = NULL;
+    }
+}
+
+static ble_npl_error_t _my_npl_mutex_init(struct ble_npl_mutex *mu) {
+    mu->mutex = xSemaphoreCreateRecursiveMutex();
+    return mu->mutex ? BLE_NPL_OK : BLE_NPL_ERROR;
+}
+
+static ble_npl_error_t _my_npl_mutex_deinit(struct ble_npl_mutex *mu) {
+    if (mu->mutex) {
+        vSemaphoreDelete((QueueHandle_t)mu->mutex);
+        mu->mutex = NULL;
+    }
+    return BLE_NPL_OK;
+}
+
+static ble_npl_error_t _my_npl_mutex_pend(struct ble_npl_mutex *mu,
+                                           ble_npl_time_t timeout) {
+    if (!mu->mutex) return BLE_NPL_ERROR;
+    if (xSemaphoreTakeRecursive((QueueHandle_t)mu->mutex, timeout) == pdTRUE) {
+        return BLE_NPL_OK;
+    }
+    return BLE_NPL_TIMEOUT;
+}
+
+static ble_npl_error_t _my_npl_mutex_release(struct ble_npl_mutex *mu) {
+    if (!mu->mutex) return BLE_NPL_ERROR;
+    if (xSemaphoreGiveRecursive((QueueHandle_t)mu->mutex) == pdTRUE) {
+        return BLE_NPL_OK;
+    }
+    return BLE_NPL_ERROR;
+}
+
+static ble_npl_error_t _my_npl_sem_init(struct ble_npl_sem *sem, uint16_t tokens) {
+    sem->sem = xSemaphoreCreateCounting(tokens, tokens);
+    return sem->sem ? BLE_NPL_OK : BLE_NPL_ERROR;
+}
+
+static ble_npl_error_t _my_npl_sem_deinit(struct ble_npl_sem *sem) {
+    if (sem->sem) {
+        vSemaphoreDelete((QueueHandle_t)sem->sem);
+        sem->sem = NULL;
+    }
+    return BLE_NPL_OK;
+}
+
+static ble_npl_error_t _my_npl_sem_pend(struct ble_npl_sem *sem,
+                                         ble_npl_time_t timeout) {
+    if (!sem->sem) return BLE_NPL_ERROR;
+    if (xSemaphoreTake((QueueHandle_t)sem->sem, timeout) == pdTRUE) {
+        return BLE_NPL_OK;
+    }
+    return BLE_NPL_TIMEOUT;
+}
+
+static ble_npl_error_t _my_npl_sem_release(struct ble_npl_sem *sem) {
+    if (!sem->sem) return BLE_NPL_ERROR;
+    if (xSemaphoreGive((QueueHandle_t)sem->sem) == pdTRUE) {
+        return BLE_NPL_OK;
+    }
+    return BLE_NPL_ERROR;
+}
+
+// Minimal callout stubs to avoid calling broken library entries
+static int _my_npl_callout_init(struct ble_npl_callout *co,
+                                 struct ble_npl_eventq *evq,
+                                 ble_npl_event_fn *ev_cb, void *ev_arg) {
+    // Allocate a struct ble_npl_callout_freertos (TimerHandle_t + evq + ev)
+    co->co = malloc(20);
+    if (!co->co) return BLE_NPL_ENOMEM;
+    memset(co->co, 0, 20);
+    return BLE_NPL_OK;
+}
+
+static void _my_npl_callout_deinit(struct ble_npl_callout *co) {
+    if (co->co) {
+        free(co->co);
+        co->co = NULL;
+    }
+}
+
+static void _my_npl_callout_stop(struct ble_npl_callout *co) {}
+
+static ble_npl_error_t _my_npl_callout_reset(struct ble_npl_callout *co,
+                                              ble_npl_time_t ticks) {
+    return BLE_NPL_OK;
+}
+
+static void _my_npl_callout_mem_reset(struct ble_npl_callout *co) {}
+
+static bool _my_npl_callout_is_active(struct ble_npl_callout *co) {
+    return false;
+}
+
+static ble_npl_time_t _my_npl_callout_get_ticks(struct ble_npl_callout *co) {
+    return 0;
+}
+
+static uint32_t _my_npl_callout_remaining_ticks(struct ble_npl_callout *co,
+                                                 ble_npl_time_t now) {
+    return 0;
+}
+
+static void _my_npl_callout_set_arg(struct ble_npl_callout *co, void *arg) {}
+
+// Per-function table probes for lib function addresses
+static void _my_npl_eventq_init(struct ble_npl_eventq *evq) {}
+static void _my_npl_eventq_deinit(struct ble_npl_eventq *evq) {}
+static struct ble_npl_event *_my_npl_eventq_get(struct ble_npl_eventq *evq,
+                                                  ble_npl_time_t tmo) {
+    if (!evq || !evq->eventq) return NULL;
+    struct ble_npl_event *ev;
+    if (xQueueReceive((QueueHandle_t)evq->eventq, &ev, tmo) == pdTRUE) {
+        return ev;
+    }
+    return NULL;
+}
+static void _my_npl_eventq_put(struct ble_npl_eventq *evq,
+                                struct ble_npl_event *ev) {
+    if (!evq || !evq->eventq || !ev) return;
+    xQueueSend((QueueHandle_t)evq->eventq, &ev, 0);
+}
+static void _my_npl_eventq_remove(struct ble_npl_eventq *evq,
+                                   struct ble_npl_event *ev) {
+    if (!evq || !evq->eventq || !ev) return;
+    // FreeRTOS queues don't support direct removal; drain & skip
+}
+static bool _my_npl_eventq_is_empty(struct ble_npl_eventq *evq) {
+    return evq && evq->eventq ? (uxQueueMessagesWaiting((QueueHandle_t)evq->eventq) == 0) : true;
+}
+static bool _my_npl_event_is_queued(struct ble_npl_event *ev) { return false; }
+static uint16_t _my_npl_sem_get_count(struct ble_npl_sem *sem) { return 0; }
+static void _my_npl_hw_set_isr(int irqn, uint32_t addr) {}
+
+static uint32_t _my_npl_time_get(void) {
+    return xTaskGetTickCount();
+}
+
+static ble_npl_error_t _my_npl_time_ms_to_ticks(uint32_t ms, ble_npl_time_t *out_ticks) {
+    *out_ticks = ms / portTICK_PERIOD_MS;
+    return BLE_NPL_OK;
+}
+
+static ble_npl_error_t _my_npl_time_ticks_to_ms(ble_npl_time_t ticks, uint32_t *out_ms) {
+    *out_ms = ticks * portTICK_PERIOD_MS;
+    return BLE_NPL_OK;
+}
+
+static ble_npl_time_t _my_npl_time_ms_to_ticks32(uint32_t ms) {
+    return ms / portTICK_PERIOD_MS;
+}
+
+static uint32_t _my_npl_time_ticks_to_ms32(ble_npl_time_t ticks) {
+    return ticks * portTICK_PERIOD_MS;
+}
+
+static void _my_npl_time_delay(ble_npl_time_t ticks) {
+    vTaskDelay(ticks);
+}
+
+static uint32_t _my_npl_get_time_forever(void) {
+    return portMAX_DELAY;
+}
+
+static uint32_t _my_npl_hw_enter_critical(void) {
+    vPortEnterCritical();
+    return 0;
+}
+
+static void _my_npl_hw_exit_critical(uint32_t ctx) {
+    vPortExitCritical();
+}
+
+static uint8_t _my_npl_hw_is_in_critical(void) {
+    return 0;
+}
+
+static bool _my_npl_os_started(void) {
+    return xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED;
+}
+
+static void *_my_npl_get_current_task_id(void) {
+    return xTaskGetCurrentTaskHandle();
+}
 
 void __wrap_ble_transport_ll_init(void) {
     _RV32_EMIT("TEST:__wrap_ble_transport_ll_init called");
@@ -818,6 +1042,63 @@ void __wrap_ble_transport_ll_init(void) {
     static ble_npl_count_info_t count_info = {64, 16, 64, 64, 64};
     int ret_info = npl_freertos_set_controller_npl_info(&count_info);
     _RV32_EMIT("TEST:npl_freertos_set_controller_npl_info returned %d", ret_info);
+
+    // Replace function table with our own; override broken entries with custom implementations
+    if (npl_funcs) {
+        struct npl_funcs_t *my_funcs = (struct npl_funcs_t *)malloc(sizeof(struct npl_funcs_t));
+        if (my_funcs) {
+            memcpy(my_funcs, npl_funcs, sizeof(struct npl_funcs_t));
+            _RV32_EMIT("TEST:original p_ble_npl_event_init=%p p_ble_npl_mutex_init=%p p_ble_npl_sem_init=%p",
+                (void*)my_funcs->p_ble_npl_event_init, (void*)my_funcs->p_ble_npl_mutex_init, (void*)my_funcs->p_ble_npl_sem_init);
+            my_funcs->p_ble_npl_event_init = _my_npl_event_init;
+            my_funcs->p_ble_npl_event_deinit = _my_npl_event_deinit;
+            my_funcs->p_ble_npl_event_run = _my_npl_event_run;
+            my_funcs->p_ble_npl_event_get_arg = _my_npl_event_get_arg;
+            my_funcs->p_ble_npl_event_set_arg = _my_npl_event_set_arg;
+            my_funcs->p_ble_npl_event_reset = _my_npl_event_reset;
+            my_funcs->p_ble_npl_mutex_init = _my_npl_mutex_init;
+            my_funcs->p_ble_npl_mutex_deinit = _my_npl_mutex_deinit;
+            my_funcs->p_ble_npl_mutex_pend = _my_npl_mutex_pend;
+            my_funcs->p_ble_npl_mutex_release = _my_npl_mutex_release;
+            my_funcs->p_ble_npl_sem_init = _my_npl_sem_init;
+            my_funcs->p_ble_npl_sem_deinit = _my_npl_sem_deinit;
+            my_funcs->p_ble_npl_sem_pend = _my_npl_sem_pend;
+            my_funcs->p_ble_npl_sem_release = _my_npl_sem_release;
+            my_funcs->p_ble_npl_callout_init = _my_npl_callout_init;
+            my_funcs->p_ble_npl_callout_deinit = _my_npl_callout_deinit;
+            my_funcs->p_ble_npl_callout_reset = _my_npl_callout_reset;
+            my_funcs->p_ble_npl_callout_stop = _my_npl_callout_stop;
+            my_funcs->p_ble_npl_callout_mem_reset = _my_npl_callout_mem_reset;
+            my_funcs->p_ble_npl_callout_is_active = _my_npl_callout_is_active;
+            my_funcs->p_ble_npl_callout_get_ticks = _my_npl_callout_get_ticks;
+            my_funcs->p_ble_npl_callout_remaining_ticks = _my_npl_callout_remaining_ticks;
+            my_funcs->p_ble_npl_callout_set_arg = _my_npl_callout_set_arg;
+            my_funcs->p_ble_npl_time_get = _my_npl_time_get;
+            my_funcs->p_ble_npl_time_ms_to_ticks = _my_npl_time_ms_to_ticks;
+            my_funcs->p_ble_npl_time_ticks_to_ms = _my_npl_time_ticks_to_ms;
+            my_funcs->p_ble_npl_time_ms_to_ticks32 = _my_npl_time_ms_to_ticks32;
+            my_funcs->p_ble_npl_time_ticks_to_ms32 = _my_npl_time_ticks_to_ms32;
+            my_funcs->p_ble_npl_time_delay = _my_npl_time_delay;
+            my_funcs->p_ble_npl_get_time_forever = _my_npl_get_time_forever;
+            my_funcs->p_ble_npl_hw_enter_critical = _my_npl_hw_enter_critical;
+            my_funcs->p_ble_npl_hw_exit_critical = _my_npl_hw_exit_critical;
+            my_funcs->p_ble_npl_hw_is_in_critical = _my_npl_hw_is_in_critical;
+            my_funcs->p_ble_npl_os_started = _my_npl_os_started;
+            my_funcs->p_ble_npl_get_current_task_id = _my_npl_get_current_task_id;
+            my_funcs->p_ble_npl_eventq_init = _my_npl_eventq_init;
+            my_funcs->p_ble_npl_eventq_deinit = _my_npl_eventq_deinit;
+            my_funcs->p_ble_npl_eventq_get = _my_npl_eventq_get;
+            my_funcs->p_ble_npl_eventq_put = _my_npl_eventq_put;
+            my_funcs->p_ble_npl_eventq_remove = _my_npl_eventq_remove;
+            my_funcs->p_ble_npl_eventq_is_empty = _my_npl_eventq_is_empty;
+            my_funcs->p_ble_npl_event_is_queued = _my_npl_event_is_queued;
+            my_funcs->p_ble_npl_sem_get_count = _my_npl_sem_get_count;
+            my_funcs->p_ble_npl_hw_set_isr = _my_npl_hw_set_isr;
+            npl_funcs = my_funcs;
+            _RV32_EMIT("TEST:custom p_ble_npl_event_init=%p p_ble_npl_mutex_init=%p p_ble_npl_sem_init=%p",
+                (void*)my_funcs->p_ble_npl_event_init, (void*)my_funcs->p_ble_npl_mutex_init, (void*)my_funcs->p_ble_npl_sem_init);
+        }
+    }
 
     _RV32_EMIT("TEST:calling npl_freertos_mempool_init");
     int ret_mem = npl_freertos_mempool_init();
@@ -847,72 +1128,33 @@ void __wrap_ble_transport_ll_init(void) {
 
 extern "C" {
     int __wrap_os_mempool_init(void *mp, uint16_t blocks, uint32_t block_size, void *membuf, const char *name) {
-        _RV32_EMIT("TEST:__wrap_os_mempool_init called for pool '%s' (bypassing NimBLE FreeRTOS memory pools)", name ? name : "unknown");
-        return 0; // OS_OK
+        _RV32_EMIT("TEST:__wrap_os_mempool_init called for pool '%s' blocks=%u blk_sz=%u membuf=%p", name ? name : "unknown", blocks, block_size, membuf);
+        extern int __real_os_mempool_init(void *mp, uint16_t blocks, uint32_t block_size, void *membuf, const char *name);
+        int ret = __real_os_mempool_init(mp, blocks, block_size, membuf, name);
+        _RV32_EMIT("TEST:__real_os_mempool_init returned %d", ret);
+        return ret;
     }
 
     void __wrap_os_msys_init(void) {
-        _RV32_EMIT("TEST:__wrap_os_msys_init called (bypassing NimBLE msys init)");
+        _RV32_EMIT("TEST:__wrap_os_msys_init called");
+        extern void __real_os_msys_init(void);
+        __real_os_msys_init();
+        _RV32_EMIT("TEST:__real_os_msys_init returned");
     }
 }
 
-extern "C" void __wrap_ble_hs_init(void) {
-    _RV32_EMIT("TEST:__wrap_ble_hs_init called");
-    extern void __real_ble_hs_init(void);
-    __real_ble_hs_init();
-    _RV32_EMIT("TEST:__real_ble_hs_init returned");
-}
-
-extern "C" int __wrap_nimble_port_init(void) {
-    _RV32_EMIT("TEST:__wrap_nimble_port_init called");
-    extern int __real_nimble_port_init(void);
-    int ret = __real_nimble_port_init();
-    _RV32_EMIT("TEST:__real_nimble_port_init returned %d", ret);
+BaseType_t __wrap_xTaskCreatePinnedToCore(TaskFunction_t pvTaskCode, const char *const pcName, const uint32_t usStackDepth, void *const pvParameters, UBaseType_t uxPriority, TaskHandle_t *const pvCreatedTask, const BaseType_t xCoreID) {
+    _RV32_EMIT("TEST:__wrap_xTaskCreatePinnedToCore called name='%s' stack=%u prio=%u core=%d", pcName ? pcName : "NULL", usStackDepth, uxPriority, (int)xCoreID);
+    // For the nimble_host task, bypass the crashing real FreeRTOS implementation
+    if (pcName && strcmp(pcName, "nimble_host") == 0) {
+        _RV32_EMIT("TEST:bypassing real xTaskCreatePinnedToCore for nimble_host - faking success");
+        if (pvCreatedTask) *pvCreatedTask = (TaskHandle_t)1;
+        return pdPASS;
+    }
+    extern BaseType_t __real_xTaskCreatePinnedToCore(TaskFunction_t, const char *, uint32_t, void *, UBaseType_t, TaskHandle_t *, BaseType_t);
+    BaseType_t ret = __real_xTaskCreatePinnedToCore(pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pvCreatedTask, xCoreID);
+    _RV32_EMIT("TEST:__real_xTaskCreatePinnedToCore returned %d", (int)ret);
     return ret;
-}
-
-extern "C" void __wrap_ble_transport_init(void) {
-    _RV32_EMIT("TEST:__wrap_ble_transport_init called");
-    extern void __real_ble_transport_init(void);
-    __real_ble_transport_init();
-    _RV32_EMIT("TEST:__real_ble_transport_init returned");
-}
-
-extern "C" int __wrap_ble_store_init(void) {
-    _RV32_EMIT("TEST:__wrap_ble_store_init called");
-    extern int __real_ble_store_init(void);
-    int ret = __real_ble_store_init();
-    _RV32_EMIT("TEST:__real_ble_store_init returned %d", ret);
-    return ret;
-}
-
-extern "C" int __wrap_ble_hs_start(void) {
-    _RV32_EMIT("TEST:__wrap_ble_hs_start called");
-    extern int __real_ble_hs_start(void);
-    int ret = __real_ble_hs_start();
-    _RV32_EMIT("TEST:__real_ble_hs_start returned %d", ret);
-    return ret;
-}
-
-extern "C" void __wrap_ble_npl_eventq_init(struct ble_npl_eventq *evq) {
-    _RV32_EMIT("TEST:__wrap_ble_npl_eventq_init called evq=%p", evq);
-    extern void __real_ble_npl_eventq_init(struct ble_npl_eventq *evq);
-    __real_ble_npl_eventq_init(evq);
-    _RV32_EMIT("TEST:__real_ble_npl_eventq_init returned");
-}
-
-extern "C" void __wrap_ble_npl_sem_init(struct ble_npl_sem *sem, uint16_t tokens) {
-    _RV32_EMIT("TEST:__wrap_ble_npl_sem_init called sem=%p tokens=%u", sem, tokens);
-    extern void __real_ble_npl_sem_init(struct ble_npl_sem *sem, uint16_t tokens);
-    __real_ble_npl_sem_init(sem, tokens);
-    _RV32_EMIT("TEST:__real_ble_npl_sem_init returned");
-}
-
-extern "C" void __wrap_ble_npl_mutex_init(struct ble_npl_mutex *mu) {
-    _RV32_EMIT("TEST:__wrap_ble_npl_mutex_init called mu=%p", mu);
-    extern void __real_ble_npl_mutex_init(struct ble_npl_mutex *mu);
-    __real_ble_npl_mutex_init(mu);
-    _RV32_EMIT("TEST:__real_ble_npl_mutex_init returned");
 }
 
 
@@ -923,6 +1165,57 @@ void __wrap_na_npl_freertos_eventq_init(struct ble_npl_eventq *evq) {
     __real_na_npl_freertos_eventq_init(evq);
     _RV32_EMIT("TEST:__wrap_na_npl_freertos_eventq_init finished successfully");
 }
+}
+
+extern "C" int __wrap_nimble_port_init(void) {
+    _RV32_EMIT("TEST:__wrap_nimble_port_init called");
+    // esp_nimble_init() calls ble_npl_eventq_init(&g_eventq_dflt) BEFORE
+    // ble_transport_ll_init, but npl_freertos_mempool_init() (which initializes
+    // ble_freertos_evq_pool needed by the eventq init) is only called inside
+    // our ble_transport_ll_init wrap — too late. Pre-init the pool here.
+    _RV32_EMIT("TEST:calling npl_freertos_mempool_init early");
+    int ret_mp = npl_freertos_mempool_init();
+    _RV32_EMIT("TEST:npl_freertos_mempool_init early returned %d", ret_mp);
+
+    extern int __real_nimble_port_init(void);
+    int ret = __real_nimble_port_init();
+    _RV32_EMIT("TEST:__real_nimble_port_init returned %d", ret);
+    return ret;
+}
+
+extern "C" void __wrap_ble_hs_init(void) {
+    _RV32_EMIT("TEST:__wrap_ble_hs_init called");
+    extern void __real_ble_hs_init(void);
+    __real_ble_hs_init();
+    _RV32_EMIT("TEST:__real_ble_hs_init returned");
+}
+
+int __wrap_r_os_mempool_init(void *mp, uint16_t blocks, uint32_t block_size, void *membuf, const char *name) {
+    _RV32_EMIT("TEST:__wrap_r_os_mempool_init called pool='%s' blocks=%u blk_sz=%u membuf=%p", name ? name : "?", blocks, block_size, membuf);
+    extern int __real_r_os_mempool_init(void *mp, uint16_t blocks, uint32_t block_size, void *membuf, const char *name);
+    int ret = __real_r_os_mempool_init(mp, blocks, block_size, membuf, name);
+    _RV32_EMIT("TEST:__real_r_os_mempool_init returned %d", ret);
+    return ret;
+}
+
+void __wrap_ble_hs_hci_init(void) {
+    _RV32_EMIT("TEST:__wrap_ble_hs_hci_init called - bypassing");
+}
+
+void __wrap_ble_transport_hs_init(void) {
+    _RV32_EMIT("TEST:__wrap_ble_transport_hs_init called, calling ble_hs_init manually");
+    extern void ble_hs_init(void);
+    ble_hs_init();
+    _RV32_EMIT("TEST:ble_hs_init returned");
+}
+
+extern "C" void __wrap_ble_npl_eventq_init(struct ble_npl_eventq *evq) {
+    _RV32_EMIT("TEST:__wrap_ble_npl_eventq_init called evq=%p", evq);
+    // On C6, this is an inline function in nimble_npl_os.h, so the wrap is
+    // never reached. We define it here for completeness.
+    extern void __real_ble_npl_eventq_init(struct ble_npl_eventq *evq);
+    __real_ble_npl_eventq_init(evq);
+    _RV32_EMIT("TEST:__real_ble_npl_eventq_init returned");
 }
 
 int __wrap_ble_phy_init(void) {
