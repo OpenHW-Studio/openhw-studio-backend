@@ -357,15 +357,20 @@ static void _rv32UARTTask(void*) {
                                 String b64 = rxBuf.substring(c2 + 1, cl);
                                 static uint8_t ble_rx_buf[512];
                                 int len = _rv32_b64_decode(b64.c_str(), b64.length(), ble_rx_buf);
+                                Serial.print("[BLE:RX] decoded ");
+                                Serial.print(len);
+                                Serial.println(" bytes");
                                 if (len > 0) {
                                     if (_rv32_vhci_cb && _rv32_vhci_cb->notify_host_recv) {
-                                        // PATH A: Legacy VHCI (ESP32 classic)
+                                        Serial.println("[BLE:RX] -> VHCI notify_host_recv");
                                         _rv32_vhci_cb->notify_host_recv(ble_rx_buf, len);
                                     } else {
-                                        // PATH B: NimBLE native controller (C6/C3/S3)
-                                        if (len > 0 && ble_rx_buf[0] == 0x04) {
-                                            // Strip the HCI indicator byte before passing to NimBLE
+                                        if (ble_rx_buf[0] == 0x04) {
+                                            Serial.println("[BLE:RX] -> NimBLE ble_hs_hci_rx_evt");
                                             ble_hs_hci_rx_evt(ble_rx_buf + 1, NULL);
+                                        } else {
+                                            Serial.print("[BLE:RX] unknown HCI indicator: 0x");
+                                            Serial.println(ble_rx_buf[0], HEX);
                                         }
                                     }
                                 }
@@ -1210,10 +1215,24 @@ void __wrap_ble_hs_hci_init(void) {
     _RV32_EMIT("TEST:__wrap_ble_hs_hci_init done");
 }
 
-// Bypass HCI command/response cycle — return 0 (success) immediately
+// Bypass HCI command/response cycle: build the HCI packet, emit $BLE:TX:,
+// then return 0 immediately (don't wait for the response event).
+// The response arrives asynchronously via <BLE:RX:b64> → ble_hs_hci_rx_evt().
 int __wrap_ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len,
                               void *rsp, uint8_t rsp_len) {
-    _RV32_EMIT("TEST:__wrap_ble_hs_hci_cmd_tx opcode=0x%04x", opcode);
+    _RV32_EMIT("TEST:__wrap_ble_hs_hci_cmd_tx opcode=0x%04x len=%d", opcode, cmd_len);
+    // Build HCI packet: indicator(0x01) + opcode(2) + param_len(1) + params
+    uint8_t total = 3 + cmd_len;
+    uint8_t* pkt = (uint8_t*)alloca(1 + total);
+    pkt[0] = 0x01;
+    pkt[1] = opcode & 0xFF;
+    pkt[2] = (opcode >> 8) & 0xFF;
+    pkt[3] = cmd_len;
+    if (cmd_len > 0) memcpy(pkt + 4, cmd, cmd_len);
+    size_t b64_len = ((1 + total + 2) / 3) * 4 + 1;
+    char* b64 = (char*)alloca(b64_len);
+    _rv32_b64_encode(pkt, 1 + total, b64);
+    _RV32_EMIT("BLE:TX:%s", b64);
     return 0;
 }
 
@@ -1299,10 +1318,11 @@ static inline int _rv32_drain_mbuf(struct os_mbuf* om, uint8_t* out, int max_len
 
 // Override LL Command Transport. Emits "$BLE:TX:<b64>"
 int __wrap_ble_transport_to_ll_cmd_impl(void *buf) {
-    _RV32_EMIT("TEST:__wrap_ble_transport_to_ll_cmd_impl called");
     if (!buf) return 0;
     uint8_t* pkt = (uint8_t*)buf;
+    uint16_t opcode = (uint16_t)pkt[0] | ((uint16_t)pkt[1] << 8);
     uint8_t param_len = pkt[2];
+    _RV32_EMIT("[BLE:TX] HCI CMD opcode=0x%04x params=%d bytes", opcode, param_len);
     int total = 3 + param_len;
     
     uint8_t* full_pkt = (uint8_t*)alloca(total + 1);
