@@ -109,15 +109,6 @@ static inline int _rv32_b64_decode(const char* src, size_t len, uint8_t* out);
 
 #include "esp_bt.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-uint8_t * r_ble_hci_trans_buf_alloc(int type);
-void r_ble_hci_trans_buf_free(uint8_t *buf);
-#ifdef __cplusplus
-}
-#endif
-
 #ifdef RV32_BRIDGE_IMPL
 const esp_vhci_host_callback_t* _rv32_vhci_cb = nullptr;
 void* _rv32_ot_instance = nullptr;
@@ -306,6 +297,29 @@ extern "C" {
 }
 #endif
 
+// BLE RX ring buffer — decouples UART task from NimBLE processing
+#define BLE_RX_RING_SIZE 8
+struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
+static int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
+
+static void _rv32_ble_rx_push(const uint8_t *data, int len) {
+    int next = (_rv32_ble_rx_ring_w + 1) % BLE_RX_RING_SIZE;
+    if (next != _rv32_ble_rx_ring_r) {
+        int n = len < 512 ? len : 512;
+        memcpy(_rv32_ble_rx_ring[_rv32_ble_rx_ring_w].data, data, n);
+        _rv32_ble_rx_ring[_rv32_ble_rx_ring_w].len = n;
+        _rv32_ble_rx_ring_w = next;
+    }
+}
+
+static bool _rv32_ble_rx_pop(uint8_t *data, int *len) {
+    if (_rv32_ble_rx_ring_r == _rv32_ble_rx_ring_w) return false;
+    *len = _rv32_ble_rx_ring[_rv32_ble_rx_ring_r].len;
+    memcpy(data, _rv32_ble_rx_ring[_rv32_ble_rx_ring_r].data, *len);
+    _rv32_ble_rx_ring_r = (_rv32_ble_rx_ring_r + 1) % BLE_RX_RING_SIZE;
+    return true;
+}
+
 #ifdef RV32_BRIDGE_IMPL
 static void _rv32UARTTask(void*) {
     _RV32_EMIT("TEST:RV32_BRIDGE_INJECTED_SUCCESSFULLY");
@@ -364,32 +378,13 @@ static void _rv32UARTTask(void*) {
                             int cl = rxBuf.indexOf('>', c2);
                             if (c1 > 0 && c2 > c1 && cl > c2) {
                                 String b64 = rxBuf.substring(c2 + 1, cl);
-                                static uint8_t ble_rx_buf[512];
+                                uint8_t ble_rx_buf[512];
                                 int len = _rv32_b64_decode(b64.c_str(), b64.length(), ble_rx_buf);
-                                Serial.print("[BLE:RX] decoded ");
-                                Serial.print(len);
-                                Serial.println(" bytes");
                                 if (len > 0) {
-                                    if (_rv32_vhci_cb && _rv32_vhci_cb->notify_host_recv) {
-                                        Serial.println("[BLE:RX] -> VHCI notify_host_recv");
-                                        _rv32_vhci_cb->notify_host_recv(ble_rx_buf, len);
-                                    } else {
-                                        if (ble_rx_buf[0] == 0x04) {
-                                            uint8_t *ev_buf = r_ble_hci_trans_buf_alloc(1);
-                                            if (ev_buf) {
-                                                memcpy(ev_buf, ble_rx_buf + 1, len - 1);
-                                                Serial.println("[BLE:RX] -> NimBLE ble_hs_hci_rx_evt");
-                                                ble_hs_hci_rx_evt(ev_buf, NULL);
-                                            }
-                                        } else {
-                                            Serial.print("[BLE:RX] unknown HCI indicator: 0x");
-                                            Serial.println(ble_rx_buf[0], HEX);
-                                        }
-                                    }
+                                    _rv32_ble_rx_push(ble_rx_buf, len);
                                 }
                             }
                         }
-
                         else if (rxBuf.length() > 8 && rxBuf.startsWith("<THREAD:RX:")) {
                             int c1 = rxBuf.indexOf(':');
                             int c2 = rxBuf.indexOf(':', c1 + 1);
@@ -782,7 +777,17 @@ void __wrap_ble_buf_free(void) {
 }
 
 // Wrap ble_transport_free to safely handle heap-allocated HCI event buffers.
-// deprecated: kept as fallback with no --wrap flag
+// Wrapper for ble_transport_free -- intercepts calls from NimBLE host
+// to handle heap-allocated HCI event buffers (from WebSocket gateway)
+// instead of passing them to the transport pool deallocator.
+extern "C" void __wrap_ble_transport_free(void *buf) {
+    // This wrapper is not directly called because --wrap doesn't intercept
+    // calls within the precompiled library. Instead, transport.c's
+    // ble_transport_free now handles heap buffers via free(buf).
+    if (buf) {
+        free(buf);
+    }
+}
 
 void __wrap_ble_vhci_disc_duplicate_mode_disable(uint32_t mode) {
     _RV32_EMIT("TEST:__wrap_ble_vhci_disc_duplicate_mode_disable called");
@@ -1329,53 +1334,34 @@ int __wrap_ble_phy_init(void) {
 extern "C"
 #endif
 void _rv32_process_ble_events(void) {
-    if (!npl_funcs) return;
+    if (!npl_funcs) { _RV32_EMIT("TEST:evproc npl_funcs null, return"); return; }
 
-    // 1. Drain any pending Serial <BLE:RX:> data so HCI responses and
-    //    advertising reports are processed even when the UART background
-    //    task is not scheduled.
-    if (_rv32_serial_mtx && xSemaphoreTake(_rv32_serial_mtx, pdMS_TO_TICKS(1)) == pdTRUE) {
-        static String bleRxBuf;
-        if (bleRxBuf.length() == 0) bleRxBuf.reserve(1024);
-        if (Serial) {
-            while (Serial.available() > 0) {
-                char c = static_cast<char>(Serial.read());
-                if (c == '\n') {
-                    if (bleRxBuf.length() > 8 && bleRxBuf.startsWith("<BLE:RX:")) {
-                        int c1 = bleRxBuf.indexOf(':');
-                        int c2 = bleRxBuf.indexOf(':', c1 + 1);
-                        int cl = bleRxBuf.indexOf('>', c2);
-                        if (c1 > 0 && c2 > c1 && cl > c2) {
-                            String b64 = bleRxBuf.substring(c2 + 1, cl);
-                            uint8_t ble_rx_buf[512];
-                            int len = _rv32_b64_decode(b64.c_str(), b64.length(), ble_rx_buf);
-                            if (len > 0 && ble_rx_buf[0] == 0x04) {
-                                uint8_t *ev_buf = r_ble_hci_trans_buf_alloc(1);
-                                if (ev_buf) {
-                                    memcpy(ev_buf, ble_rx_buf + 1, len - 1);
-                                    ble_hs_hci_rx_evt(ev_buf, NULL);
-                                }
-                            }
-                        }
-                    }
-                    bleRxBuf.clear();
-                } else if (c != '\r') {
-                    if (bleRxBuf.length() < 1024) bleRxBuf += c;
-                    else bleRxBuf.clear();
-                }
+    _RV32_EMIT("TEST:evproc step1 ringbuf");
+    uint8_t ble_rx_buf[512];
+    int ble_rx_len;
+    while (_rv32_ble_rx_pop(ble_rx_buf, &ble_rx_len)) {
+        if (ble_rx_len > 1 && ble_rx_buf[0] == 0x04) {
+            int ev_len = ble_rx_len - 1;
+            uint8_t *ev_buf = (uint8_t *)malloc(ev_len);
+            if (ev_buf) {
+                memcpy(ev_buf, ble_rx_buf + 1, ev_len);
+                ble_hs_hci_rx_evt(ev_buf, NULL);
             }
         }
-        xSemaphoreGive(_rv32_serial_mtx);
     }
-
+    _RV32_EMIT("TEST:evproc step2 drain evq");
     // 2. Drain NimBLE event queue
     struct ble_npl_eventq *evq = nimble_port_get_dflt_eventq();
-    if (!evq) return;
+    if (!evq) { _RV32_EMIT("TEST:evproc no evq, return"); return; }
+    int drained = 0;
     while (1) {
         struct ble_npl_event *ev = npl_funcs->p_ble_npl_eventq_get(evq, 0);
         if (!ev) break;
+        drained++;
+        _RV32_EMIT("TEST:evproc run ev #%d ev=%p", drained, ev);
         npl_funcs->p_ble_npl_event_run(ev);
     }
+    _RV32_EMIT("TEST:evproc done drained=%d", drained);
 }
 
 // ── PATH B: NimBLE native HCI (ESP32-C6/C3/S3 — SOC_ESP_NIMBLE_CONTROLLER) ──
