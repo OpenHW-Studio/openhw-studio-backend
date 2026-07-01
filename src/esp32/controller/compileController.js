@@ -279,7 +279,7 @@ function _requireEsptool() {
  * @param {object} esptoolRunner - {cmd, args} from _requireEsptool
  * @returns {string} Absolute path to the merged-flash.bin
  */
-function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
+function _mergeFlashImage(buildDir, sketchBase, esptoolRunner, isHardware = false) {
     const bootloader = path.join(buildDir, `${sketchBase}.bootloader.bin`);
     const partTable  = path.join(buildDir, `${sketchBase}.partitions.bin`);
     const appBin     = path.join(buildDir, `${sketchBase}.bin`);
@@ -306,7 +306,7 @@ function _mergeFlashImage(buildDir, sketchBase, esptoolRunner) {
         '--chip',          'esp32',
         'merge_bin',
         '--output',        mergedOut,
-        '--fill-flash-size', '4MB',
+        ...(isHardware ? [] : ['--fill-flash-size', '4MB']),
         '--flash_mode',    'dio',
         '--flash_size',    '4MB',
         '--flash_freq',    '40m',
@@ -807,7 +807,8 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
 
         let mergedFlash;
         try {
-            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner);
+            const isHardware = req.body.targetEngine === 'hardware';
+            mergedFlash = _mergeFlashImage(buildDir, `${sketchName}.ino`, esptoolRunner, isHardware);
             console.log(`[Compile:${buildId}] 🔨 Flash image merged → ${mergedFlash}`);
 
             try {

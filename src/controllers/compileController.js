@@ -1348,6 +1348,62 @@ pico_add_extra_outputs(firmware)
       }));
 };
 
+function resolveAvrdudeExecutable() {
+    const isWin = os.platform() === 'win32';
+    const exeName = isWin ? 'avrdude.exe' : 'avrdude';
+    const explicitExe = String(process.env.AVRDUDE_PATH || '').trim();
+    if (explicitExe && fs.existsSync(explicitExe)) return explicitExe;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const exePath = path.join(toolsRoot, version, 'bin', exeName);
+            if (fs.existsSync(exePath)) return exePath;
+        }
+    }
+    return exeName; // fallback to PATH
+}
+
+function resolveAvrdudeConf() {
+    const explicit = String(process.env.AVRDUDE_CONF || '').trim();
+    if (explicit && fs.existsSync(explicit)) return explicit;
+
+    const dataCandidates = [
+        String(process.env.ARDUINO_DATA_DIR || '').trim(),
+        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
+        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
+    ].filter(Boolean);
+
+    for (const dataDir of dataCandidates) {
+        const toolsRoot = path.join(dataDir, 'packages', 'arduino', 'tools', 'avrdude');
+        if (!fs.existsSync(toolsRoot)) continue;
+
+        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory())
+            .map((entry) => entry.name)
+            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
+
+        for (const version of versions) {
+            const confPath = path.join(toolsRoot, version, 'etc', 'avrdude.conf');
+            if (fs.existsSync(confPath)) return confPath;
+        }
+    }
+    return '';
+}
+
 export const flashFirmware = (req, res) => {
     const { port, fqbn, hex, baudRate, resetMethod } = req.body || {};
     const cleanPort = sanitizePortName(port);
@@ -1411,7 +1467,7 @@ export const flashFirmware = (req, res) => {
         return res.status(500).json({ error: 'Failed to create temporary flash files.' });
     }
 
-    const args = [
+    const execArgs = [
         'upload',
         '--fqbn', targetFqbn,
         '-p', cleanPort,
@@ -1419,30 +1475,31 @@ export const flashFirmware = (req, res) => {
         '--verify',
     ];
 
-    if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-        args.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
-    }
-    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
-        // Core-dependent, may be ignored by some board packages.
-        args.push('--upload-property', 'upload.disable_flushing=true');
+    const isAvr = targetFqbn.toLowerCase().includes(':avr:');
+    if (!isAvr && Number.isFinite(cleanBaud) && cleanBaud > 0) {
+        execArgs.push('--upload-property', `upload.speed=${Math.trunc(cleanBaud)}`);
     }
 
-    execFile(ARDUINO_CLI_PATH, args, (error, stdout, stderr) => {
+    if (String(resetMethod || '').toLowerCase() === 'no-rts-dtr') {
+        execArgs.push('--upload-property', 'upload.disable_flushing=true');
+    }
+
+    execFile(ARDUINO_CLI_PATH, execArgs, (error, stdout, stderr) => {
         fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
             if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
         });
 
         if (error) {
-            console.error('Flash error:', stderr || stdout);
+            console.error('Flash error:', stderr || stdout || error.message);
             return res.status(400).json({
                 error: 'Flashing failed',
-                details: stderr || stdout,
+                details: stderr || stdout || error.message,
             });
         }
 
         return res.json({
             ok: true,
-            message: 'Firmware flashed successfully via bootloader uploader.',
+            message: 'Firmware flashed successfully via arduino-cli.',
             output: stdout || stderr || '',
         });
     });
