@@ -1190,6 +1190,42 @@ extern "C" int __wrap_nimble_port_init(void) {
     extern int __real_nimble_port_init(void);
     int ret = __real_nimble_port_init();
     _RV32_EMIT("TEST:__real_nimble_port_init returned %d", ret);
+
+    // Set a random address so active scan can work.
+    // ble_gap_ext_disc() calls ble_hs_id_use_addr() which fails with
+    // BLE_HS_ENOADDR unless an identity address (public or random) is set.
+    // We use a static NRPA (non-resolvable private address).  The HCI command
+    // (LE Set Random Address) emitted by ble_hs_id_set_rnd flows through
+    // __wrap_ble_hs_hci_cmd_tx -> BLE:TX to the bridge and back as BLE:RX.
+    // The wrapper returns 0 immediately, so this call does NOT wait for the
+    // response — that arrives later asynchronously.
+    {
+        uint8_t nrpa[6];
+        nrpa[0] = 0x12; nrpa[1] = 0x34; nrpa[2] = 0x56;
+        nrpa[3] = 0x78; nrpa[4] = 0x9a; nrpa[5] = 0xbc;
+        nrpa[5] &= 0x3f; // NRPA: top 2 bits of last byte must be 00
+        extern int ble_hs_id_set_rnd(const uint8_t *rnd_addr);
+        int addr_ret = ble_hs_id_set_rnd(nrpa);
+        _RV32_EMIT("TEST:ble_hs_id_set_rnd returned %d", addr_ret);
+    }
+
+    // Force the NimBLE host into the "enabled + synced" state so that
+    // ble_gap_ext_disc() (called by NimBLEScan::start) passes its
+    // ble_hs_is_enabled() check.  The real host startup sequence
+    // (ble_hs_start → ble_hs_startup_go) is NOT called because (a) our
+    // __wrap_ble_hs_hci_cmd_tx returns 0 immediately without filling
+    // response buffers, and (b) there is no nimble_host task to process
+    // the event queue asynchronously.  Instead we tickle the two state
+    // variables directly — scan commands will still flow through our
+    // wrapper and reach the bridge just fine.
+    {
+        extern uint8_t ble_hs_enabled_state;
+        extern uint8_t ble_hs_sync_state;
+        ble_hs_enabled_state = 2; // BLE_HS_ENABLED_STATE_ON
+        ble_hs_sync_state    = 2; // BLE_HS_SYNC_STATE_GOOD
+        _RV32_EMIT("TEST:ble_hs_enabled_state=ON sync_state=GOOD");
+    }
+
     return ret;
 }
 
