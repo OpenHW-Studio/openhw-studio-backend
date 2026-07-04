@@ -288,6 +288,7 @@ extern "C" {
     int ble_hs_hci_rx_evt(uint8_t *hci_ev, void *arg);
     struct ble_hci_ev;  // forward decl — full definition from NimBLE hci_common.h
     int ble_hs_hci_evt_process(struct ble_hci_ev *ev);
+    int ble_hs_hci_evt_acl_process(struct os_mbuf *om);
     void ble_hs_sched_start(void);
 #if __has_include(<openthread/platform/radio.h>) && __has_include(<openthread/error.h>)
     __attribute__((weak)) void otPlatRadioReceiveDone(otInstance *aInstance, otRadioFrame *aFrame, otError aError);
@@ -329,6 +330,7 @@ static bool _rv32_ble_rx_pop(uint8_t *data, int *len) {
 }
 
 #ifdef RV32_BRIDGE_IMPL
+
 static void _rv32UARTTask(void*) {
     _RV32_EMIT("TEST:RV32_BRIDGE_INJECTED_SUCCESSFULLY");
     String rxBuf;
@@ -717,6 +719,7 @@ static inline int _rv32_b64_decode(const char* src, size_t len, uint8_t* out) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "esp_bt.h"
+#include <os/os_mbuf.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -795,11 +798,14 @@ void __wrap_ble_buf_free(void) {
 // to handle heap-allocated HCI event buffers (from WebSocket gateway)
 // instead of passing them to the transport pool deallocator.
 extern "C" void __wrap_ble_transport_free(void *buf) {
-    // This wrapper is not directly called because --wrap doesn't intercept
-    // calls within the precompiled library. Instead, transport.c's
-    // ble_transport_free now handles heap buffers via free(buf).
+    // If this wrapper IS called (via --wrap), free the buffer directly.
+    // Even if not called, transport.c's ble_transport_free now falls
+    // through to free(buf) for non-pool memory.
+    _RV32_EMIT("DBG:__wrap_ble_transport_free buf=%p", buf);
     if (buf) {
+        _RV32_EMIT("DBG:__wrap_ble_transport_free calling free(%p)", buf);
         free(buf);
+        _RV32_EMIT("DBG:__wrap_ble_transport_free free done");
     }
 }
 
@@ -1372,17 +1378,72 @@ int __wrap_ble_phy_init(void) {
 #ifdef __cplusplus
 extern "C"
 #endif
+// ── UART0 register definitions for direct FIFO poll ────────────
+// ESP32-C6: UART0 base = 0x00A00000
+// Use READ_PERI_REG / WRITE_PERI_REG macros (safe in emulator if address is valid)
+#include "soc/uart_reg.h"
+#include "soc/uart_struct.h"
+#include "hal/uart_ll.h"
+
+// Same inline reader as Serial0 but using uart_ll functions.
+// This bypasses the interrupt-driven driver and reads the hardware FIFO directly.
+static int _rv32_poll_uart0_hw(void) {
+    static char _line[1024];
+    static int _pos = 0;
+    int pushed = 0;
+    // uart_ll_get_rxfifo_len returns number of bytes available
+    while (uart_ll_get_rxfifo_len(UART_LL_GET_HW(0)) > 0) {
+        uint8_t raw;
+        uart_ll_read_rxfifo(UART_LL_GET_HW(0), &raw, 1);
+        char c = (char)raw;
+        if (c == '\n') {
+            _line[_pos] = '\0';
+            if (_pos > 8 && strncmp(_line, "<BLE:RX:", 8) == 0) {
+                int cl = _pos - 1;
+                while (cl > 0 && _line[cl] != '>') cl--;
+                if (cl > 8) {
+                    const char* b64 = _line + 8;
+                    int b64_len = cl - 8;
+                    uint8_t ble_buf[512];
+                    int len = _rv32_b64_decode(b64, b64_len, ble_buf);
+                    if (len > 0) {
+                        _rv32_ble_rx_push(ble_buf, len);
+                        pushed++;
+                        printf("DBG:UART_HW_POLL pushed len=%d\n", len);
+                        fflush(stdout);
+                    }
+                }
+            }
+            _pos = 0;
+        } else if (c != '\r') {
+            if (_pos < (int)sizeof(_line) - 1) _line[_pos++] = c;
+        }
+    }
+    return pushed;
+}
+
 void _rv32_process_ble_events(void) {
-    // First, drain any BLE RX lines directly from Serial0.
+    // Try direct UART hardware poll first (works even if interrupt-driven
+    // Serial0 misses data due to emulator UART interrupt timing issues).
+    _rv32_poll_uart0_hw();
+
+    // Then drain any BLE RX lines directly from Serial0 (backup path).
     // The background UART task sleeps 10ms between polls, but the emulator
     // only advances ~0.3ms per batch, so it never wakes up. We read inline.
     static char _rv32_ble_rx_line[1024];
     static int _rv32_ble_rx_pos = 0;
+    int avail = (Serial0 ? Serial0.available() : -1);
+    if (avail > 0) {
+        printf("DBG:SERIAL0_AVAIL=%d\n", avail);
+        fflush(stdout);
+    }
     while (Serial0 && Serial0.available() > 0) {
         char c = (char)Serial0.read();
         if (c == '\n') {
             _rv32_ble_rx_line[_rv32_ble_rx_pos] = '\0';
             if (_rv32_ble_rx_pos > 8 && strncmp(_rv32_ble_rx_line, "<BLE:RX:", 8) == 0) {
+                printf("DBG:BLE_RX_INLINE len=%d\n", _rv32_ble_rx_pos);
+                fflush(stdout);
                 int cl = _rv32_ble_rx_pos - 1;
                 while (cl > 0 && _rv32_ble_rx_line[cl] != '>') cl--;
                 if (cl > 8) {
@@ -1390,8 +1451,12 @@ void _rv32_process_ble_events(void) {
                     int b64_len = cl - 8;
                     uint8_t ble_buf[512];
                     int len = _rv32_b64_decode(b64, b64_len, ble_buf);
+                    printf("DBG:BLE_RX_INLINE_DECODED len=%d\n", len);
+                    fflush(stdout);
                     if (len > 0) {
                         _rv32_ble_rx_push(ble_buf, len);
+                        printf("DBG:BLE_RX_PUSHED len=%d\n", len);
+                        fflush(stdout);
                     }
                 }
             }
@@ -1437,10 +1502,37 @@ void _rv32_process_ble_events(void) {
                 if (ev_copy) {
                     memcpy(ev_copy, rx_buf + 1, rx_len - 1);
                     ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
+                    Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
                 }
+            }
+        } else if (rx_len > 1 && rx_buf[0] == 0x02) {
+            // ACL data packet from controller (e.g., GATT response from peer)
+            // Strip the 0x02 HCI indicator, create an os_mbuf, and feed to
+            // NimBLE's ACL processing path (which handles L2CAP/GATT).
+            struct os_mbuf *om = os_msys_get_pkthdr(rx_len - 1, 0);
+            if (om) {
+                os_mbuf_append(om, rx_buf + 1, rx_len - 1);
+                ble_hs_hci_evt_acl_process(om);
             }
         }
     }
+
+    // Drain the NimBLE host event queue (BLE_GAP_EVENT_CONNECT etc.)
+    // Currently disabled — processing events from the global shared buffer
+    // causes instability. Events are left for the (bypassed) host task.
+    // TODO: implement queue-isolated drain or use a dedicated processing pass.
+    /* DISABLED
+    extern struct ble_npl_eventq *ble_hs_evq_get(void);
+    struct ble_npl_eventq *hs_evq = ble_hs_evq_get();
+    if (hs_evq) {
+        struct ble_npl_event *ev = ble_npl_eventq_get(hs_evq, 0);
+        if (ev) {
+            ble_npl_event_run(ev);
+            ble_npl_event_deinit(ev);
+            free(ev);
+        }
+    }
+    */
 }
 
 // ── PATH B: NimBLE native HCI (ESP32-C6/C3/S3 — SOC_ESP_NIMBLE_CONTROLLER) ──
@@ -1457,6 +1549,7 @@ struct os_mbuf; // forward-decl — avoids pulling in all NimBLE headers
 #ifdef __cplusplus
 extern "C" {
 #endif
+extern void ble_transport_free(void *buf);
 extern void ble_transport_free(void *buf);
 extern int r_os_mbuf_free_chain(struct os_mbuf *om);
 #ifdef __cplusplus
