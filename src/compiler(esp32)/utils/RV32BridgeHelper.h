@@ -286,7 +286,8 @@ static inline void _rv32_delay(unsigned long ms) {
 #ifdef __cplusplus
 extern "C" {
     int ble_hs_hci_rx_evt(uint8_t *hci_ev, void *arg);
-    void ble_hs_hci_evt_process(void *hci_ev);
+    struct ble_hci_ev;  // forward decl — full definition from NimBLE hci_common.h
+    int ble_hs_hci_evt_process(struct ble_hci_ev *ev);
     void ble_hs_sched_start(void);
 #if __has_include(<openthread/platform/radio.h>) && __has_include(<openthread/error.h>)
     __attribute__((weak)) void otPlatRadioReceiveDone(otInstance *aInstance, otRadioFrame *aFrame, otError aError);
@@ -1403,25 +1404,39 @@ void _rv32_process_ble_events(void) {
     }
 
     // Then drain the ring buffer (may have events from UART task too)
-    // NOTE: we bypass ALL ble_hs_hci_evt_process calls here because the
-    // NimBLE host event processing hangs in the WASM emulator (FreeRTOS
-    // mutex/semaphore/mbuf dependencies). Instead we just count LE
-    // Advertising Reports for end-to-end validation and call the
-    // registered callback to simulate the NimBLE discovery callback.
+    // NOTE: we used to bypass ALL ble_hs_hci_evt_process calls here because
+    // NimBLE host event processing hung in the WASM emulator. Now we feed
+    // events directly to ble_hs_hci_evt_process (bypassing the FreeRTOS event
+    // queue that would deadlock), enabling the NimBLE GAP callback chain,
+    // including NimBLEScanCallbacks::onResult.
     static uint8_t rx_buf[512];
     int rx_len;
     while (_rv32_ble_rx_pop(rx_buf, &rx_len)) {
         if (rx_len > 1 && rx_buf[0] == 0x04) {
             uint8_t evcode = rx_buf[1];
             int subevt = (evcode == 0x3e && rx_len >= 4) ? rx_buf[3] : -1;
+
+            // Bypass callback for LE Advertising Reports
             if (evcode == 0x3e && subevt == 0x02) {
                 _rv32_disc_count++;
-                // Extract MAC (offset 7, 6 bytes) and RSSI (last byte)
                 if (_rv32_adv_cb && rx_len >= 15) {
                     int data_len = rx_buf[13];
                     int rssi_off = 14 + data_len;
                     int8_t rssi = (rssi_off < rx_len) ? (int8_t)rx_buf[rssi_off] : -127;
                     _rv32_adv_cb(rx_buf + 7, rssi);
+                }
+            }
+
+            // Feed to NimBLE host stack for normal GAP event processing.
+            // We allocate a copy (without the 0x04 HCI packet indicator byte)
+            // so that struct ble_hci_ev starts at the malloc'd address.
+            // ble_hs_hci_evt_process will eventually call ble_transport_free,
+            // which our __wrap redirects to free(ev_copy).
+            if (rx_len > 1) {
+                uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
+                if (ev_copy) {
+                    memcpy(ev_copy, rx_buf + 1, rx_len - 1);
+                    ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
                 }
             }
         }
