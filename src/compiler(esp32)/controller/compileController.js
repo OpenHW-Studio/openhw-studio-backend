@@ -839,6 +839,15 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
         targetFqbn += ':PartitionScheme=huge_app';
     }
 
+    if (req.body.psram) {
+        if (!targetFqbn.includes('PSRAM')) {
+            targetFqbn += targetFqbn.includes('PartitionScheme') || targetFqbn.includes('FlashMode') 
+                ? ',PSRAM=enabled'
+                : ':PSRAM=enabled';
+        }
+        extraFlagsProps.push('--build-property', 'compiler.cpp.extra_flags=-DBOARD_HAS_PSRAM');
+    }
+
     const compileArgs = [
         'compile',
         '--fqbn',             targetFqbn,
