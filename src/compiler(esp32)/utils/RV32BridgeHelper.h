@@ -299,7 +299,8 @@ extern "C" {
 int _rv32_disc_count = 0;
 
 // Callback for direct advertising report delivery (bypasses NimBLE host)
-typedef void (*_rv32_adv_callback_t)(void);
+// Parameters: mac[6] (big-endian), rssi
+typedef void (*_rv32_adv_callback_t)(const uint8_t mac[6], int8_t rssi);
 static _rv32_adv_callback_t _rv32_adv_cb = nullptr;
 void _rv32_set_adv_callback(_rv32_adv_callback_t cb) { _rv32_adv_cb = cb; }
 
@@ -1415,8 +1416,12 @@ void _rv32_process_ble_events(void) {
             int subevt = (evcode == 0x3e && rx_len >= 4) ? rx_buf[3] : -1;
             if (evcode == 0x3e && subevt == 0x02) {
                 _rv32_disc_count++;
-                if (_rv32_adv_cb) {
-                    _rv32_adv_cb();
+                // Extract MAC (offset 7, 6 bytes) and RSSI (last byte)
+                if (_rv32_adv_cb && rx_len >= 15) {
+                    int data_len = rx_buf[13];
+                    int rssi_off = 14 + data_len;
+                    int8_t rssi = (rssi_off < rx_len) ? (int8_t)rx_buf[rssi_off] : -127;
+                    _rv32_adv_cb(rx_buf + 7, rssi);
                 }
             }
         }
