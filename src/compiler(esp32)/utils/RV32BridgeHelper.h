@@ -276,9 +276,10 @@ static inline void _rv32_noTone(uint8_t pin) {
     _RV32_EMIT("NOTONE:%d", (int)pin);
 }
 
-// delay hook
+// delay hook — no-op in emulator; vTaskDelay() would hang because FreeRTOS
+// tick interrupts never fire under the WASM emulator.
 static inline void _rv32_delay(unsigned long ms) {
-    ::delay(ms);
+    (void)ms;
 }
 
 // ─── Background UART RX Polling Task ─────────────────────────────────────────
@@ -286,10 +287,12 @@ static inline void _rv32_delay(unsigned long ms) {
 #ifdef __cplusplus
 extern "C" {
     int ble_hs_hci_rx_evt(uint8_t *hci_ev, void *arg);
-    struct ble_hci_ev;  // forward decl — full definition from NimBLE hci_common.h
+    struct ble_hci_ev;
     int ble_hs_hci_evt_process(struct ble_hci_ev *ev);
     int ble_hs_hci_evt_acl_process(struct os_mbuf *om);
     void ble_hs_sched_start(void);
+    void ble_gap_rx_le_scan_timeout(void);
+    void ble_gap_master_reset_state(void);
 #if __has_include(<openthread/platform/radio.h>) && __has_include(<openthread/error.h>)
     __attribute__((weak)) void otPlatRadioReceiveDone(otInstance *aInstance, otRadioFrame *aFrame, otError aError);
 #endif
@@ -308,7 +311,7 @@ void _rv32_set_adv_callback(_rv32_adv_callback_t cb) { _rv32_adv_cb = cb; }
 
 // BLE RX ring buffer — decouples UART task from NimBLE processing
 #define BLE_RX_RING_SIZE 8
-static int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
+static volatile int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
 struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
 
 static void _rv32_ble_rx_push(const uint8_t *data, int len) {
@@ -938,15 +941,36 @@ static ble_npl_error_t _my_npl_sem_deinit(struct ble_npl_sem *sem) {
     return BLE_NPL_OK;
 }
 
+// Forward declaration — defined later in SECTION 7
+static void _rv32_process_ble_events(void);
+
 static ble_npl_error_t _my_npl_sem_pend(struct ble_npl_sem *sem,
                                          ble_npl_time_t timeout) {
     if (!sem->sem) return BLE_NPL_ERROR;
     uint32_t *cnt = (uint32_t *)sem->sem;
+    // Process BLE ring buffer events before checking semaphore count.
+    // This ensures command complete / connection complete events that have
+    // been injected into the ring buffer (by run.js) are delivered to the
+    // NimBLE host even during blocking waits (e.g. ble_gap_connect).
+    _rv32_process_ble_events();
     if (*cnt > 0) {
         (*cnt)--;
         return BLE_NPL_OK;
     }
-    // In cooperative mode, non-blocking = return immediately
+    if (timeout == 0) {
+        return BLE_NPL_TIMEOUT;
+    }
+    // For non-zero timeouts, spin-wait with iteration limit.
+    // The NimBLE host might block waiting for an event (e.g. connection complete).
+    // Since FreeRTOS ticks don't advance reliably in the emulator, we use a
+    // bounded iteration count instead of tick-based timeout.
+    for (int _sp = 0; _sp < 10000; _sp++) {
+        _rv32_process_ble_events();
+        if (*cnt > 0) {
+            (*cnt)--;
+            return BLE_NPL_OK;
+        }
+    }
     return BLE_NPL_TIMEOUT;
 }
 
@@ -1367,6 +1391,16 @@ extern "C" void __wrap_ble_npl_eventq_init(struct ble_npl_eventq *evq) {
 int __wrap_ble_phy_init(void) {
     _RV32_EMIT("TEST:__wrap_ble_phy_init called");
     return 0;
+}
+
+// Wrap scan timeout — the BLE gateway sends this event after the scan duration
+// expires (wall clock). The NimBLE host state machine isn't fully initialized
+// in the emulator (we bypass nimble_host task creation), so calling the real
+// ble_gap_disc_complete() panics. Instead, just reset the GAP master state.
+void __wrap_ble_gap_rx_le_scan_timeout(void) {
+    _RV32_EMIT("TEST:__wrap_ble_gap_rx_le_scan_timeout - resetting GAP master state");
+    ble_gap_master_reset_state();
+    _RV32_EMIT("TEST:scan timeout handled safely");
 }
 
 #ifdef __cplusplus
