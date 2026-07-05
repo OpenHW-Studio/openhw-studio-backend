@@ -301,15 +301,15 @@ extern "C" {
 int _rv32_disc_count = 0;
 
 // Callback for direct advertising report delivery (bypasses NimBLE host)
-// Parameters: mac[6] (big-endian), rssi
-typedef void (*_rv32_adv_callback_t)(const uint8_t mac[6], int8_t rssi);
+// Parameters: mac[6] (LE byte order), rssi, addr_type
+typedef void (*_rv32_adv_callback_t)(const uint8_t mac[6], int8_t rssi, uint8_t addr_type);
 static _rv32_adv_callback_t _rv32_adv_cb = nullptr;
 void _rv32_set_adv_callback(_rv32_adv_callback_t cb) { _rv32_adv_cb = cb; }
 
 // BLE RX ring buffer — decouples UART task from NimBLE processing
 #define BLE_RX_RING_SIZE 8
-struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
 static int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
+struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
 
 static void _rv32_ble_rx_push(const uint8_t *data, int len) {
     int next = (_rv32_ble_rx_ring_w + 1) % BLE_RX_RING_SIZE;
@@ -763,10 +763,15 @@ esp_err_t __wrap_esp_bt_controller_init(void *cfg) {
 
 esp_err_t __wrap_esp_bt_controller_enable(int mode) {
     _RV32_EMIT("TEST:__wrap_esp_bt_controller_enable called, mode=%d", mode);
-    extern esp_err_t __real_esp_bt_controller_enable(int mode);
-    esp_err_t ret = __real_esp_bt_controller_enable(mode);
-    _RV32_EMIT("TEST:__real_esp_bt_controller_enable returned %d", (int)ret);
-    return ret;
+    // Skip real controller enable to prevent creation of high-priority BLE
+    // controller tasks (prio 23) which consume all CPU and starve loopTask
+    // (prio 1) and esp_timer (prio 22). HCI commands go to the gateway via
+    // __wrap_ble_hs_hci_cmd_tx, so the real controller is not needed.
+    //extern esp_err_t __real_esp_bt_controller_enable(int mode);
+    //esp_err_t ret = __real_esp_bt_controller_enable(mode);
+    //_RV32_EMIT("TEST:__real_esp_bt_controller_enable returned %d", (int)ret);
+    _RV32_EMIT("TEST:__wrap_esp_bt_controller_enable - SKIPPED real call");
+    return ESP_OK;
 }
 
 esp_err_t __wrap_esp_bt_controller_disable(void) {
@@ -1476,33 +1481,56 @@ void _rv32_process_ble_events(void) {
     // including NimBLEScanCallbacks::onResult.
     static uint8_t rx_buf[512];
     int rx_len;
+    if (_rv32_ble_rx_ring_w != _rv32_ble_rx_ring_r) {
+        Serial.printf("RB_STATE: w=%d r=%d diff=%d\n",
+            _rv32_ble_rx_ring_w, _rv32_ble_rx_ring_r,
+            (_rv32_ble_rx_ring_w - _rv32_ble_rx_ring_r + 8) % 8);
+    }
     while (_rv32_ble_rx_pop(rx_buf, &rx_len)) {
         if (rx_len > 1 && rx_buf[0] == 0x04) {
             uint8_t evcode = rx_buf[1];
             int subevt = (evcode == 0x3e && rx_len >= 4) ? rx_buf[3] : -1;
 
-            // Bypass callback for LE Advertising Reports
+            // Bypass callback for LE Advertising Reports.
+            // When _rv32_adv_cb is set, we call it and skip the NimBLE host
+            // event processing (ble_hs_hci_evt_process hangs for LE Advertising
+            // Reports in the WASM emulator due to NimBLE internal processing).
             if (evcode == 0x3e && subevt == 0x02) {
+                uint8_t addr0 = (rx_len >= 8) ? rx_buf[7] : 0;
+                uint8_t addr5 = (rx_len >= 13) ? rx_buf[12] : 0;
+                Serial.printf("ADV_DETECT rx_len=%d _rv32_adv_cb=%p addr=%02x...%02x\n",
+                    rx_len, (void*)_rv32_adv_cb, addr0, addr5);
                 _rv32_disc_count++;
                 if (_rv32_adv_cb && rx_len >= 15) {
                     int data_len = rx_buf[13];
                     int rssi_off = 14 + data_len;
                     int8_t rssi = (rssi_off < rx_len) ? (int8_t)rx_buf[rssi_off] : -127;
-                    _rv32_adv_cb(rx_buf + 7, rssi);
+                    uint8_t addr_type = rx_buf[6];
+                    _rv32_adv_cb(rx_buf + 7, rssi, addr_type);
+                } else {
+                    // No bypass callback — feed to NimBLE host stack normally.
+                    if (rx_len > 1) {
+                        uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
+                        if (ev_copy) {
+                            memcpy(ev_copy, rx_buf + 1, rx_len - 1);
+                            ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
+                            Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
+                        }
+                    }
                 }
-            }
-
-            // Feed to NimBLE host stack for normal GAP event processing.
-            // We allocate a copy (without the 0x04 HCI packet indicator byte)
-            // so that struct ble_hci_ev starts at the malloc'd address.
-            // ble_hs_hci_evt_process will eventually call ble_transport_free,
-            // which our __wrap redirects to free(ev_copy).
-            if (rx_len > 1) {
-                uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
-                if (ev_copy) {
-                    memcpy(ev_copy, rx_buf + 1, rx_len - 1);
-                    ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
-                    Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
+            } else {
+                // Feed to NimBLE host stack for normal GAP event processing.
+                // We allocate a copy (without the 0x04 HCI packet indicator byte)
+                // so that struct ble_hci_ev starts at the malloc'd address.
+                // ble_hs_hci_evt_process will eventually call ble_transport_free,
+                // which our __wrap redirects to free(ev_copy).
+                if (rx_len > 1) {
+                    uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
+                    if (ev_copy) {
+                        memcpy(ev_copy, rx_buf + 1, rx_len - 1);
+                        ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
+                        Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
+                    }
                 }
             }
         } else if (rx_len > 1 && rx_buf[0] == 0x02) {
