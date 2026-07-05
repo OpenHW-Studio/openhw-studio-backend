@@ -70,7 +70,7 @@ export const createClassroom = async (req, res) => {
     const classroom = await Class.create({
       name: name.trim(),
       bio: typeof bio === "string" && bio.trim() ? bio.trim() : undefined,
-      image: typeof image === "string" && image.trim() ? image.trim() : undefined,
+      image: typeof image === "string" && image.trim() ? image.trim() : "/SampleClassroomImages/default.jpg",
       teacher: req.user._id,
       joinCode,
     });
@@ -273,10 +273,15 @@ export const removeClassroomStudent = async (req, res) => {
       return res.status(404).json({ message: "Class not found." });
     }
 
-    if (classroom.teacher.toString() !== req.user._id.toString() && req.user.role !== "admin") {
+    const userId = req.user._id.toString();
+    const isOwner = classroom.teacher.toString() === userId;
+    const isSelf = studentId === userId;
+    const isAdmin = req.user.role === "admin";
+
+    if (!isOwner && !isSelf && !isAdmin) {
       return res
         .status(403)
-        .json({ message: "Only the class teacher or an admin can remove students." });
+        .json({ message: "You are not authorized to remove this student." });
     }
 
     const alreadyInClass = classroom.students.some(
@@ -394,7 +399,7 @@ export const updateClassroom = async (req, res) => {
 
     if (image !== undefined) {
       updates.image =
-        typeof image === "string" && image.trim() ? image.trim() : "";
+        typeof image === "string" && image.trim() ? image.trim() : "/SampleClassroomImages/default.jpg";
     }
 
     const updatedClassroom = await Class.findByIdAndUpdate(classId, updates, {

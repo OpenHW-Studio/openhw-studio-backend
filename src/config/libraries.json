@@ -23,5 +23,7 @@
         "LiquidCrystal",
         "OneWire"
     ],
-    "cached": []
+    "cached": [
+        "Blynk@1.3.5"
+    ]
 }
