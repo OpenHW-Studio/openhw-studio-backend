@@ -961,10 +961,10 @@ static ble_npl_error_t _my_npl_sem_pend(struct ble_npl_sem *sem,
         return BLE_NPL_TIMEOUT;
     }
     // For non-zero timeouts, spin-wait with iteration limit.
-    // The NimBLE host might block waiting for an event (e.g. connection complete).
-    // Since FreeRTOS ticks don't advance reliably in the emulator, we use a
-    // bounded iteration count instead of tick-based timeout.
-    for (int _sp = 0; _sp < 10000; _sp++) {
+    // ble_hs_hci_cmd_tx is fully wrapped (returns 0 immediately), so
+    // ble_hs_hci_wait_for_ack is never reached. This spin is a safety
+    // net for any other NimBLE code path that calls ble_npl_sem_pend.
+    for (int _sp = 0; _sp < 200; _sp++) {
         _rv32_process_ble_events();
         if (*cnt > 0) {
             (*cnt)--;
@@ -1246,6 +1246,13 @@ BaseType_t __wrap_xTaskCreatePinnedToCore(TaskFunction_t pvTaskCode, const char 
         if (pvCreatedTask) *pvCreatedTask = (TaskHandle_t)1;
         return pdPASS;
     }
+    // esp_timer at prio 22 starves loopTask (prio 1) in the cooperative FreeRTOS
+    // scheduler. Create a dummy handle and skip creation.
+    if (pcName && strcmp(pcName, "esp_timer") == 0) {
+        _RV32_EMIT("TEST:bypassing real xTaskCreatePinnedToCore for esp_timer - faking success");
+        if (pvCreatedTask) *pvCreatedTask = (TaskHandle_t)1;
+        return pdPASS;
+    }
     extern BaseType_t __real_xTaskCreatePinnedToCore(TaskFunction_t, const char *, uint32_t, void *, UBaseType_t, TaskHandle_t *, BaseType_t);
     BaseType_t ret = __real_xTaskCreatePinnedToCore(pvTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pvCreatedTask, xCoreID);
     _RV32_EMIT("TEST:__real_xTaskCreatePinnedToCore returned %d", (int)ret);
@@ -1294,17 +1301,24 @@ extern "C" int __wrap_nimble_port_init(void) {
         _RV32_EMIT("TEST:ble_hs_id_set_rnd returned %d", addr_ret);
     }
 
-    // Force the NimBLE host into the "enabled + synced" state so that
-    // ble_gap_ext_disc() (called by NimBLEScan::start) passes its
-    // ble_hs_is_enabled() check.  The real host startup sequence
-    // (ble_hs_start -> ble_hs_startup_go) is NOT called because (a) our
-    // __wrap_ble_hs_hci_cmd_tx returns 0 immediately without filling
-    // response buffers, and (b) there is no nimble_host task to process
-    // the event queue asynchronously.  Instead we tickle the two state
-    // variables directly — scan commands will still flow through our
-    // wrapper and reach the bridge just fine.
-    // Also set ble_hs_id_pub to a mock address so ble_gap_disc()
-    // doesn't fail with BLE_HS_ENOADDR when using BLE_OWN_ADDR_PUBLIC.
+    // Drain the host event queue to process queued startup events
+    // (ble_hs_ev_start_stage1, ble_hs_ev_start_stage2).  Stage2 calls
+    // ble_hs_start() which properly sets enabled_state=ON and
+    // sync_state=GOOD via the HCI startup sequence.
+    {
+        extern struct ble_npl_eventq *ble_hs_evq_get(void);
+        struct ble_npl_eventq *hs_evq = ble_hs_evq_get();
+        if (hs_evq) {
+            struct ble_npl_event *ev;
+            while ((ev = ble_npl_eventq_get(hs_evq, 0)) != NULL) {
+                ble_npl_event_run(ev);
+                ble_npl_event_deinit(ev);
+                free(ev);
+            }
+        }
+    }
+
+    // Ensure the host state is set (safety net in case evq drain didn't do it).
     {
         extern uint8_t ble_hs_enabled_state;
         extern uint8_t ble_hs_sync_state;
@@ -1462,6 +1476,14 @@ static int _rv32_poll_uart0_hw(void) {
 }
 
 void _rv32_process_ble_events(void) {
+    // Reentrancy guard — prevents recursive calls via
+    // _my_npl_sem_pend → _rv32_process_ble_events when a host evq
+    // event handler pends on a semaphore. The static line buffers
+    // below (and in _rv32_poll_uart0_hw) are not reentrant-safe.
+    static int _rvg = 0;
+    if (_rvg) return;
+    _rvg = 1;
+
     // Try direct UART hardware poll first (works even if interrupt-driven
     // Serial0 misses data due to emulator UART interrupt timing issues).
     _rv32_poll_uart0_hw();
@@ -1561,6 +1583,7 @@ void _rv32_process_ble_events(void) {
                 if (rx_len > 1) {
                     uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
                     if (ev_copy) {
+                        Serial.printf("EVENT_BEFORE code=0x%02x\n", evcode);
                         memcpy(ev_copy, rx_buf + 1, rx_len - 1);
                         ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
                         Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
@@ -1579,22 +1602,29 @@ void _rv32_process_ble_events(void) {
         }
     }
 
-    // Drain the NimBLE host event queue (BLE_GAP_EVENT_CONNECT etc.)
-    // Currently disabled — processing events from the global shared buffer
-    // causes instability. Events are left for the (bypassed) host task.
-    // TODO: implement queue-isolated drain or use a dedicated processing pass.
-    /* DISABLED
+    Serial.printf("START_DRAIN\n");
+    // Drain the NimBLE host event queue (BLE_GAP_EVENT_CONNECT, etc.)
+    // Safe now that AD reports are handled by the bypass callback — the
+    // scan-result event handlers that previously blocked (by pending on
+    // semaphores) are no longer invoked. Only connection and GATT events
+    // remain, which complete synchronously in ble_npl_event_run.
     extern struct ble_npl_eventq *ble_hs_evq_get(void);
     struct ble_npl_eventq *hs_evq = ble_hs_evq_get();
     if (hs_evq) {
-        struct ble_npl_event *ev = ble_npl_eventq_get(hs_evq, 0);
-        if (ev) {
+        struct ble_npl_event *ev;
+        int drain_count = 0;
+        while ((ev = ble_npl_eventq_get(hs_evq, 0)) != NULL) {
+            drain_count++;
+            Serial.printf("DRAIN_EV #%d\n", drain_count);
             ble_npl_event_run(ev);
             ble_npl_event_deinit(ev);
             free(ev);
         }
+        Serial.printf("DRAIN_DONE count=%d\n", drain_count);
     }
-    */
+    Serial.printf("END_PROCESS\n");
+
+    _rvg = 0;
 }
 
 // ── PATH B: NimBLE native HCI (ESP32-C6/C3/S3 — SOC_ESP_NIMBLE_CONTROLLER) ──
