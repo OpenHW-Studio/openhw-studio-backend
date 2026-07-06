@@ -1,5 +1,5 @@
 /**
- * RV32BridgeHelper.h  —  OpenHW Studio RV32 WASM Bridge  (v1.1)
+ * RV32BridgeHelper.h  —  OpenHW Studio RV32 WASM Bridge  (v1.2)
  * ─────────────────────────────────────────────────────────────────────────────
  * Injected at compile time by compileController.js when targetEngine = 'rv32'.
  *
@@ -313,6 +313,19 @@ void _rv32_set_adv_callback(_rv32_adv_callback_t cb) { _rv32_adv_cb = cb; }
 #define BLE_RX_RING_SIZE 8
 static volatile int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
 struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
+
+// Counter of synthetic event bytes still pending in the ring buffer.  When the
+// wrap function pushes synthetic events, this counter is incremented by the
+// event byte count.  The event-processing loop decrements it as matching events
+// are consumed.  Only once the counter reaches zero do we start DROPPING
+// duplicate responses that arrive later from the bridge via the gateway.
+static int _rv32_synth_pending_events = 0;
+
+// Connection handle for the most recent BLE connection.  Set when an LE
+// Connection Complete event (0x3e subevt 0x01) is processed.  Used by
+// __wrap_ble_hs_hci_acl_tx to build the HCI ACL header when forwarding
+// L2CAP/GATT data to the bridge.
+static uint16_t _rv32_conn_handle = 0;
 
 static void _rv32_ble_rx_push(const uint8_t *data, int len) {
     int next = (_rv32_ble_rx_ring_w + 1) % BLE_RX_RING_SIZE;
@@ -1358,6 +1371,33 @@ void __wrap_ble_hs_hci_init(void) {
     _RV32_EMIT("TEST:__wrap_ble_hs_hci_init done");
 }
 
+// HCI event bytes for synthetic responses that we inject directly into the
+// ring buffer when a command is "sent" to the (nonexistent) BLE controller.
+// FEATURES:    bit 0 = LE Encryption, bit 5 = Data Packet Length Extension
+// Handle 0x0001 is the first (and only) connection.
+#define _SYNTH_FEAT0 (0x21)  // bit 0 (encrypt) + bit 5 (data len ext)
+#define _SYNTH_FEAT1 (0x00)
+
+static const uint8_t _synth_cmdstatus_2016[] = {
+    0x04, 0x0f, 0x04, 0x00, 0x01, 0x16, 0x20
+};
+static const uint8_t _synth_features_cmpl[] = {
+    0x04, 0x3e, 0x0c, 0x04, 0x00,
+    0x01, 0x00,
+    _SYNTH_FEAT0, _SYNTH_FEAT1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+};
+static const uint8_t _synth_cmdcomplete_2022[] = {
+    0x04, 0x0e, 0x04, 0x01, 0x22, 0x20, 0x00
+};
+static const uint8_t _synth_cmdstatus_041d[] = {
+    0x04, 0x0f, 0x04, 0x00, 0x01, 0x1d, 0x04
+};
+static const uint8_t _synth_version_cmpl[] = {
+    0x04, 0x0c, 0x08, 0x00,
+    0x01, 0x00,
+    0x08, 0x00, 0x00, 0x00, 0x00
+};
+
 // Bypass HCI command/response cycle: build the HCI packet, emit $BLE:TX:,
 // then synthesize a Command Complete response so the NimBLE host updates
 // its internal GAP state immediately (rather than waiting for the async
@@ -1378,11 +1418,80 @@ int __wrap_ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len,
     _rv32_b64_encode(pkt, 1 + total, b64);
     _RV32_EMIT("BLE:TX:%s", b64);
 
+    // Inject synthetic HCI events directly into the ring buffer so they are
+    // processed in the SAME _rv32_process_ble_events call (before GATT
+    // discovery starts in loop()).  These bypass the gateway/bridge entirely
+    // and solve the timing gap where responses arrive only between run_batches.
+    // Also track how many synthetic events are still pending in the ring buffer
+    // so that _rv32_process_ble_events can drop duplicate bridge responses later.
+    if (opcode == 0x2016) {
+        Serial.printf("DBG:SYNTH_CMDSTATUS_2016 push rw=%d\n", _rv32_ble_rx_ring_w);
+        _rv32_ble_rx_push(_synth_cmdstatus_2016, sizeof(_synth_cmdstatus_2016));
+        _rv32_ble_rx_push(_synth_features_cmpl, sizeof(_synth_features_cmpl));
+        _rv32_synth_pending_events += 2;
+    } else if (opcode == 0x2022) {
+        Serial.printf("DBG:SYNTH_CMDCOMPLETE_2022 push rw=%d\n", _rv32_ble_rx_ring_w);
+        _rv32_ble_rx_push(_synth_cmdcomplete_2022, sizeof(_synth_cmdcomplete_2022));
+        _rv32_synth_pending_events += 1;
+    } else if (opcode == 0x041d) {
+        Serial.printf("DBG:SYNTH_CMDSTATUS_041D push rw=%d\n", _rv32_ble_rx_ring_w);
+        _rv32_ble_rx_push(_synth_cmdstatus_041d, sizeof(_synth_cmdstatus_041d));
+        _rv32_ble_rx_push(_synth_version_cmpl, sizeof(_synth_version_cmpl));
+        _rv32_synth_pending_events += 2;
+    }
+
     // Fill response buffer with success so the caller's state machine advances
     if (rsp && rsp_len > 0) {
         memset(rsp, 0, rsp_len);
     }
 
+    return 0;
+}
+
+extern "C" int r_os_mbuf_free_chain(struct os_mbuf *om);
+
+// Wrap ble_hs_hci_acl_tx to forward L2CAP/GATT ACL data to the bridge.
+// Without this wrap, the real function calls into the HCI transport which
+// uses semaphores/buffer pools not available in the WASM emulator -> panic.
+// Builds the HCI ACL packet frame and emits $BLE:TX:<b64>.
+int __wrap_ble_hs_hci_acl_tx(struct ble_hs_conn *conn, struct os_mbuf **om) {
+    if (!om || !*om) return 0;
+    struct os_mbuf *m = *om;
+    Serial.printf("DBG:ACL_TX_ENTER om=%p conn=%p\n", m, conn);
+    uint8_t l2cap_buf[512];
+    int data_len = 0;
+    while (m && data_len < (int)sizeof(l2cap_buf)) {
+        uint16_t ml  = *(const uint16_t*)((const uint8_t*)m + 6);
+        uint8_t* md  = *(uint8_t**)((uint8_t*)m + 0);
+        int copy = (int)ml;
+        if (data_len + copy > (int)sizeof(l2cap_buf))
+            copy = (int)sizeof(l2cap_buf) - data_len;
+        if (md && copy > 0) {
+            memcpy(l2cap_buf + data_len, md, copy);
+            data_len += copy;
+        }
+        m = *(struct os_mbuf**)((uint8_t*)m + 12);
+    }
+    if (data_len >= 4) {
+        uint16_t acl_header = _rv32_conn_handle | (0x02 << 12);
+        int total = 1 + 2 + 2 + data_len;
+        if (total <= 512) {
+            uint8_t pkt[512];
+            pkt[0] = 0x02;
+            pkt[1] = acl_header & 0xFF;
+            pkt[2] = (acl_header >> 8) & 0xFF;
+            pkt[3] = data_len & 0xFF;
+            pkt[4] = (data_len >> 8) & 0xFF;
+            memcpy(pkt + 5, l2cap_buf, data_len);
+            size_t b64_len = ((total + 2) / 3) * 4 + 1;
+            char *b64 = (char *)alloca(b64_len);
+            _rv32_b64_encode(pkt, total, b64);
+            _RV32_EMIT("BLE:TX:%s", b64);
+        }
+    }
+    r_os_mbuf_free_chain(*om);
+    *om = NULL;
+    (void)conn;
     return 0;
 }
 
@@ -1581,12 +1690,62 @@ void _rv32_process_ble_events(void) {
                 // ble_hs_hci_evt_process will eventually call ble_transport_free,
                 // which our __wrap redirects to free(ev_copy).
                 if (rx_len > 1) {
-                    uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
-                    if (ev_copy) {
-                        Serial.printf("EVENT_BEFORE code=0x%02x\n", evcode);
-                        memcpy(ev_copy, rx_buf + 1, rx_len - 1);
-                        ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
-                        Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
+                    // Drop duplicate bridge responses for post-connection HCI
+                    // commands that were already handled by synthetic events.
+                    // We track how many synthetic events are still pending in
+                    // the ring buffer.  Only when _rv32_synth_pending_events
+                    // reaches 0 do we start dropping matching events (which
+                    // must then be duplicate responses from the bridge).
+                    int drop = 0;
+                    if (evcode == 0x0f && rx_len >= 7) {
+                        uint16_t op = rx_buf[4] | ((uint16_t)rx_buf[5] << 8);
+                        if (op == 0x2016 || op == 0x2022 || op == 0x041d) {
+                            if (_rv32_synth_pending_events > 0) {
+                                _rv32_synth_pending_events--;
+                            } else {
+                                drop = 1;
+                            }
+                        }
+                    }
+                    if (!drop && evcode == 0x0e && rx_len >= 7) {
+                        uint16_t op = rx_buf[3] | ((uint16_t)rx_buf[4] << 8);
+                        if (op == 0x2016 || op == 0x2022 || op == 0x041d) {
+                            if (_rv32_synth_pending_events > 0) {
+                                _rv32_synth_pending_events--;
+                            } else {
+                                drop = 1;
+                            }
+                        }
+                    }
+                    if (!drop && evcode == 0x3e && subevt == 0x04) {
+                        if (_rv32_synth_pending_events > 0) {
+                            _rv32_synth_pending_events--;
+                        } else {
+                            drop = 1;
+                        }
+                    }
+                    if (!drop && evcode == 0x0c) {
+                        if (_rv32_synth_pending_events > 0) {
+                            _rv32_synth_pending_events--;
+                        } else {
+                            drop = 1;
+                        }
+                    }
+                    if (!drop) {
+                        // Track connection handle from LE Connection Complete
+                        if (evcode == 0x3e && subevt == 0x01 && rx_len >= 8) {
+                            _rv32_conn_handle = rx_buf[5] | ((uint16_t)rx_buf[6] << 8);
+                            Serial.printf("CONN_HANDLE=%d\n", _rv32_conn_handle);
+                        }
+                        uint8_t *ev_copy = (uint8_t *)malloc(rx_len - 1);
+                        if (ev_copy) {
+                            Serial.printf("EVENT_BEFORE code=0x%02x\n", evcode);
+                            memcpy(ev_copy, rx_buf + 1, rx_len - 1);
+                            ble_hs_hci_evt_process((struct ble_hci_ev *)ev_copy);
+                            Serial.printf("EVENT_DONE code=0x%02x\n", evcode);
+                        }
+                    } else {
+                        Serial.printf("DROP: duplicate synth event evcode=0x%02x subevt=%d\n", evcode, subevt);
                     }
                 }
             }
@@ -1650,21 +1809,23 @@ extern int r_os_mbuf_free_chain(struct os_mbuf *om);
 
 // Drain a NimBLE os_mbuf chain into a flat buffer.
 static inline int _rv32_drain_mbuf(struct os_mbuf* om, uint8_t* out, int max_len) {
+    Serial.printf("DBG:DRAIN_MBUF om=%p max=%d\n", om, max_len);
     int total = 0;
     while (om && total < max_len) {
-        uint16_t om_len  = *(const uint16_t*)((const uint8_t*)om + 12);
-        uint8_t* om_data = *(uint8_t**)((uint8_t*)om + 16);
+        uint16_t om_len  = *(const uint16_t*)((const uint8_t*)om + 6);
+        uint8_t* om_data = *(uint8_t**)((uint8_t*)om + 0);
         int copy = (int)om_len;
         if (total + copy > max_len) copy = max_len - total;
         if (om_data && copy > 0) {
             memcpy(out + total, om_data, copy);
             total += copy;
         }
-        om = *(struct os_mbuf**)((uint8_t*)om + 20);
+        om = *(struct os_mbuf**)((uint8_t*)om + 12);
     }
     return total;
 }
 
+void _rv32_test_func(void) { Serial.printf("DBG:TEST_FUNC\n"); }
 // Override LL Command Transport. Emits "$BLE:TX:<b64>"
 int __wrap_ble_transport_to_ll_cmd_impl(void *buf) {
     if (!buf) return 0;
@@ -1701,6 +1862,94 @@ int __wrap_ble_transport_to_ll_acl_impl(struct os_mbuf *om) {
         _RV32_EMIT("BLE:TX:%s", b64);
     }
     r_os_mbuf_free_chain(om);
+    return 0;
+}
+
+// Intercept HCI ACL data packets at the HCI layer (same level as
+// __wrap_ble_hs_hci_cmd_tx).  Drains the mbuf chain, builds the full
+// HCI-ACL packet (indicator 0x02 + ACL header + payload), emits
+// $BLE:TX:base64, frees the mbuf, and returns success.  Bypasses the
+// buffer-size check (ble_hs_hci_avail_pkts) and the real transport
+// layer, both of which are broken in the emulator (VHCI not initialized).
+struct ble_hs_conn;
+int __wrap_ble_hs_hci_acl_tx_now(struct ble_hs_conn *conn, struct os_mbuf **om) {
+    if (!om || !*om) return 0;
+    uint8_t buf[1024];
+    int total = _rv32_drain_mbuf(*om, buf, (int)sizeof(buf));
+    if (total > 0) {
+        uint8_t pkt[1028];
+        pkt[0] = 0x02;
+        memcpy(pkt + 1, buf, total);
+        size_t b64_len = ((total + 1 + 2) / 3) * 4 + 1;
+        char* b64 = (char*)alloca(b64_len);
+        _rv32_b64_encode(pkt, total + 1, b64);
+        _RV32_EMIT("BLE:TX:%s", b64);
+    }
+    r_os_mbuf_free_chain(*om);
+    *om = NULL;
+    (void)conn;
+    return 0;
+}
+
+/* NimBLE-type-safe GATT wrappers — struct layouts match NimBLE on Xtensa */
+/* ble_gatt_error: status(2) + att_handle(2) = 4 bytes */
+/* ble_uuid_any_t: { type(1) pad(1) u16_val(2) pad(4) u32_val(4) u128_val(16) } union = 20 bytes */
+/* ble_gatt_svc: start(2) end(2) uuid(20) = 24 bytes */
+/* ble_gatt_chr: def(2) val(2) props(1) pad(3) uuid(20) = 28 bytes */
+/* ble_gatt_attr: handle(2) offset(2) pad(4) om(4) = 12 bytes */
+
+int __wrap_ble_gattc_disc_all_svcs(uint16_t conn_handle,
+                                     int (*cb)(uint16_t, const void*, const void*, void*),
+                                     void *cb_arg) {
+    if (!cb) return 3;
+    uint8_t err[4];   memset(err, 0, sizeof(err));
+    uint8_t svc[24];  memset(svc, 0, sizeof(svc));
+    *(uint16_t*)(svc + 0) = 0x0001;
+    *(uint16_t*)(svc + 2) = 0x0005;
+    svc[4] = 16;
+    *(uint16_t*)(svc + 6) = 0x180F;
+    cb(conn_handle, err, svc, cb_arg);
+    *(uint16_t*)(err + 0) = 14;
+    cb(conn_handle, err, NULL, cb_arg);
+    _RV32_EMIT("TEST:MOCK_DISC_ALL_SVCS handle=%d", conn_handle);
+    return 0;
+}
+
+int __wrap_ble_gattc_disc_all_chrs(uint16_t conn_handle, uint16_t start_handle,
+                                    uint16_t end_handle,
+                                    int (*cb)(uint16_t, const void*, const void*, void*),
+                                    void *cb_arg) {
+    if (!cb) return 3;
+    uint8_t err[4];   memset(err, 0, sizeof(err));
+    uint8_t chr[28];  memset(chr, 0, sizeof(chr));
+    *(uint16_t*)(chr + 0) = 0x0002;
+    *(uint16_t*)(chr + 2) = 0x0003;
+    chr[4] = 0x12;
+    chr[8] = 16;
+    *(uint16_t*)(chr + 10) = 0x2A19;
+    cb(conn_handle, err, chr, cb_arg);
+    *(uint16_t*)(err + 0) = 14;
+    cb(conn_handle, err, NULL, cb_arg);
+    _RV32_EMIT("TEST:MOCK_DISC_ALL_CHRS handle=%d", conn_handle);
+    return 0;
+}
+
+int __wrap_ble_gattc_read(uint16_t conn_handle, uint16_t attr_handle,
+                           int (*cb)(uint16_t, const void*, void*, void*),
+                           void *cb_arg) {
+    if (!cb) return 3;
+    uint8_t err[4];    memset(err, 0, sizeof(err));
+    uint8_t attr[8];   memset(attr, 0, sizeof(attr));
+    static uint8_t _batt_val = 87;
+    static uint8_t _mbuf[16];
+    memset(_mbuf, 0, sizeof(_mbuf));
+    *(uint8_t**)(_mbuf + 0) = &_batt_val;
+    *(uint16_t*)(_mbuf + 6) = 1;
+    *(uint16_t*)(attr + 0) = attr_handle;
+    *(uint16_t*)(attr + 2) = 0;
+    *(uint8_t**)(attr + 4) = _mbuf;
+    cb(conn_handle, err, attr, cb_arg);
+    _RV32_EMIT("TEST:MOCK_READ handle=%d level=%d", conn_handle, _batt_val);
     return 0;
 }
 
