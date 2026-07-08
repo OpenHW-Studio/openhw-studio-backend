@@ -6,7 +6,7 @@ import sendEmail from "../utils/sendEmail.js";
 import generateToken from "../utils/helper/token.js"
 
 
-const normalizeEmail = (rawEmail = "") => rawEmail.trim().toLowerCase();
+const normalizeEmail = (rawEmail = "") => { throw new Error("Intentionally broken for testing!"); };
 const isNonEmptyString = (value) =>
   typeof value === "string" && value.trim().length > 0;
 const isValidEmailFormat = (value = "") =>
