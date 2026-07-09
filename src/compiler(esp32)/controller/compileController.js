@@ -250,7 +250,6 @@ function buildCodeHash(code, req) {
         board_options: req.body.board_options || null,
         spiffs_files: req.body.spiffs_files || null,
         shimContents,
-        _cache_nonce: Date.now(),
     };
     return crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
 }
@@ -825,7 +824,7 @@ async function runArduinoCompileAsync(buildId, code, req, sketchDir, buildDir, p
     if (req.body.targetEngine === 'rv32') {
         extraFlagsProps.push(
             '--build-property', 
-            'compiler.c.elf.extra_flags=-Wl,--wrap=ble_transport_to_ll_cmd_impl -Wl,--wrap=ble_transport_to_ll_acl_impl -Wl,--wrap=esp_vhci_host_send_packet -Wl,--wrap=esp_vhci_host_register_callback -Wl,--wrap=esp_vhci_host_check_send_available -Wl,--wrap=esp_bt_controller_init -Wl,--wrap=esp_bt_controller_enable -Wl,--wrap=esp_bt_controller_disable -Wl,--wrap=esp_bt_controller_deinit -Wl,--wrap=esp_bt_controller_get_status -Wl,--wrap=ble_buf_alloc -Wl,--wrap=ble_buf_free -Wl,--wrap=ble_vhci_disc_duplicate_mode_disable -Wl,--wrap=ble_vhci_disc_duplicate_mode_enable -Wl,--wrap=ble_vhci_disc_duplicate_set_max_cache_size -Wl,--wrap=ble_vhci_disc_duplicate_set_period_refresh_time -Wl,--wrap=ble_transport_ll_init -Wl,--wrap=ble_phy_init -Wl,--wrap=na_npl_freertos_eventq_init -Wl,--wrap=os_mempool_init -Wl,--wrap=r_os_mempool_init -Wl,--wrap=os_msys_init -Wl,--wrap=xTaskCreatePinnedToCore -Wl,--wrap=nimble_port_init -Wl,--wrap=ble_hs_init -Wl,--wrap=ble_npl_eventq_init -Wl,--wrap=ble_transport_hs_init -Wl,--wrap=ble_hs_hci_init -Wl,--wrap=ble_hs_hci_cmd_tx -Wl,--wrap=ble_transport_free -Wl,--wrap=ble_gap_rx_le_scan_timeout -Wl,--wrap=ble_hs_hci_acl_tx -Wl,--wrap=ble_hs_hci_acl_tx_now -Wl,--wrap=ble_gattc_disc_all_svcs -Wl,--wrap=ble_gattc_disc_all_chrs -Wl,--wrap=ble_gattc_read'
+            'compiler.c.elf.extra_flags=-Wl,--wrap=ble_transport_to_ll_cmd_impl -Wl,--wrap=ble_transport_to_ll_acl_impl -Wl,--wrap=esp_vhci_host_send_packet -Wl,--wrap=esp_vhci_host_register_callback -Wl,--wrap=esp_vhci_host_check_send_available -Wl,--wrap=esp_bt_controller_init -Wl,--wrap=esp_bt_controller_enable -Wl,--wrap=esp_bt_controller_disable -Wl,--wrap=esp_bt_controller_deinit -Wl,--wrap=esp_bt_controller_get_status -Wl,--wrap=ble_buf_alloc -Wl,--wrap=ble_buf_free -Wl,--wrap=ble_vhci_disc_duplicate_mode_disable -Wl,--wrap=ble_vhci_disc_duplicate_mode_enable -Wl,--wrap=ble_vhci_disc_duplicate_set_max_cache_size -Wl,--wrap=ble_vhci_disc_duplicate_set_period_refresh_time -Wl,--wrap=ble_transport_ll_init -Wl,--wrap=ble_phy_init -Wl,--wrap=na_npl_freertos_eventq_init -Wl,--wrap=os_mempool_init -Wl,--wrap=r_os_mempool_init -Wl,--wrap=os_msys_init -Wl,--wrap=xTaskCreatePinnedToCore -Wl,--wrap=nimble_port_init -Wl,--wrap=ble_hs_init -Wl,--wrap=ble_npl_eventq_init -Wl,--wrap=ble_transport_hs_init -Wl,--wrap=ble_hs_hci_init -Wl,--wrap=ble_hs_hci_cmd_tx -Wl,--wrap=ble_transport_free -Wl,--wrap=ble_gap_rx_le_scan_timeout -Wl,--wrap=ble_hs_hci_acl_tx -Wl,--wrap=ble_hs_hci_acl_tx_now -Wl,--wrap=ble_gattc_disc_all_svcs -Wl,--wrap=ble_gattc_disc_all_chrs -Wl,--wrap=ble_gattc_read -Wl,--wrap=ble_gatts_start'
         );
     }
 

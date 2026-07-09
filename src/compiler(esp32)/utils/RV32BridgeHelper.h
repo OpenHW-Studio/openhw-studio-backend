@@ -310,7 +310,7 @@ static _rv32_adv_callback_t _rv32_adv_cb = nullptr;
 void _rv32_set_adv_callback(_rv32_adv_callback_t cb) { _rv32_adv_cb = cb; }
 
 // BLE RX ring buffer — decouples UART task from NimBLE processing
-#define BLE_RX_RING_SIZE 8
+#define BLE_RX_RING_SIZE 32
 static volatile int _rv32_ble_rx_ring_r = 0, _rv32_ble_rx_ring_w = 0;
 struct { uint8_t data[512]; int len; } _rv32_ble_rx_ring[BLE_RX_RING_SIZE];
 
@@ -1389,6 +1389,9 @@ static const uint8_t _synth_features_cmpl[] = {
 static const uint8_t _synth_cmdcomplete_2022[] = {
     0x04, 0x0e, 0x04, 0x01, 0x22, 0x20, 0x00
 };
+static const uint8_t _synth_cmdcomplete_200a[] = {
+    0x04, 0x0e, 0x04, 0x01, 0x0a, 0x20, 0x00
+};
 static const uint8_t _synth_cmdstatus_041d[] = {
     0x04, 0x0f, 0x04, 0x00, 0x01, 0x1d, 0x04
 };
@@ -1397,6 +1400,17 @@ static const uint8_t _synth_version_cmpl[] = {
     0x01, 0x00,
     0x08, 0x00, 0x00, 0x00, 0x00
 };
+
+// Bypass GATT server start entirely — prevents crash inside ble_gatts_start()
+// when called from NimBLEServer::start(). The NimBLE host state isn't fully
+// initialized in the emulator (no host task, bypassed transport), so GATT
+// service registration (ble_att_svr_start + ble_gatts_svc_register_all)
+// accesses uninitialized memory. Return success and let NimBLEAdvertising
+// continue normally; services are registered by the gateway layer instead.
+extern "C" int __wrap_ble_gatts_start(void) {
+    _RV32_EMIT("TEST:__wrap_ble_gatts_start called - SKIPPING real GATT server init");
+    return 0;
+}
 
 // Bypass HCI command/response cycle: build the HCI packet, emit $BLE:TX:,
 // then synthesize a Command Complete response so the NimBLE host updates
@@ -1433,14 +1447,47 @@ int __wrap_ble_hs_hci_cmd_tx(uint16_t opcode, const void *cmd, uint8_t cmd_len,
         Serial.printf("DBG:SYNTH_CMDCOMPLETE_2022 push rw=%d\n", _rv32_ble_rx_ring_w);
         _rv32_ble_rx_push(_synth_cmdcomplete_2022, sizeof(_synth_cmdcomplete_2022));
         _rv32_synth_pending_events += 1;
+    } else if (opcode == 0x200a) {
+        Serial.printf("DBG:SYNTH_CMDCOMPLETE_200A push rw=%d\n", _rv32_ble_rx_ring_w);
+        _rv32_ble_rx_push(_synth_cmdcomplete_200a, sizeof(_synth_cmdcomplete_200a));
+        _rv32_synth_pending_events += 1;
     } else if (opcode == 0x041d) {
         Serial.printf("DBG:SYNTH_CMDSTATUS_041D push rw=%d\n", _rv32_ble_rx_ring_w);
         _rv32_ble_rx_push(_synth_cmdstatus_041d, sizeof(_synth_cmdstatus_041d));
         _rv32_ble_rx_push(_synth_version_cmpl, sizeof(_synth_version_cmpl));
         _rv32_synth_pending_events += 2;
+    } else if (opcode == 0x200d) {
+        Serial.printf("DBG:SYNTH_LE_CONNECT push rw=%d\n", _rv32_ble_rx_ring_w);
+        // Extract peer address from LE Create Connection params
+        // cmd layout: scanInterval(2)+scanWindow(2)+filterPolicy(1)+peerAddrType(1)+peerAddr(6)+...
+        if (cmd && cmd_len >= 12) {
+            const uint8_t* c = (const uint8_t*)cmd;
+            uint8_t le_conn_cmpl[] = {
+                0x04, 0x3e, 0x13, 0x01,
+                0x00,                     // status = success
+                0x01, 0x00,               // connection handle = 0x0001
+                0x00,                     // role = master (client)
+                c[5],                     // peer address type
+                c[6], c[7], c[8], c[9], c[10], c[11],  // peer address (6 bytes)
+                0x00, 0x00,               // conn interval
+                0x00, 0x00,               // conn latency
+                0x00, 0x00,               // supervision timeout
+                0x00                      // master clock accuracy
+            };
+            _rv32_ble_rx_push(le_conn_cmpl, sizeof(le_conn_cmpl));
+            _rv32_synth_pending_events += 1;
+            // Process the event immediately so the GAP callback posts the
+            // task notification before connect() enters taskWait().
+            _rv32_process_ble_events();
+        }
     }
 
-    // Fill response buffer with success so the caller's state machine advances
+    printf("TRACE:wrap_return op=0x%04x rsp=%p rlen=%d\n", opcode, (void*)rsp, rsp_len); fflush(stdout);
+
+    // Fill response buffer so the caller's state machine advances.
+    // Most callers that pass non-NULL rsp check status at rsp[0]; zero
+    // means success.  Callers that pass NULL rsp (e.g. ble_gap_conn_create_tx)
+    // only check the return code.
     if (rsp && rsp_len > 0) {
         memset(rsp, 0, rsp_len);
     }
@@ -1585,6 +1632,7 @@ static int _rv32_poll_uart0_hw(void) {
 }
 
 void _rv32_process_ble_events(void) {
+    { static int _tv=0; if (++_tv<=5) printf("TRACE:_rv32_process_ble_events #%d\n", _tv); fflush(stdout); }
     // Reentrancy guard — prevents recursive calls via
     // _my_npl_sem_pend → _rv32_process_ble_events when a host evq
     // event handler pends on a semaphore. The static line buffers
@@ -1649,7 +1697,7 @@ void _rv32_process_ble_events(void) {
     if (_rv32_ble_rx_ring_w != _rv32_ble_rx_ring_r) {
         Serial.printf("RB_STATE: w=%d r=%d diff=%d\n",
             _rv32_ble_rx_ring_w, _rv32_ble_rx_ring_r,
-            (_rv32_ble_rx_ring_w - _rv32_ble_rx_ring_r + 8) % 8);
+            (_rv32_ble_rx_ring_w - _rv32_ble_rx_ring_r + BLE_RX_RING_SIZE) % BLE_RX_RING_SIZE);
     }
     while (_rv32_ble_rx_pop(rx_buf, &rx_len)) {
         if (rx_len > 1 && rx_buf[0] == 0x04) {
@@ -1697,38 +1745,57 @@ void _rv32_process_ble_events(void) {
                     // reaches 0 do we start dropping matching events (which
                     // must then be duplicate responses from the bridge).
                     int drop = 0;
+                    // All HCI commands are handled by __wrap_ble_hs_hci_cmd_tx
+                    // which fills rsp and returns immediately.  Bridge Command
+                    // Complete/Status responses are therefore always duplicates.
+                    // Synthetic events that were injected into the ring buffer
+                    // are consumed first (pending > 0 → decrement), subsequent
+                    // duplicates from the bridge are dropped (pending == 0).
                     if (evcode == 0x0f && rx_len >= 7) {
-                        uint16_t op = rx_buf[4] | ((uint16_t)rx_buf[5] << 8);
-                        if (op == 0x2016 || op == 0x2022 || op == 0x041d) {
-                            if (_rv32_synth_pending_events > 0) {
-                                _rv32_synth_pending_events--;
-                            } else {
-                                drop = 1;
-                            }
+                        uint16_t op = rx_buf[5] | ((uint16_t)rx_buf[6] << 8);
+                        if (_rv32_synth_pending_events > 0) {
+                            _rv32_synth_pending_events--;
+                            Serial.printf("DROP: consume synth cmdstatus op=0x%04x rem=%d\n", op, _rv32_synth_pending_events);
+                        } else {
+                            drop = 1;
+                            Serial.printf("DROP: duplicate cmdstatus op=0x%04x\n", op);
                         }
                     }
                     if (!drop && evcode == 0x0e && rx_len >= 7) {
-                        uint16_t op = rx_buf[3] | ((uint16_t)rx_buf[4] << 8);
-                        if (op == 0x2016 || op == 0x2022 || op == 0x041d) {
-                            if (_rv32_synth_pending_events > 0) {
-                                _rv32_synth_pending_events--;
-                            } else {
-                                drop = 1;
-                            }
+                        uint16_t op = rx_buf[4] | ((uint16_t)rx_buf[5] << 8);
+                        if (_rv32_synth_pending_events > 0) {
+                            _rv32_synth_pending_events--;
+                            Serial.printf("DROP: consume synth cmdcomplete op=0x%04x rem=%d\n", op, _rv32_synth_pending_events);
+                        } else {
+                            drop = 1;
+                            Serial.printf("DROP: duplicate cmdcomplete op=0x%04x\n", op);
                         }
                     }
                     if (!drop && evcode == 0x3e && subevt == 0x04) {
                         if (_rv32_synth_pending_events > 0) {
                             _rv32_synth_pending_events--;
+                            Serial.printf("DROP: consume synth le_meta_04 rem=%d\n", _rv32_synth_pending_events);
                         } else {
                             drop = 1;
+                            Serial.printf("DROP: duplicate le_meta_04\n");
                         }
                     }
                     if (!drop && evcode == 0x0c) {
                         if (_rv32_synth_pending_events > 0) {
                             _rv32_synth_pending_events--;
+                            Serial.printf("DROP: consume synth evcode_0c rem=%d\n", _rv32_synth_pending_events);
                         } else {
                             drop = 1;
+                            Serial.printf("DROP: duplicate evcode_0c\n");
+                        }
+                    }
+                    if (!drop && evcode == 0x3e && subevt == 0x01) {
+                        if (_rv32_synth_pending_events > 0) {
+                            _rv32_synth_pending_events--;
+                            Serial.printf("DROP: consume synth le_conn_cmpl rem=%d\n", _rv32_synth_pending_events);
+                        } else {
+                            drop = 1;
+                            Serial.printf("DROP: duplicate le_conn_cmpl\n");
                         }
                     }
                     if (!drop) {
@@ -1907,7 +1974,7 @@ int __wrap_ble_gattc_disc_all_svcs(uint16_t conn_handle,
     *(uint16_t*)(svc + 0) = 0x0001;
     *(uint16_t*)(svc + 2) = 0x0005;
     svc[4] = 16;
-    *(uint16_t*)(svc + 6) = 0x180F;
+    *(uint16_t*)(svc + 6) = 0xABCD;
     cb(conn_handle, err, svc, cb_arg);
     *(uint16_t*)(err + 0) = 14;
     cb(conn_handle, err, NULL, cb_arg);
@@ -1926,7 +1993,7 @@ int __wrap_ble_gattc_disc_all_chrs(uint16_t conn_handle, uint16_t start_handle,
     *(uint16_t*)(chr + 2) = 0x0003;
     chr[4] = 0x12;
     chr[8] = 16;
-    *(uint16_t*)(chr + 10) = 0x2A19;
+    *(uint16_t*)(chr + 10) = 0x1234;
     cb(conn_handle, err, chr, cb_arg);
     *(uint16_t*)(err + 0) = 14;
     cb(conn_handle, err, NULL, cb_arg);
