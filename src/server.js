@@ -222,7 +222,7 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.en
   './openhw-studio-examples/examples',
   '../openhw-studio-examples/examples',
 ]);
-app.use('/examples', express.static(examplesDir));
+app.use('/api/examples', express.static(examplesDir));
 
 // Serve classroom uploads from persistent volume
 const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
