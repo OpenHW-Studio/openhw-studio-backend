@@ -16,6 +16,7 @@ const projectSchema = new mongoose.Schema({
   openCodeTabs: { type: Array, default: [] },
   activeCodeFileId: { type: String, default: "" },
   thumbnail: { type: String, default: "" },
+  version: { type: Number, default: 1 },
   savedAt: { type: Number, default: Date.now },
 }, { timestamps: true });
 

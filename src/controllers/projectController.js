@@ -9,22 +9,25 @@ export const saveProject = async (req, res) => {
     const project = await Project.findOneAndUpdate(
       { projectId, userId: req.user._id },
       {
-        userId: req.user._id,
-        projectId,
-        name: name || "Untitled",
-        board: board || "arduino_uno",
-        components: components || [],
-        connections: connections || [],
-        wires: wires || [],
-        code: code || "",
-        blocklyXml: blocklyXml || "",
-        blocklyGeneratedCode: blocklyGeneratedCode || "",
-        useBlocklyCode: !!useBlocklyCode,
-        projectFiles: projectFiles || [],
-        openCodeTabs: openCodeTabs || [],
-        activeCodeFileId: activeCodeFileId || "",
-        thumbnail: thumbnail || "",
-        savedAt: savedAt || Date.now(),
+        $set: {
+          userId: req.user._id,
+          projectId,
+          name: name || "Untitled",
+          board: board || "arduino_uno",
+          components: components || [],
+          connections: connections || [],
+          wires: wires || [],
+          code: code || "",
+          blocklyXml: blocklyXml || "",
+          blocklyGeneratedCode: blocklyGeneratedCode || "",
+          useBlocklyCode: !!useBlocklyCode,
+          projectFiles: projectFiles || [],
+          openCodeTabs: openCodeTabs || [],
+          activeCodeFileId: activeCodeFileId || "",
+          thumbnail: thumbnail || "",
+          savedAt: savedAt || Date.now(),
+        },
+        $inc: { version: 1 },
       },
       { upsert: true, new: true }
     );
@@ -81,7 +84,7 @@ export const renameProject = async (req, res) => {
     }
     const project = await Project.findOneAndUpdate(
       { projectId, userId: req.user._id },
-      { name: name.trim(), savedAt: Date.now() },
+      { $set: { name: name.trim(), savedAt: Date.now() }, $inc: { version: 1 } },
       { new: true }
     );
     if (!project) {
