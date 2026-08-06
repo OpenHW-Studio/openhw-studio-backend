@@ -24,19 +24,6 @@
         "OneWire"
     ],
     "cached": [
-        "AccelStepper",
-        "Adafruit BMP085 Library",
-        "Adafruit IntelliKeys",
-        "Adafruit LiquidCrystal",
-        "Adafruit MCP23017 Arduino Library",
-        "Adafruit PCD8544 Nokia 5110 LCD library",
-        "Adafruit SH110X",
-        "Adafruit STMPE610",
-        "Adafruit TouchScreen",
-        "Adafruit TSC2007",
-        "FastLED",
-        "LiquidCrystal",
-        "SdFat___Adafruit_Fork-2.3.103",
-        "SevSeg"
+        "Blynk@1.3.5"
     ]
 }
