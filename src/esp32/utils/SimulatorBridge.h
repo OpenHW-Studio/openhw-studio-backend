@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SimulatorBridge.h    ESP32 QEMU GPIO + Serial Shim  (v3.0  stable)
  * 
  * Injected at compile time by compileController.js.
@@ -181,13 +181,22 @@ void _simBridgeInit_Late();
 #  define heap_caps_free(p)             free(p)
 #endif
 
-// ── Watchdog shims ───────────────────────────────────────────────────────────
-// WDT is already disabled in _simBridgeInit_Early; stubs prevent linker errors
-#define esp_task_wdt_init(timeout,panic)  ((void)0)
-#define esp_task_wdt_deinit()             ((void)0)
-#define esp_task_wdt_add(task)            ((void)0)
-#define esp_task_wdt_delete(task)         ((void)0)
-#define esp_task_wdt_reset()              ((void)0)
+// ── Watchdog shims ─────────────────────────────────────────────────────────
+// Include esp_task_wdt.h first so its typed function declarations are
+// processed before our no-op macros override them.
+#if __has_include("esp_task_wdt.h")
+#  include "esp_task_wdt.h"
+#endif
+#undef  esp_task_wdt_init
+#undef  esp_task_wdt_deinit
+#undef  esp_task_wdt_add
+#undef  esp_task_wdt_delete
+#undef  esp_task_wdt_reset
+#define esp_task_wdt_init(...)    ((void)0)
+#define esp_task_wdt_deinit(...)  ((void)0)
+#define esp_task_wdt_add(...)     ((void)0)
+#define esp_task_wdt_delete(...)  ((void)0)
+#define esp_task_wdt_reset(...)   ((void)0)
 
 // ── RTC memory attribute ─────────────────────────────────────────────────────
 // In simulation, RTC_DATA_ATTR variables are just normal static variables.
