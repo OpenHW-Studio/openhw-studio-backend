@@ -1,4 +1,4 @@
-/**
+﻿/**
  * STM32SimulatorBridge.h    STM32 Renode GPIO + Serial Shim
  * 
  * Injected at compile time by compileController.js.
@@ -82,6 +82,10 @@ extern "C" {
     void sim_tone(uint32_t pin, unsigned int frequency, unsigned long duration = 0);
     void sim_noTone(uint32_t pin);
 }
+
+// STM32 core v3.x Tone.cpp defines noTone(pin,bool) which expands to sim_noTone(pin,bool).
+// Forward-declare the 2-arg overload here so the 1-arg version can call it.
+void sim_noTone(uint8_t pin, bool destruct);
 
 #undef  pinMode
 #undef  digitalRead
