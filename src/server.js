@@ -224,6 +224,25 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.en
 ]);
 app.use('/api/examples', express.static(examplesDir));
 
+// Proxy endpoint for DiceBear avatars (serves SVG same-origin to prevent COEP/CORS browser blocks)
+app.get('/api/avatar', async (req, res) => {
+  const { style = 'bottts', seed = 'alpha' } = req.query;
+  const bgColors = 'b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf,c084fc,38bdf8,818cf8,10b981';
+  const url = `https://api.dicebear.com/9.x/${encodeURIComponent(style)}/svg?seed=${encodeURIComponent(seed)}&backgroundColor=${bgColors}`;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Dicebear returned status ${response.status}`);
+    const svg = await response.text();
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.send(svg);
+  } catch (err) {
+    console.error('Failed to proxy avatar:', err.message);
+    res.status(500).send('Error fetching avatar');
+  }
+});
+
 // Serve classroom uploads from persistent volume
 const classroomAssetsDir = process.env.CLASSROOM_UPLOADS_DIR
   ? path.resolve(backendRoot, process.env.CLASSROOM_UPLOADS_DIR)
