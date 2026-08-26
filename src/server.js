@@ -223,6 +223,7 @@ const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.en
   '../openhw-studio-examples/examples',
 ]);
 app.use('/api/examples', express.static(examplesDir));
+app.use('/examples', express.static(examplesDir));
 
 // Proxy endpoint for DiceBear avatars (serves SVG same-origin to prevent COEP/CORS browser blocks)
 app.get('/api/avatar', async (req, res) => {
