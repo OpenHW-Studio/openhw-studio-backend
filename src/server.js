@@ -242,6 +242,7 @@ if (fs.existsSync(examplesDir)) {
   console.warn('[Examples]    Set EXAMPLES_DIR or EXAMPLES_PATH in your environment.');
 }
 app.use('/api/examples', express.static(examplesDir));
+app.use('/examples', express.static(examplesDir));
 
 // Proxy endpoint for DiceBear avatars (serves SVG same-origin to prevent COEP/CORS browser blocks)
 app.get('/api/avatar', async (req, res) => {

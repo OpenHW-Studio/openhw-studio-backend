@@ -13,12 +13,15 @@ import {
 	forgotPasswordInit,
 	forgotPasswordVerify
 } from '../controllers/userController.js';
+import { sendOtp, verifyOtp } from '../controllers/otpController.js';
 
 import { protectRoute } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
 router.post('/signup', signupUser);
+router.post('/send-otp', sendOtp);
+router.post('/verify-otp', verifyOtp);
 router.post('/register-student', protectRoute, registerStudent);
 router.post('/set-password', protectRoute, setNewPassword);
 router.post('/forgot-password/init', forgotPasswordInit);
