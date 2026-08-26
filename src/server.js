@@ -217,11 +217,30 @@ app.get('/api/network-gateway/pcap', (req, res) => {
   }
 });
 
-// Serve demo/guide files from openhw-studio-examples repo
-const examplesDir = resolveConfiguredPath(process.env.EXAMPLES_DIR || process.env.EXAMPLES_PATH, [
+// Serve demo/guide files from openhw-studio-examples repo.
+//
+// Resolution order (first existing path wins):
+//   1. EXAMPLES_DIR  — set by docker-compose/production env (e.g. /app/openhw-studio-examples/examples)
+//   2. EXAMPLES_PATH — typically ../openhw-studio-examples/examples for local dev
+//   3. ./openhw-studio-examples/examples  (relative to backend root)
+//   4. ../openhw-studio-examples/examples (relative to backend root, sibling dir)
+//
+// NOTE: Both env vars are passed as separate candidates so a non-existent EXAMPLES_DIR
+// (e.g. the Docker path when running locally) does not block EXAMPLES_PATH from being tried.
+const examplesDir = resolveConfiguredPath(null, [
+  process.env.EXAMPLES_DIR,
+  process.env.EXAMPLES_PATH,
   './openhw-studio-examples/examples',
   '../openhw-studio-examples/examples',
-]);
+].filter(Boolean));
+
+if (fs.existsSync(examplesDir)) {
+  console.log(`[Examples] Serving static files from: ${examplesDir}`);
+} else {
+  console.warn(`[Examples] ⚠️  Directory not found: ${examplesDir}`);
+  console.warn('[Examples]    Guided-project images will return 404.');
+  console.warn('[Examples]    Set EXAMPLES_DIR or EXAMPLES_PATH in your environment.');
+}
 app.use('/api/examples', express.static(examplesDir));
 
 // Proxy endpoint for DiceBear avatars (serves SVG same-origin to prevent COEP/CORS browser blocks)
