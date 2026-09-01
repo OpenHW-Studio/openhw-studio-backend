@@ -432,16 +432,32 @@ import SystemTelemetry from '../models/SystemTelemetry.js';
 import VisitorPing from '../models/VisitorPing.js';
 
 /**
- * Fetches global usage analytics for the dashboard
+ * Fetches global usage analytics and comprehensive visitor metrics for the admin dashboard
  */
 export const getUsageAnalytics = async (req, res) => {
     try {
         const totalSimulations = await Project.countDocuments();
         
-        // Fetch active sessions from the new VisitorPing model
-        const activeSessions = await VisitorPing.countDocuments({
-            lastSeen: { $gte: new Date(Date.now() - 15 * 60 * 1000) } // Last 15 minutes
-        });
+        const now = Date.now();
+        const fifteenMinAgo = new Date(now - 15 * 60 * 1000);
+        const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
+        const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
+        const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
+        // Fetch counts across different timeframes
+        const [
+            activeSessions,
+            todayVisitors,
+            weekVisitors,
+            monthVisitors,
+            allTimeVisitors
+        ] = await Promise.all([
+            VisitorPing.countDocuments({ lastSeen: { $gte: fifteenMinAgo } }),
+            VisitorPing.countDocuments({ lastSeen: { $gte: twentyFourHoursAgo } }),
+            VisitorPing.countDocuments({ lastSeen: { $gte: sevenDaysAgo } }),
+            VisitorPing.countDocuments({ lastSeen: { $gte: thirtyDaysAgo } }),
+            VisitorPing.countDocuments({})
+        ]);
 
         // Top Boards used
         const boardUsage = await Project.aggregate([
@@ -455,12 +471,11 @@ export const getUsageAnalytics = async (req, res) => {
         }));
 
         // Fetch last 7 days of compilation telemetry
-        const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+        const sevenDaysDateStr = new Date(sevenDaysAgo).toISOString().split('T')[0];
         const rawTelemetry = await SystemTelemetry.find({
-            date: { $gte: sevenDaysAgo }
+            date: { $gte: sevenDaysDateStr }
         }).sort({ date: 1 }).lean();
 
-        // Calculate average compile time across the 7 days
         let totalSuccess = 0;
         let totalFail = 0;
         let grandTotalCompileTime = 0;
@@ -481,36 +496,113 @@ export const getUsageAnalytics = async (req, res) => {
         const avgCompileTimeMs = totalCompiles > 0 ? (grandTotalCompileTime / totalCompiles) : 0;
         const avgCompileTime = avgCompileTimeMs > 0 ? (avgCompileTimeMs / 1000).toFixed(2) + 's' : 'N/A';
 
-        // Extract geographic regions from active pings
-        const activePings = await VisitorPing.find({
-            lastSeen: { $gte: new Date(Date.now() - 15 * 60 * 1000) },
-            lat: { $exists: true, $ne: null },
-            lng: { $exists: true, $ne: null }
-        }).lean();
+        // Fetch recent visitor documents (up to 150)
+        const rawVisitors = await VisitorPing.find({})
+            .sort({ lastSeen: -1 })
+            .limit(150)
+            .lean();
 
-        // Group regions by roughly similar lat/lng to show counts on the map
-        const regionMap = {};
-        activePings.forEach(p => {
-            const key = `${Math.round(p.lat)},${Math.round(p.lng)}`;
-            if (!regionMap[key]) {
-                regionMap[key] = { lat: p.lat, lng: p.lng, label: p.ip || 'Anonymous', count: 0 };
-            }
-            regionMap[key].count += 1;
+        const visitorList = rawVisitors.map(v => {
+            const isLive = v.lastSeen && (new Date(v.lastSeen).getTime() >= fifteenMinAgo.getTime());
+            return {
+                id: v._id,
+                sessionId: v.sessionId,
+                ip: v.ip || 'Unknown IP',
+                city: v.city || '',
+                country: v.country || '',
+                countryCode: v.countryCode || '',
+                locationStr: v.locationStr || (v.city && v.country ? `${v.city}, ${v.country}` : (v.country || v.city || 'Unknown Location')),
+                lat: v.lat || null,
+                lng: v.lng || null,
+                hitCount: v.hitCount || 1,
+                userAgent: v.userAgent || '',
+                firstSeen: v.firstSeen || v.createdAt || v.lastSeen,
+                lastSeen: v.lastSeen,
+                isLive: !!isLive
+            };
         });
 
-        const regions = Object.values(regionMap);
+        // Group regions with valid coordinates for map markers
+        const regionMap = {};
+        rawVisitors.forEach(p => {
+            if (p.lat != null && p.lng != null && !isNaN(p.lat) && !isNaN(p.lng)) {
+                // Approximate grouping by 0.5 degrees for cluster proximity
+                const latKey = (Math.round(p.lat * 2) / 2).toFixed(1);
+                const lngKey = (Math.round(p.lng * 2) / 2).toFixed(1);
+                const key = `${latKey},${lngKey}`;
+                const isLive = p.lastSeen && (new Date(p.lastSeen).getTime() >= fifteenMinAgo.getTime());
+
+                if (!regionMap[key]) {
+                    const label = p.locationStr || (p.city && p.country ? `${p.city}, ${p.country}` : (p.country || p.ip || 'Global Node'));
+                    regionMap[key] = {
+                        id: key,
+                        lat: p.lat,
+                        lng: p.lng,
+                        label,
+                        city: p.city || '',
+                        country: p.country || '',
+                        count: 0,
+                        activeCount: 0,
+                        ips: new Set(),
+                        lastSeen: p.lastSeen
+                    };
+                }
+                regionMap[key].count += 1;
+                if (isLive) regionMap[key].activeCount += 1;
+                if (p.ip) regionMap[key].ips.add(p.ip);
+                if (new Date(p.lastSeen) > new Date(regionMap[key].lastSeen)) {
+                    regionMap[key].lastSeen = p.lastSeen;
+                }
+            }
+        });
+
+        const regions = Object.values(regionMap).map(r => ({
+            ...r,
+            uniqueIps: r.ips.size,
+            ips: Array.from(r.ips).slice(0, 5) // preview top 5 IPs
+        }));
+
+        // Geographic country & city breakdowns
+        const countryMap = {};
+        const cityMap = {};
+        rawVisitors.forEach(v => {
+            const country = v.country || 'Unknown';
+            countryMap[country] = (countryMap[country] || 0) + 1;
+
+            if (v.city) {
+                const cityLabel = v.country ? `${v.city}, ${v.country}` : v.city;
+                cityMap[cityLabel] = (cityMap[cityLabel] || 0) + 1;
+            }
+        });
+
+        const topCountries = Object.entries(countryMap)
+            .map(([name, count]) => ({ name, count, percentage: rawVisitors.length > 0 ? Math.round((count / rawVisitors.length) * 100) : 0 }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
+
+        const topCities = Object.entries(cityMap)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
 
         res.json({
             success: true,
             stats: {
                 totalSimulations,
                 activeSessions,
+                todayVisitors,
+                weekVisitors,
+                monthVisitors,
+                allTimeVisitors,
                 avgCompileTime,
-                storageUsed: 'N/A', // Cloud storage is handled externally for now
-                peakConcurrency: activeSessions, // Approximation
+                storageUsed: 'N/A',
+                peakConcurrency: activeSessions,
                 topLibraries: topLibraries.length > 0 ? topLibraries : [],
                 compilationHistory,
-                regions
+                regions,
+                visitorList,
+                topCountries,
+                topCities
             }
         });
     } catch (error) {
