@@ -8,6 +8,7 @@ import AuditLog from '../models/AuditLog.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 import mongoose from 'mongoose';
+import User from '../models/User.js';
 import Project from '../models/Project.js';
 import LiveSimulationSession from '../models/LiveSimulationSession.js';
 import SystemConfig from '../models/systemConfig.js';
@@ -585,6 +586,117 @@ export const getUsageAnalytics = async (req, res) => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
 
+        // Compute 14-day visitor & pageview timeline
+        const timelineMap = {};
+        for (let i = 13; i >= 0; i--) {
+            const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            timelineMap[d] = { date: d, visitors: 0, hits: 0 };
+        }
+
+        const deviceStats = { desktop: 0, mobile: 0, tablet: 0 };
+        const browserStats = { chrome: 0, firefox: 0, safari: 0, edge: 0, other: 0 };
+
+        rawVisitors.forEach(v => {
+            const dateStr = v.lastSeen ? new Date(v.lastSeen).toISOString().split('T')[0] : null;
+            if (dateStr && timelineMap[dateStr]) {
+                timelineMap[dateStr].visitors += 1;
+                timelineMap[dateStr].hits += (v.hitCount || 1);
+            }
+
+            // UserAgent parsing
+            const ua = (v.userAgent || '').toLowerCase();
+            if (/mobile|android|iphone|ipod/i.test(ua)) {
+                deviceStats.mobile += 1;
+            } else if (/ipad|tablet/i.test(ua)) {
+                deviceStats.tablet += 1;
+            } else {
+                deviceStats.desktop += 1;
+            }
+
+            if (/edg\//i.test(ua)) {
+                browserStats.edge += 1;
+            } else if (/chrome|crios/i.test(ua)) {
+                browserStats.chrome += 1;
+            } else if (/firefox|fxios/i.test(ua)) {
+                browserStats.firefox += 1;
+            } else if (/safari/i.test(ua)) {
+                browserStats.safari += 1;
+            } else {
+                browserStats.other += 1;
+            }
+        });
+
+        const visitorTimeline = Object.values(timelineMap);
+
+        // ─── Registered User Role Analytics (Student, Teacher, User, Admin) ─
+        const [
+            allTimeUsersByRole,
+            todayUsersByRole,
+            weekUsersByRole,
+            monthUsersByRole,
+            registrationTimelineRaw
+        ] = await Promise.all([
+            User.aggregate([{ $group: { _id: "$role", count: { $sum: 1 } } }]),
+            User.aggregate([{ $match: { createdAt: { $gte: twentyFourHoursAgo } } }, { $group: { _id: "$role", count: { $sum: 1 } } }]),
+            User.aggregate([{ $match: { createdAt: { $gte: sevenDaysAgo } } }, { $group: { _id: "$role", count: { $sum: 1 } } }]),
+            User.aggregate([{ $match: { createdAt: { $gte: thirtyDaysAgo } } }, { $group: { _id: "$role", count: { $sum: 1 } } }]),
+            User.aggregate([
+                { $match: { createdAt: { $gte: new Date(now - 14 * 24 * 60 * 60 * 1000) } } },
+                {
+                    $group: {
+                        _id: {
+                            date: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                            role: "$role"
+                        },
+                        count: { $sum: 1 }
+                    }
+                }
+            ])
+        ]);
+
+        const formatRoleCounts = (arr) => {
+            const res = { student: 0, teacher: 0, user: 0, admin: 0, total: 0 };
+            arr.forEach(item => {
+                const role = item._id || 'user';
+                if (res[role] !== undefined) {
+                    res[role] = item.count;
+                } else {
+                    res.user += item.count;
+                }
+                res.total += item.count;
+            });
+            return res;
+        };
+
+        const registeredUsers = {
+            allTime: formatRoleCounts(allTimeUsersByRole),
+            today: formatRoleCounts(todayUsersByRole),
+            week: formatRoleCounts(weekUsersByRole),
+            month: formatRoleCounts(monthUsersByRole),
+        };
+
+        // Format 14-day registration timeline
+        const regTimelineMap = {};
+        for (let i = 13; i >= 0; i--) {
+            const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            regTimelineMap[d] = { date: d, student: 0, teacher: 0, user: 0, total: 0 };
+        }
+
+        registrationTimelineRaw.forEach(item => {
+            const date = item._id?.date;
+            const role = item._id?.role || 'user';
+            if (date && regTimelineMap[date]) {
+                if (regTimelineMap[date][role] !== undefined) {
+                    regTimelineMap[date][role] += item.count;
+                } else {
+                    regTimelineMap[date].user += item.count;
+                }
+                regTimelineMap[date].total += item.count;
+            }
+        });
+
+        registeredUsers.timeline = Object.values(regTimelineMap);
+
         res.json({
             success: true,
             stats: {
@@ -602,7 +714,11 @@ export const getUsageAnalytics = async (req, res) => {
                 regions,
                 visitorList,
                 topCountries,
-                topCities
+                topCities,
+                visitorTimeline,
+                deviceStats,
+                browserStats,
+                registeredUsers
             }
         });
     } catch (error) {
