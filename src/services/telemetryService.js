@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import geoip from 'geoip-lite';
 import SystemTelemetry from '../models/SystemTelemetry.js';
 import VisitorPing from '../models/VisitorPing.js';
 
@@ -87,12 +88,16 @@ export function compileTelemetryMiddleware(req, res, next) {
 
 /**
  * Express route handler for /api/public/ping
+ * Performs server-side IP detection and geo-resolution via geoip-lite
  */
 export async function handleVisitorPingExpress(req, res) {
     try {
-        const { sessionId, lat, lng, locationStr, city, country, countryCode } = req.body || {};
+        const { sessionId } = req.body || {};
+        if (!sessionId) {
+            return res.json({ success: false, message: 'No sessionId provided' });
+        }
         
-        // Extract real IP from headers if behind reverse proxy/load balancer
+        // Extract client IP
         let rawIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
                     req.headers['x-real-ip'] || 
                     req.socket.remoteAddress || 
@@ -102,25 +107,51 @@ export async function handleVisitorPingExpress(req, res) {
         if (rawIp.startsWith('::ffff:')) {
             rawIp = rawIp.replace('::ffff:', '');
         }
-        if (rawIp === '::1') {
+        if (rawIp === '::1' || rawIp === 'localhost') {
             rawIp = '127.0.0.1';
+        }
+
+        const isLocalIp = rawIp === '127.0.0.1' || 
+                          rawIp.startsWith('192.168.') || 
+                          rawIp.startsWith('10.') || 
+                          rawIp.startsWith('172.16.') ||
+                          rawIp.startsWith('172.31.');
+
+        let lat = null;
+        let lng = null;
+        let city = '';
+        let country = '';
+        let countryCode = '';
+        let locationStr = isLocalIp ? 'Localhost / Dev' : '';
+
+        // Server-side IP lookup using geoip-lite
+        if (!isLocalIp && rawIp) {
+            const geo = geoip.lookup(rawIp);
+            if (geo) {
+                if (geo.ll && geo.ll.length >= 2) {
+                    lat = geo.ll[0];
+                    lng = geo.ll[1];
+                }
+                city = geo.city || '';
+                country = geo.country || '';
+                countryCode = geo.country || '';
+                locationStr = [city, country].filter(Boolean).join(', ');
+            }
         }
 
         const userAgent = req.headers['user-agent'] || '';
 
-        if (sessionId) {
-            await logVisitorPing({
-                sessionId,
-                ip: rawIp,
-                lat,
-                lng,
-                locationStr: locationStr || (city && country ? `${city}, ${country}` : ''),
-                city,
-                country,
-                countryCode,
-                userAgent
-            });
-        }
+        await logVisitorPing({
+            sessionId,
+            ip: rawIp,
+            lat,
+            lng,
+            locationStr,
+            city,
+            country,
+            countryCode,
+            userAgent
+        });
         
         res.json({ success: true });
     } catch (err) {
