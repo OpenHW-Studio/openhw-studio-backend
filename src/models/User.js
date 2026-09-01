@@ -38,7 +38,17 @@ const userSchema = new mongoose.Schema({
   badges: [String],
   projects: { type: [sharedProjectSchema], default: [] },
   resetPasswordToken: { type: String },
-  resetPasswordExpires: { type: Date }
+  resetPasswordExpires: { type: Date },
+  // ── Account Deletion ──────────────────────────────────────────────────────
+  status: {
+    type: String,
+    enum: ['active', 'pending_deletion'],
+    default: 'active',
+    index: true,
+  },
+  deletionRequestedAt: { type: Date, default: null },
+  permanentDeleteAt:   { type: Date, default: null },
+  deletionReminderSent: { type: Boolean, default: false },
 }, { timestamps: true });
 
 export default mongoose.model("User", userSchema);

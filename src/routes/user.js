@@ -14,6 +14,11 @@ import {
 	forgotPasswordVerify
 } from '../controllers/userController.js';
 import { sendOtp, verifyOtp } from '../controllers/otpController.js';
+import {
+  requestDeletionOtp,
+  confirmDeletion,
+  cancelDeletion,
+} from '../controllers/accountDeletionController.js';
 
 import { protectRoute } from '../middleware/authMiddleware.js';
 
@@ -34,6 +39,11 @@ router.post('/reset-password/:token', resetPassword);
 router.post('/logout', protectRoute, logoutController);
 router.get('/profile', protectRoute, getUserProfile);
 router.put('/profile', protectRoute, updateUserProfile);
+
+// ── Account Deletion (OTP-verified, 30-day grace period) ──────────────────
+router.post('/delete-account/request-otp', protectRoute, requestDeletionOtp);
+router.post('/delete-account/confirm',     protectRoute, confirmDeletion);
+router.post('/delete-account/cancel',      protectRoute, cancelDeletion);
 
 
 export default router;

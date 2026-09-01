@@ -17,6 +17,7 @@ import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
 import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
 import { initLibraryIndexService } from './services/libraryIndexService.js';
 import { reloadBudget } from './services/resourceManager.js';
+import { startAccountPurgeWorker } from './workers/accountPurgeWorker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -278,6 +279,9 @@ server.listen(PORT, async () => {
   } else {
     console.log('[HotPool] Disabled via HOT_POOL_ENABLED=false');
   }
+
+  // Account purge worker — runs daily to permanently wipe expired accounts
+  startAccountPurgeWorker();
 });
 
 // Graceful shutdown — kill idle pool VMs cleanly

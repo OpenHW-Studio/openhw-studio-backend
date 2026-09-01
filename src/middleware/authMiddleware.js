@@ -42,6 +42,18 @@ export const protectRoute = async (req, res, next) => {
       user.role = decoded.role;
     }
 
+    // ── Soft-deletion guard ────────────────────────────────────────────────
+    // Allow the cancel-deletion route through. Block everything else for
+    // accounts in pending_deletion state so the frontend can redirect to
+    // the ReactivationPage.
+    if (user.status === 'pending_deletion' && !req.path.endsWith('/delete-account/cancel')) {
+      return res.status(403).json({
+        status: 'pending_deletion',
+        permanentDeleteAt: user.permanentDeleteAt,
+        message: 'Your account is scheduled for deletion. Log in to cancel and reactivate.',
+      });
+    }
+
     req.user = user;
     next();
   } catch (error) {
