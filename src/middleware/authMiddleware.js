@@ -43,10 +43,19 @@ export const protectRoute = async (req, res, next) => {
     }
 
     // ── Soft-deletion guard ────────────────────────────────────────────────
-    // Allow the cancel-deletion route through. Block everything else for
-    // accounts in pending_deletion state so the frontend can redirect to
-    // the ReactivationPage.
-    if (user.status === 'pending_deletion' && !req.path.endsWith('/delete-account/cancel')) {
+    // Allow /auth/me, /logout, and cancel-deletion routes through so the user can retrieve their profile,
+    // view the Reactivation page, reactivate their account, or log out. Block other operational routes.
+    const path = req.path || '';
+    const origUrl = req.originalUrl || '';
+    const isAllowedPendingRoute =
+      path.endsWith('/delete-account/cancel') ||
+      path.endsWith('/delete-account/request-reactivate-otp') ||
+      path.endsWith('/logout') ||
+      path === '/me' ||
+      origUrl.includes('/auth/me') ||
+      origUrl.includes('/user/logout');
+
+    if (user.status === 'pending_deletion' && !isAllowedPendingRoute) {
       return res.status(403).json({
         status: 'pending_deletion',
         permanentDeleteAt: user.permanentDeleteAt,

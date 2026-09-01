@@ -128,6 +128,7 @@ router.get('/me', protectRoute, (req, res) => {
         user: {
             id: req.user._id,
             name: req.user.name,
+            email: req.user.email,
             role: req.user.role,
             school: req.user.school,
             classStandard: req.user.classStandard,
@@ -137,6 +138,9 @@ router.get('/me', protectRoute, (req, res) => {
             coins: req.user.coins,
             level: req.user.level,
             badges: req.user.badges,
+            status: req.user.status || 'active',
+            deletionRequestedAt: req.user.deletionRequestedAt || null,
+            permanentDeleteAt: req.user.permanentDeleteAt || null,
         }
     });
 });

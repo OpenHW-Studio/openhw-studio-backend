@@ -494,3 +494,189 @@ export function buildDeletionCompletedEmail(name = 'there') {
 
   return { subject, message, html };
 }
+
+/**
+ * 6. Account Reactivation OTP Email Template
+ *
+ * @param {string} otp  - The 6-digit OTP code
+ * @param {string} name - Recipient's name
+ * @returns {object}    - { subject, message, html }
+ */
+export function buildReactivationOtpEmail(otp, name = 'there') {
+  const subject = 'Your OpenHW Studio Reactivation Code';
+
+  const message =
+    `Hi ${name},\n\n` +
+    `We received a request to cancel the scheduled deletion and reactivate your OpenHW Studio account.\n\n` +
+    `Enter this 6-digit code to confirm account reactivation:\n\n` +
+    `  ${otp}\n\n` +
+    `This code expires in 10 minutes. Do not share it with anyone.\n\n` +
+    `Once confirmed, your account will be fully restored with all your data safe.\n\n` +
+    `If you did not request this, you can safely ignore this email and your account will remain scheduled for deletion.\n\n` +
+    `-- The OpenHW Studio Team`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenHW Studio - Confirm Account Reactivation</title>
+</head>
+<body style="margin:0;padding:0;background:#0f172a;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f172a;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table width="520" cellpadding="0" cellspacing="0"
+          style="background:#1e293b;border-radius:12px;border:1px solid #065f46;overflow:hidden;max-width:520px;width:100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#059669,#065f46);padding:28px 32px;text-align:center;">
+              <h1 style="margin:0;font-size:22px;color:#ffffff;letter-spacing:1px;font-weight:700;">
+                Account Reactivation Request
+              </h1>
+              <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,0.75);letter-spacing:2px;text-transform:uppercase;">
+                OpenHW Studio
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px;">
+              <p style="margin:0 0 20px;font-size:15px;color:#cbd5e1;">
+                Hi <strong style="color:#f1f5f9;">${name}</strong>,
+              </p>
+              <p style="margin:0 0 20px;font-size:15px;color:#94a3b8;line-height:1.7;">
+                We received a request to cancel the scheduled deletion and reactivate your OpenHW Studio account.
+                Enter the code below to restore your account. The code is valid for <strong style="color:#f1f5f9;">10 minutes</strong>.
+              </p>
+
+              <!-- OTP Box -->
+              <div style="background:#0f172a;border:1px solid #065f46;border-radius:10px;padding:28px;text-align:center;margin-bottom:28px;">
+                <p style="margin:0 0 8px;font-size:11px;color:#6b7280;letter-spacing:3px;text-transform:uppercase;">
+                  Reactivation Code
+                </p>
+                <p style="margin:0;font-size:44px;font-weight:800;letter-spacing:14px;color:#34d399;font-family:monospace;">
+                  ${otp}
+                </p>
+              </div>
+
+              <!-- Note -->
+              <div style="background:#06281e;border:1px solid #065f46;border-radius:8px;padding:16px 20px;margin-bottom:20px;">
+                <p style="margin:0;font-size:13px;color:#6ee7b7;line-height:1.7;">
+                  Once verified, your account and all associated projects, progress, and settings will be fully active again.
+                </p>
+              </div>
+
+              <p style="margin:0;font-size:13px;color:#475569;line-height:1.6;">
+                If you did not request reactivation, you can safely ignore this email.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="border-top:1px solid #334155;padding:20px 32px;text-align:center;">
+              <p style="margin:0;font-size:12px;color:#475569;">
+                (C) ${new Date().getFullYear()} OpenHW Studio | FOSSEE, IIT Bombay
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  return { subject, message, html };
+}
+
+/**
+ * 7. Account Reactivated Confirmation Email
+ *
+ * @param {string} name - Recipient's name
+ * @returns {object}    - { subject, message, html }
+ */
+export function buildReactivatedConfirmationEmail(name = 'there') {
+  const subject = 'Your OpenHW Studio Account Has Been Reactivated';
+
+  const message =
+    `Hi ${name},\n\n` +
+    `Your OpenHW Studio account has been successfully reactivated!\n\n` +
+    `The scheduled deletion request has been cancelled and all your projects, progress, and account data remain completely intact.\n\n` +
+    `Welcome back!\n\n` +
+    `-- The OpenHW Studio Team`;
+
+  const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenHW Studio - Account Reactivated</title>
+</head>
+<body style="margin:0;padding:0;background:#0f172a;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f172a;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table width="520" cellpadding="0" cellspacing="0"
+          style="background:#1e293b;border-radius:12px;border:1px solid #065f46;overflow:hidden;max-width:520px;width:100%;">
+
+          <!-- Header -->
+          <tr>
+            <td style="background:linear-gradient(135deg,#059669,#065f46);padding:28px 32px;text-align:center;">
+              <h1 style="margin:0;font-size:22px;color:#ffffff;letter-spacing:1px;font-weight:700;">
+                Account Reactivated
+              </h1>
+              <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,0.75);letter-spacing:2px;text-transform:uppercase;">
+                Welcome Back
+              </p>
+            </td>
+          </tr>
+
+          <!-- Body -->
+          <tr>
+            <td style="padding:36px 32px;">
+              <p style="margin:0 0 20px;font-size:15px;color:#cbd5e1;">
+                Hi <strong style="color:#f1f5f9;">${name}</strong>,
+              </p>
+              <p style="margin:0 0 20px;font-size:15px;color:#94a3b8;line-height:1.7;">
+                Your OpenHW Studio account has been successfully reactivated.
+              </p>
+
+              <div style="background:#06281e;border:1px solid #065f46;border-radius:8px;padding:18px 20px;margin-bottom:24px;">
+                <p style="margin:0;font-size:13px;color:#6ee7b7;line-height:1.7;">
+                  The scheduled deletion request has been cancelled. Your simulation projects, badges, XP, and coursework records are completely safe and restored.
+                </p>
+              </div>
+
+              <p style="margin:0;font-size:14px;color:#cbd5e1;line-height:1.6;">
+                You can now continue creating and exploring hardware simulations as usual.
+              </p>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="border-top:1px solid #334155;padding:20px 32px;text-align:center;">
+              <p style="margin:0;font-size:12px;color:#475569;">
+                (C) ${new Date().getFullYear()} OpenHW Studio | FOSSEE, IIT Bombay
+              </p>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+
+  return { subject, message, html };
+}

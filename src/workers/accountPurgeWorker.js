@@ -127,6 +127,8 @@ async function purgeExpiredAccount(user) {
         role: userRole,
         deletionRequestedAt: user.deletionRequestedAt,
         permanentDeleteAt: user.permanentDeleteAt,
+        deletionReason: user.deletionReason || 'not_provided',
+        deletionFeedback: user.deletionFeedback || '',
         purgedAt: new Date(),
       },
     });

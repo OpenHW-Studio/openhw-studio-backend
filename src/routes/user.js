@@ -17,6 +17,7 @@ import { sendOtp, verifyOtp } from '../controllers/otpController.js';
 import {
   requestDeletionOtp,
   confirmDeletion,
+  requestReactivationOtp,
   cancelDeletion,
 } from '../controllers/accountDeletionController.js';
 
@@ -40,10 +41,10 @@ router.post('/logout', protectRoute, logoutController);
 router.get('/profile', protectRoute, getUserProfile);
 router.put('/profile', protectRoute, updateUserProfile);
 
-// ── Account Deletion (OTP-verified, 30-day grace period) ──────────────────
+// ── Account Deletion & Reactivation (OTP-verified) ────────────────────────
 router.post('/delete-account/request-otp', protectRoute, requestDeletionOtp);
 router.post('/delete-account/confirm',     protectRoute, confirmDeletion);
+router.post('/delete-account/request-reactivate-otp', protectRoute, requestReactivationOtp);
 router.post('/delete-account/cancel',      protectRoute, cancelDeletion);
-
 
 export default router;
