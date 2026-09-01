@@ -182,12 +182,7 @@ void _simBridgeInit_Late();
 #endif
 
 // ── Watchdog shims ───────────────────────────────────────────────────────────
-// WDT is already disabled in _simBridgeInit_Early; stubs prevent linker errors
-#define esp_task_wdt_init(timeout,panic)  ((void)0)
-#define esp_task_wdt_deinit()             ((void)0)
-#define esp_task_wdt_add(task)            ((void)0)
-#define esp_task_wdt_delete(task)         ((void)0)
-#define esp_task_wdt_reset()              ((void)0)
+#include "esp_task_wdt.h"
 
 // ── RTC memory attribute ─────────────────────────────────────────────────────
 // In simulation, RTC_DATA_ATTR variables are just normal static variables.
