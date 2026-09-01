@@ -42,6 +42,27 @@ export const protectRoute = async (req, res, next) => {
       user.role = decoded.role;
     }
 
+    // ── Soft-deletion guard ────────────────────────────────────────────────
+    // Allow /auth/me, /logout, and cancel-deletion routes through so the user can retrieve their profile,
+    // view the Reactivation page, reactivate their account, or log out. Block other operational routes.
+    const path = req.path || '';
+    const origUrl = req.originalUrl || '';
+    const isAllowedPendingRoute =
+      path.endsWith('/delete-account/cancel') ||
+      path.endsWith('/delete-account/request-reactivate-otp') ||
+      path.endsWith('/logout') ||
+      path === '/me' ||
+      origUrl.includes('/auth/me') ||
+      origUrl.includes('/user/logout');
+
+    if (user.status === 'pending_deletion' && !isAllowedPendingRoute) {
+      return res.status(403).json({
+        status: 'pending_deletion',
+        permanentDeleteAt: user.permanentDeleteAt,
+        message: 'Your account is scheduled for deletion. Log in to cancel and reactivate.',
+      });
+    }
+
     req.user = user;
     next();
   } catch (error) {

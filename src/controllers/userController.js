@@ -44,6 +44,9 @@ const serializeUser = (user) => ({
   coins: user.coins,
   level: user.level,
   badges: user.badges,
+  status: user.status || 'active',
+  deletionRequestedAt: user.deletionRequestedAt || null,
+  permanentDeleteAt: user.permanentDeleteAt || null,
 });
 
 const signinUser = async (req, res) => {
