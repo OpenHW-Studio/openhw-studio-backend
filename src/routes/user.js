@@ -19,7 +19,8 @@ import { protectRoute } from '../middleware/authMiddleware.js';
 
 const router = Router();
 
-router.post('/signup', signupUser);
+// Direct signup is now routed to OTP verification — no user is created without OTP
+router.post('/signup', sendOtp);
 router.post('/send-otp', sendOtp);
 router.post('/verify-otp', verifyOtp);
 router.post('/register-student', protectRoute, registerStudent);
