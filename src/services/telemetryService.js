@@ -37,18 +37,30 @@ export async function logCompileTelemetry(success, timeMs) {
 /**
  * Log an active visitor ping
  */
-export async function logVisitorPing(sessionId, ip, lat, lng) {
+export async function logVisitorPing(data) {
     try {
+        const { sessionId, ip, lat, lng, locationStr, city, country, countryCode, userAgent } = data;
         if (!sessionId) return;
+
+        const update = {
+            $set: {
+                ip: ip || 'Unknown IP',
+                lat: typeof lat === 'number' ? lat : (lat ? parseFloat(lat) : null),
+                lng: typeof lng === 'number' ? lng : (lng ? parseFloat(lng) : null),
+                locationStr: locationStr || '',
+                city: city || '',
+                country: country || '',
+                countryCode: countryCode || '',
+                userAgent: userAgent || '',
+                lastSeen: new Date()
+            },
+            $inc: { hitCount: 1 },
+            $setOnInsert: { firstSeen: new Date() }
+        };
         
         await VisitorPing.findOneAndUpdate(
             { sessionId },
-            { 
-                ip, 
-                lat: lat || null, 
-                lng: lng || null,
-                lastSeen: new Date()
-            },
+            update,
             { upsert: true, new: true }
         );
     } catch (err) {
@@ -77,16 +89,42 @@ export function compileTelemetryMiddleware(req, res, next) {
  * Express route handler for /api/public/ping
  */
 export async function handleVisitorPingExpress(req, res) {
-    const { sessionId, lat, lng, locationStr } = req.body || {};
-    // Extract IP from X-Forwarded-For if behind a proxy, otherwise req.ip
-    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.ip;
-    
-    // Store locationStr in place of IP for the map label if available
-    const displayLabel = locationStr || ip;
-    
-    if (sessionId) {
-        await logVisitorPing(sessionId, displayLabel, lat, lng);
+    try {
+        const { sessionId, lat, lng, locationStr, city, country, countryCode } = req.body || {};
+        
+        // Extract real IP from headers if behind reverse proxy/load balancer
+        let rawIp = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || 
+                    req.headers['x-real-ip'] || 
+                    req.socket.remoteAddress || 
+                    req.ip || 
+                    '';
+
+        if (rawIp.startsWith('::ffff:')) {
+            rawIp = rawIp.replace('::ffff:', '');
+        }
+        if (rawIp === '::1') {
+            rawIp = '127.0.0.1';
+        }
+
+        const userAgent = req.headers['user-agent'] || '';
+
+        if (sessionId) {
+            await logVisitorPing({
+                sessionId,
+                ip: rawIp,
+                lat,
+                lng,
+                locationStr: locationStr || (city && country ? `${city}, ${country}` : ''),
+                city,
+                country,
+                countryCode,
+                userAgent
+            });
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        console.error('[TelemetryService] Ping Error:', err.message);
+        res.json({ success: false });
     }
-    
-    res.json({ success: true });
 }

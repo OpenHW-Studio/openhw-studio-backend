@@ -40,6 +40,12 @@ services:
       - ESP32_WORKER_WS_URL=ws://openhw-esp32-worker:5001
       - STM32_WORKER_HTTP_URL=http://openhw-stm32-worker:5002
       - STM32_WORKER_WS_URL=ws://openhw-stm32-worker:5002
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_EMAIL=${SMTP_EMAIL}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - FROM_NAME=${FROM_NAME}
+      - FROM_EMAIL=${FROM_EMAIL}
     volumes:
       - ./persistent-data/data:/app/data
       - /var/run/docker.sock:/var/run/docker.sock
