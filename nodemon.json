@@ -2,6 +2,8 @@
   "watch": ["src"],
   "ext": "js,mjs,cjs,json",
   "ignore": [
+    "src/config/libraries.json",
+    "**/libraries.json",
     "builds/**",
     "temp/**",
     ".env",
