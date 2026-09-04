@@ -69,5 +69,45 @@ export const protectRoute = async (req, res, next) => {
     console.error("[Auth] JWT Verification Error:", error.message);
     return res.status(401).json({ message: `Unauthorized: ${error.message}` });
   }
-}
- 
+};
+
+export const optionalAuth = async (req, res, next) => {
+  try {
+    const authHeader = req.headers.authorization || "";
+    const bearerToken = authHeader.startsWith("Bearer ")
+      ? authHeader.split(" ")[1]
+      : null;
+    const cookieToken = parseCookieToken(req.headers.cookie || "");
+    const queryToken = req.query?.token || null;
+
+    const token = bearerToken || cookieToken || queryToken;
+    if (token && process.env.JWT_SECRET) {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const user = await User.findById(decoded.id).select("-password");
+      if (user) {
+        if (decoded.role) user.role = decoded.role;
+        req.user = user;
+      }
+    }
+  } catch (error) {
+    // Ignore invalid token for optional auth
+  }
+  next();
+};
+
+export const requireAdmin = (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Authentication required" });
+  }
+  const adminEmails = (process.env.VITE_ADMIN_EMAILS || "")
+    .split(",")
+    .map((e) => e.trim().toLowerCase());
+
+  if (
+    req.user.role === "admin" ||
+    (req.user.email && adminEmails.includes(req.user.email.toLowerCase()))
+  ) {
+    return next();
+  }
+  return res.status(403).json({ message: "Admin access required" });
+};

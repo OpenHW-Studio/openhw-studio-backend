@@ -48,8 +48,8 @@ if (googleClientId && googleClientSecret &&
                     // ── New user ──────────────────────────────────────────────
                     // Read the state that was attached in the callback route
                     const state = req.oauthState || {};
-                    const allowedRoles = ['student', 'teacher'];
-                    let role = allowedRoles.includes(state.role) ? state.role : 'student';
+                    const allowedRoles = ['student', 'teacher', 'user'];
+                    let role = allowedRoles.includes(state.role) ? state.role : 'user';
 
                     // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
                     const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());

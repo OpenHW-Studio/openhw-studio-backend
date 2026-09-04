@@ -53,34 +53,41 @@ const signinUser = async (req, res) => {
   try {
     const { email, password, role } = req.body;
     const sanitizedEmail = normalizeEmail(email || "");
+    console.log(`[signinUser] Attempt | email: ${sanitizedEmail} | requested role: ${role}`);
+
     const user = await User.findOne({ email: sanitizedEmail });
 
     if (!user) {
+      console.log(`[signinUser] BLOCKED | user not found`);
       return res.status(400).json({ message: "User not found" });
     }
-    if (role && ['teacher', 'student', 'admin'].includes(role)) {
-      // 1. Admin Superpower Bypass
-      if (user.role === 'admin') {
-        // Admin allowed everywhere
+
+    console.log(`[signinUser] Found user | DB role: ${user.role} | requested role: ${role}`);
+
+    // ── 1-email-1-role strict enforcement ────────────────────────────────
+    if (user.role !== 'admin') {
+      if (!role) {
+        console.log(`[signinUser] BLOCKED | no role sent in request`);
+        return res.status(400).json({ message: "Login portal not specified." });
       }
-      // 2. The Strict Wall: Teacher vs Student
-      else if ((user.role === 'teacher' && role === 'student') ||
-        (user.role === 'student' && role === 'teacher')) {
+      if (user.role !== role) {
+        console.log(`[signinUser] BLOCKED | role mismatch — DB: ${user.role}, requested: ${role}`);
+        const portalName = (r) => r === 'user' ? 'User Node portal (/login)'
+          : r === 'student' ? 'Classroom portal as Student'
+          : r === 'teacher' ? 'Classroom portal as Teacher'
+          : `${r} portal`;
         return res.status(403).json({
-          message: `This portal is restricted to ${role}s only. Your account is registered as a ${user.role}.`
+          message: `This account is registered as a ${user.role}. Please sign in via the ${portalName(user.role)}.`,
+          registeredRole: user.role
         });
       }
-      // 3. General User Upgrade Path
-      else if (user.role === 'user' && (role === 'teacher' || role === 'student')) {
-        user.role = role;
-        await user.save();
-      }
-      // 4. Fallback for any other unauthorized cross-portal attempts
-      else if (user.role !== role) {
-        return res.status(403).json({
-          message: `Access Denied: This portal is for ${role}s only.`
-        });
-      }
+    }
+
+    if (!user.password) {
+      console.log(`[signinUser] BLOCKED | user registered with Google (no password)`);
+      return res.status(400).json({
+        message: "This account was registered using Google. Please sign in with Continue with Google."
+      });
     }
 
     const { ok: isMatch } = await verifyPassword(user.password, password);
@@ -208,11 +215,18 @@ const signupUser = async (req, res) => {
 
 const logoutController = async (req, res) => {
   try {
-    res.cookie("jwt", "", { httpOnly: true, sameSite: "strict", maxAge: 1 });
+    res.clearCookie("jwt", { httpOnly: true, sameSite: "strict" });
+    res.clearCookie("connect.sid");
+    if (req.session && typeof req.session.destroy === "function") {
+      req.session.destroy(() => {});
+    }
+    if (req.user) {
+      req.user = null;
+    }
     res.status(200).json({ message: "User logged out successfully" });
   } catch (error) {
     console.log("Error in logoutController: ", error);
-    res.status(500).json({ error });
+    res.status(500).json({ error: error.message });
   }
 };
 

@@ -11,6 +11,7 @@ import gamificationRouter from './gamification.js'
 import projectBankRouter from './projectBank.js'
 import communityRouter from './community.js'
 import projectRouter from './project.js'
+import bugReportRouter from './bugReportRoutes.js'
 
 import { requireAdmin } from '../middleware/authorization.js';
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
@@ -102,6 +103,7 @@ router.use('/gamification', gamificationRouter);
 router.use('/project-bank', projectBankRouter);
 router.use('/community', communityRouter);
 router.use('/projects', projectRouter);
+router.use('/bugs', bugReportRouter);
 
 // Public System Status (for landing page)
 router.get('/public/system-status', getPublicSystemStatus);
