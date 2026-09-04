@@ -11,9 +11,11 @@ import crypto from 'crypto';
 import argon2 from 'argon2';
 import User from '../models/User.js';
 import Otp from '../models/Otp.js';
+import BlockedEmail from '../models/BlockedEmail.js';
 import generateToken from '../utils/helper/token.js';
 import sendEmail from '../utils/sendEmail.js';
 import { buildOtpEmail } from '../utils/otpEmail.js';
+import { buildWelcomeOnboardingEmail } from '../utils/userEmailTemplates.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -85,7 +87,15 @@ export const sendOtp = async (req, res) => {
       });
     }
 
-    // ── 2. Check email is not already registered ─────────────────────────────
+    // ── 2. Check email is not blocked on the platform ───────────────────────
+    const isBlocked = await BlockedEmail.findOne({ email: sanitizedEmail }).select('_id').lean();
+    if (isBlocked) {
+      return res.status(403).json({
+        error: 'This email address has been blocked from registering on this platform. Please contact support if you believe this is an error.',
+      });
+    }
+
+    // ── 3. Check email is not already registered ─────────────────────────────
     const existingUser = await User.findOne({ email: sanitizedEmail }).select('_id').lean();
     if (existingUser) {
       return res.status(409).json({
@@ -187,7 +197,15 @@ export const verifyOtp = async (req, res) => {
       });
     }
 
-    // ── 4. OTP valid — double-check email not registered in the meantime ─────
+    // ── 4. OTP valid — double-check email not blocked or registered in the meantime ─────
+    const isBlocked = await BlockedEmail.findOne({ email: sanitizedEmail }).select('_id').lean();
+    if (isBlocked) {
+      await Otp.deleteOne({ _id: record._id });
+      return res.status(403).json({
+        error: 'This email address has been blocked from registering on this platform.',
+      });
+    }
+
     const existingUser = await User.findOne({ email: sanitizedEmail }).select('_id').lean();
     if (existingUser) {
       await Otp.deleteOne({ _id: record._id });
@@ -199,6 +217,21 @@ export const verifyOtp = async (req, res) => {
     // ── 5. Create the user ───────────────────────────────────────────────────
     const { userData } = record;
     const user = await User.create(userData);
+
+    // ── Send Onboarding Welcome Email in background ──────────────────────────
+    try {
+      const emailContent = buildWelcomeOnboardingEmail(user.name || 'there');
+      sendEmail({
+        email: user.email,
+        subject: emailContent.subject,
+        message: emailContent.message,
+        html: emailContent.html,
+      }).catch((emailErr) => {
+        console.error('[verifyOtp:WelcomeEmail] Failed to send welcome email:', emailErr.message);
+      });
+    } catch (err) {
+      console.error('[verifyOtp:WelcomeEmail] Template build error:', err.message);
+    }
 
     // ── 6. Clean up OTP record ───────────────────────────────────────────────
     await Otp.deleteOne({ _id: record._id });

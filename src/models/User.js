@@ -39,10 +39,10 @@ const userSchema = new mongoose.Schema({
   projects: { type: [sharedProjectSchema], default: [] },
   resetPasswordToken: { type: String },
   resetPasswordExpires: { type: Date },
-  // ── Account Deletion ──────────────────────────────────────────────────────
+  // ── Account Deletion, Suspension & Blocking ───────────────────────────
   status: {
     type: String,
-    enum: ['active', 'pending_deletion'],
+    enum: ['active', 'pending_deletion', 'suspended', 'blocked'],
     default: 'active',
     index: true,
   },
@@ -51,6 +51,14 @@ const userSchema = new mongoose.Schema({
   deletionReminderSent: { type: Boolean, default: false },
   deletionReason:      { type: String, trim: true, default: '' },
   deletionFeedback:    { type: String, trim: true, default: '' },
+  // Suspension
+  suspendedUntil:      { type: Date, default: null },
+  suspensionReason:    { type: String, trim: true, default: '' },
+  suspendedAt:         { type: Date, default: null },
+  // Blocking
+  isBlocked:           { type: Boolean, default: false, index: true },
+  blockReason:         { type: String, trim: true, default: '' },
+  blockedAt:           { type: Date, default: null },
 }, { timestamps: true });
 
 export default mongoose.model("User", userSchema);

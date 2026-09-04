@@ -176,7 +176,8 @@ const createInMemoryRateLimiter = ({ windowMs, limit, keyResolver }) => {
       return next();
     }
 
-    if (existing.count >= limit) {
+    const maxLimit = typeof limit === 'function' ? limit(req) : limit;
+    if (existing.count >= maxLimit) {
       const retryAfterSeconds = Math.max(1, Math.ceil((windowMs - (now - existing.windowStart)) / 1000));
       res.setHeader('Retry-After', String(retryAfterSeconds));
       return res.status(429).json({ error: 'Too many requests. Please try again later.' });
@@ -189,7 +190,10 @@ const createInMemoryRateLimiter = ({ windowMs, limit, keyResolver }) => {
 
 app.use(createInMemoryRateLimiter({
   windowMs: 60 * 1000,
-  limit: 120,
+  limit: (req) => {
+    const p = req.path || req.originalUrl || '';
+    return p.includes('/admin') ? 600 : 300;
+  },
   keyResolver: (req) => `${req.ip}:${req.path}`,
 }));
 app.use(express.json({ limit: '25mb' }));
