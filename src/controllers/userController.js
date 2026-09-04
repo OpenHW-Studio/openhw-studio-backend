@@ -53,25 +53,19 @@ const signinUser = async (req, res) => {
   try {
     const { email, password, role } = req.body;
     const sanitizedEmail = normalizeEmail(email || "");
-    console.log(`[signinUser] Attempt | email: ${sanitizedEmail} | requested role: ${role}`);
 
     const user = await User.findOne({ email: sanitizedEmail });
 
     if (!user) {
-      console.log(`[signinUser] BLOCKED | user not found`);
       return res.status(400).json({ message: "User not found" });
     }
-
-    console.log(`[signinUser] Found user | DB role: ${user.role} | requested role: ${role}`);
 
     // ── 1-email-1-role strict enforcement ────────────────────────────────
     if (user.role !== 'admin') {
       if (!role) {
-        console.log(`[signinUser] BLOCKED | no role sent in request`);
         return res.status(400).json({ message: "Login portal not specified." });
       }
       if (user.role !== role) {
-        console.log(`[signinUser] BLOCKED | role mismatch — DB: ${user.role}, requested: ${role}`);
         const portalName = (r) => r === 'user' ? 'User Node portal (/login)'
           : r === 'student' ? 'Classroom portal as Student'
           : r === 'teacher' ? 'Classroom portal as Teacher'
@@ -84,7 +78,6 @@ const signinUser = async (req, res) => {
     }
 
     if (!user.password) {
-      console.log(`[signinUser] BLOCKED | user registered with Google (no password)`);
       return res.status(400).json({
         message: "This account was registered using Google. Please sign in with Continue with Google."
       });
