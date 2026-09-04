@@ -37,7 +37,7 @@ router.post('/signin', signinUser);
 router.post('/google', googleLogin);
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password/:token', resetPassword);
-router.post('/logout', protectRoute, logoutController);
+router.post('/logout', logoutController);
 router.get('/profile', protectRoute, getUserProfile);
 router.put('/profile', protectRoute, updateUserProfile);
 

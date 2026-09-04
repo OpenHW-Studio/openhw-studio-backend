@@ -8,7 +8,29 @@ const router = express.Router();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const ALLOWED_ROLES = ['student', 'teacher'];
+const ALLOWED_ROLES = ['student', 'teacher', 'user'];
+
+function getResolvedFrontendUrl(origin) {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS 
+        ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+        : ['http://localhost:5173'];
+    if (origin && allowedOrigins.includes(origin)) {
+        return origin;
+    }
+    return process.env.FRONTEND_URL || 'http://localhost:5173';
+}
+
+function getPortalPath(role) {
+    if (role === 'user') return '/login';
+    if (role === 'teacher') return '/classroom/signin?role=teacher';
+    return '/classroom/signin?role=student';
+}
+
+function getPortalName(role) {
+    if (role === 'user') return 'User Node portal (/login)';
+    if (role === 'teacher') return 'Classroom portal as Teacher';
+    return 'Classroom portal as Student';
+}
 
 /**
  * Encode arbitrary data into a base64 string to use as OAuth `state`.
@@ -31,36 +53,31 @@ function decodeState(raw) {
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
-// 1. Simple Google Login (no role — for returning users)
-//    The Passport strategy will keep the user's existing role.
+// 1. Google Login — accepts role and origin in query params
 router.get(
     '/google',
     (req, res, next) => {
         const origin = req.query.origin;
+        const role = req.query.role; // e.g. 'user', 'student', 'teacher'
+        const statePayload = {
+            intent: 'login',
+            origin,
+            ...(role && ALLOWED_ROLES.includes(role) && { role }),
+        };
         passport.authenticate('google', {
             scope: ['profile', 'email'],
-            state: encodeState({ intent: 'login', origin }),
+            state: encodeState(statePayload),
         })(req, res, next);
     }
 );
 
 /**
  * 2. Google Sign-Up with role selection
- *
- *    Frontend should redirect the user to:
- *      GET /auth/google/signup?role=student      (student sign-up)
- *      GET /auth/google/signup?role=teacher      (teacher sign-up)
- *
- *    Optional for students (include in query params to pre-fill):
- *      &school=Springfield+High+School
- *
- *    The role (and optional fields) are encoded in the OAuth `state`
- *    parameter so Google passes them back unchanged in the callback.
  */
 router.get('/google/signup', (req, res, next) => {
     const { role, school, classStandard, origin } = req.query;
 
-    if (!ALLOWED_ROLES.includes(role)) {
+    if (role && !ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({
             error: `Invalid role. Must be one of: ${ALLOWED_ROLES.join(', ')}`,
         });
@@ -68,13 +85,10 @@ router.get('/google/signup', (req, res, next) => {
 
     const statePayload = {
         intent: 'signup',
-        role,
+        role: role || 'student',
         origin,
-        // Optional fields — only attached if provided
         ...(school && { school }),
-        ...((classStandard) && {
-            classStandard: classStandard
-        }),
+        ...(classStandard && { classStandard }),
     };
 
     passport.authenticate('google', {
@@ -83,40 +97,49 @@ router.get('/google/signup', (req, res, next) => {
     })(req, res, next);
 });
 
-
-// 3. Google OAuth Callback — handles both login and signup
+// 3. Google OAuth Callback — handles both login and signup with strict role enforcement
 router.get(
     '/google/callback',
     (req, res, next) => {
-        // Decode and attach state to request BEFORE passport processes it
         const raw = req.query.state;
-        if (raw) req.oauthState = decodeState(raw);
-        next();
-    },
-    passport.authenticate('google', {
-        failureRedirect: process.env.FRONTEND_URL || 'http://localhost:5173',
-        session: false,
-    }),
-    (req, res) => {
-        const token = jwt.sign(
-            { id: req.user._id, role: req.user.role },
-            process.env.JWT_SECRET,
-            { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
-        );
-        const state = req.oauthState || {};
-        const origin = state.origin;
-        
-        // Validate origin against ALLOWED_ORIGINS to prevent open redirect attacks
-        const allowedOrigins = process.env.ALLOWED_ORIGINS 
-            ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-            : ['http://localhost:5173'];
-            
-        let frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        if (origin && allowedOrigins.includes(origin)) {
-            frontendUrl = origin;
-        }
+        const state = raw ? decodeState(raw) : {};
+        req.oauthState = state;
+        const origin = state?.origin;
+        const frontendUrl = getResolvedFrontendUrl(origin);
+        const requestedRole = state?.role;
+        const defaultFailureRedirect = requestedRole ? `${frontendUrl}${getPortalPath(requestedRole)}` : `${frontendUrl}/login`;
 
-        res.redirect(`${frontendUrl}/login-success#token=${encodeURIComponent(token)}`);
+        passport.authenticate('google', { session: false }, (err, user, info) => {
+            // Handle OAuth or network failures gracefully (NO 500 crashes)
+            if (err || !user) {
+                console.error('[Google OAuth] Authentication error:', err || info);
+                const errorMsg = err?.message || 'Google authentication failed. Please try again.';
+                const redirectTarget = `${defaultFailureRedirect}${defaultFailureRedirect.includes('?') ? '&' : '?'}error=${encodeURIComponent(errorMsg)}`;
+                return res.redirect(redirectTarget);
+            }
+
+            // Strict Role Conflict Enforcement
+            if (user.role !== 'admin' && requestedRole && user.role !== requestedRole) {
+                console.warn(`[Google OAuth] Role mismatch: User DB role is "${user.role}", but attempted login from "${requestedRole}" portal.`);
+                const errorMsg = `This account is registered as a ${user.role}. Please sign in via the ${getPortalName(user.role)}.`;
+                const redirectTarget = `${defaultFailureRedirect}${defaultFailureRedirect.includes('?') ? '&' : '?'}error=${encodeURIComponent(errorMsg)}&registeredRole=${user.role}`;
+                return res.redirect(redirectTarget);
+            }
+
+            // Issue token (admins can log into any portal)
+            let roleForToken = user.role;
+            if (user.role === 'admin' && requestedRole && ALLOWED_ROLES.includes(requestedRole)) {
+                roleForToken = requestedRole;
+            }
+
+            const token = jwt.sign(
+                { id: user._id, role: roleForToken },
+                process.env.JWT_SECRET,
+                { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+            );
+
+            return res.redirect(`${frontendUrl}/login-success#token=${encodeURIComponent(token)}`);
+        })(req, res, next);
     }
 );
 
