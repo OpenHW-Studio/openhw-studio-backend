@@ -2,8 +2,10 @@ import argon2 from "argon2";
 import bcrypt from "bcryptjs";
 import crypto from "crypto";
 import User from "../models/User.js";
+import BlockedEmail from "../models/BlockedEmail.js";
 import sendEmail from "../utils/sendEmail.js";
-import generateToken from "../utils/helper/token.js"
+import { buildWelcomeOnboardingEmail } from "../utils/userEmailTemplates.js";
+import generateToken from "../utils/helper/token.js";
 
 
 const normalizeEmail = (rawEmail = "") => rawEmail.trim().toLowerCase();
@@ -58,6 +60,29 @@ const signinUser = async (req, res) => {
 
     if (!user) {
       return res.status(400).json({ message: "User not found" });
+    }
+
+    // ── Block Guard ──────────────────────────────────────────────────────
+    const isBlocked = user.isBlocked || user.status === 'blocked' || await BlockedEmail.findOne({ email: sanitizedEmail });
+    if (isBlocked) {
+      return res.status(403).json({
+        message: "This account has been blocked by an administrator. Please contact support if you believe this is an error."
+      });
+    }
+
+    // ── Suspension Guard ─────────────────────────────────────────────────
+    if (user.status === 'suspended') {
+      if (user.suspendedUntil && new Date(user.suspendedUntil) > new Date()) {
+        const resumeStr = new Date(user.suspendedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return res.status(403).json({
+          message: `Your account is temporarily suspended until ${resumeStr}. Reason: ${user.suspensionReason || 'Administrative review'}`
+        });
+      } else {
+        user.status = 'active';
+        user.suspendedUntil = null;
+        user.suspensionReason = '';
+        await user.save();
+      }
     }
 
     // ── 1-email-1-role strict enforcement ────────────────────────────────
@@ -159,6 +184,13 @@ const signupUser = async (req, res) => {
       return res.status(500).json({ error: "Server configuration error." });
     }
 
+    const isBlocked = await BlockedEmail.findOne({ email: sanitizedEmail });
+    if (isBlocked) {
+      return res.status(403).json({
+        error: "This email address has been blocked from registering on this platform. Please contact support if you believe this is an error."
+      });
+    }
+
     const existingUser = await User.findOne({ email: sanitizedEmail });
     if (existingUser) {
       return res
@@ -183,6 +215,22 @@ const signupUser = async (req, res) => {
       bio: isNonEmptyString(bio) ? bio.trim() : undefined,
       image: isNonEmptyString(image) ? image.trim() : undefined,
     });
+
+    // Send onboarding welcome email in background
+    try {
+      const emailContent = buildWelcomeOnboardingEmail(user.name || 'there');
+      sendEmail({
+        email: user.email,
+        subject: emailContent.subject,
+        message: emailContent.message,
+        html: emailContent.html,
+      }).catch((emailErr) => {
+        console.error('[signupUser:WelcomeEmail] Failed to send welcome email:', emailErr.message);
+      });
+    } catch (err) {
+      console.error('[signupUser:WelcomeEmail] Template build error:', err.message);
+    }
+
     const token = generateToken(user, selectedRole);
     res.cookie("jwt", token, {
       httpOnly: true,
@@ -337,11 +385,21 @@ const googleLogin = async (req, res) => {
 
     const payload = await googleRes.json();
     const { email, name, picture } = payload;
+    const cleanGoogleEmail = (email || '').trim().toLowerCase();
+
+    // Check if email is blocked on the platform
+    const isGoogleEmailBlocked = await BlockedEmail.findOne({ email: cleanGoogleEmail });
 
     // Check if user exists
-    let user = await User.findOne({ email });
+    let user = await User.findOne({ email: cleanGoogleEmail });
 
     if (!user) {
+      if (isGoogleEmailBlocked) {
+        return res.status(403).json({
+          message: "This email address has been blocked from registering on this platform. Please contact support if you believe this is an error."
+        });
+      }
+
       // If user doesn't exist, create them
       const allowedRoles = ["student", "teacher", "user", "admin"];
       let selectedRole = allowedRoles.includes(role) ? role : "user";
@@ -359,7 +417,42 @@ const googleLogin = async (req, res) => {
         password: crypto.randomBytes(32).toString("hex"), // Secure dummy password — Google users authenticate via OAuth
         // Optional: save picture if your schema supports it
       });
+
+      // Send onboarding welcome email for first-time Google signin
+      try {
+        const emailContent = buildWelcomeOnboardingEmail(user.name || 'there');
+        sendEmail({
+          email: user.email,
+          subject: emailContent.subject,
+          message: emailContent.message,
+          html: emailContent.html,
+        }).catch((emailErr) => {
+          console.error('[googleLogin:WelcomeEmail] Failed to send welcome email:', emailErr.message);
+        });
+      } catch (err) {
+        console.error('[googleLogin:WelcomeEmail] Template build error:', err.message);
+      }
     } else {
+      if (user.isBlocked || user.status === 'blocked' || isGoogleEmailBlocked) {
+        return res.status(403).json({
+          message: "This account has been blocked by an administrator. Please contact support if you believe this is an error."
+        });
+      }
+
+      // Suspension Guard
+      if (user.status === 'suspended') {
+        if (user.suspendedUntil && new Date(user.suspendedUntil) > new Date()) {
+          const resumeStr = new Date(user.suspendedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+          return res.status(403).json({
+            message: `Your account is temporarily suspended until ${resumeStr}. Reason: ${user.suspensionReason || 'Administrative review'}`
+          });
+        } else {
+          user.status = 'active';
+          user.suspendedUntil = null;
+          user.suspensionReason = '';
+          await user.save();
+        }
+      }
       // Auto-upgrade existing user to admin if email is in VITE_ADMIN_EMAILS
       const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
       if (adminEmails.includes(user.email.toLowerCase()) && user.role !== "admin") {

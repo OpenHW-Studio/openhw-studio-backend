@@ -42,6 +42,31 @@ export const protectRoute = async (req, res, next) => {
       user.role = decoded.role;
     }
 
+    // ── Block Guard ──────────────────────────────────────────────────────
+    if (user.isBlocked || user.status === 'blocked') {
+      return res.status(403).json({
+        status: 'blocked',
+        message: 'This account has been blocked by an administrator. Please contact support.',
+      });
+    }
+
+    // ── Suspension Guard ─────────────────────────────────────────────────
+    if (user.status === 'suspended') {
+      if (user.suspendedUntil && new Date(user.suspendedUntil) > new Date()) {
+        const resumeStr = new Date(user.suspendedUntil).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return res.status(403).json({
+          status: 'suspended',
+          suspendedUntil: user.suspendedUntil,
+          message: `Your account is temporarily suspended until ${resumeStr}. Reason: ${user.suspensionReason || 'Administrative review'}`,
+        });
+      } else {
+        user.status = 'active';
+        user.suspendedUntil = null;
+        user.suspensionReason = '';
+        await user.save();
+      }
+    }
+
     // ── Soft-deletion guard ────────────────────────────────────────────────
     // Allow /auth/me, /logout, and cancel-deletion routes through so the user can retrieve their profile,
     // view the Reactivation page, reactivate their account, or log out. Block other operational routes.

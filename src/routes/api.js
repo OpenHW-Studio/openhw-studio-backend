@@ -16,6 +16,17 @@ import bugReportRouter from './bugReportRoutes.js'
 import { requireAdmin } from '../middleware/authorization.js';
 import { createSharedSimulation, getSharedSimulation } from '../controllers/sharedSimulationController.js';
 import { createLiveSimulation, getLiveSimulation } from '../controllers/liveSimulationController.js';
+import {
+  getUsers,
+  getUserById,
+  updateUserRole,
+  suspendUser,
+  unsuspendUser,
+  blockUser,
+  unblockUser,
+  getBlockedEmails,
+  deleteUserPermanently,
+} from '../controllers/adminUserController.js';
 
 // Library Management
 router.get('/admin/lib-config', protectRoute, requireAdmin, getLibrariesConfig);
@@ -82,6 +93,17 @@ router.post('/deploy/notify', notifyChange); // Webhook endpoint (no auth requir
 router.get('/admin/deployments/notifications', protectRoute, requireAdmin, getNotifications);
 router.delete('/admin/deployments/notifications/:id', protectRoute, requireAdmin, dismissNotification);
 router.post('/admin/deployments/trigger', protectRoute, requireAdmin, triggerBuild);
+
+// User Management & Email Blocklist
+router.get('/admin/users', protectRoute, requireAdmin, getUsers);
+router.get('/admin/users/:id', protectRoute, requireAdmin, getUserById);
+router.patch('/admin/users/:id/role', protectRoute, requireAdmin, updateUserRole);
+router.patch('/admin/users/:id/suspend', protectRoute, requireAdmin, suspendUser);
+router.patch('/admin/users/:id/unsuspend', protectRoute, requireAdmin, unsuspendUser);
+router.post('/admin/users/:id/block', protectRoute, requireAdmin, blockUser);
+router.post('/admin/users/unblock', protectRoute, requireAdmin, unblockUser);
+router.get('/admin/blocked-emails', protectRoute, requireAdmin, getBlockedEmails);
+router.delete('/admin/users/:id', protectRoute, requireAdmin, deleteUserPermanently);
 
 router.post('/simulations/share', protectRoute, createSharedSimulation);
 router.get('/simulations/share/:shareId', getSharedSimulation);
