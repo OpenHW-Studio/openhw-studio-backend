@@ -433,17 +433,46 @@ import SystemTelemetry from '../models/SystemTelemetry.js';
 import VisitorPing from '../models/VisitorPing.js';
 
 /**
- * Fetches global usage analytics and comprehensive visitor metrics for the admin dashboard
+ * Builds global usage analytics and comprehensive visitor metrics.
+ * Shared by the admin dashboard (full stats incl. visitorList/regions)
+ * and the public /analytics page (sanitized subset — see getPublicAnalytics).
  */
-export const getUsageAnalytics = async (req, res) => {
-    try {
-        const totalSimulations = await Project.countDocuments();
-        
+const buildUsageAnalyticsStats = async () => {
+        // Month retention: every "month/last-30-days" window below is a true
+        // 30-day window backed by a 30-day series. Series lengths:
+        //  - visitorTimeline / registration timeline: 30 days (was 14)
+        //  - compilationHistory: last 30 days of SystemTelemetry docs (was 7)
+        //  - simulationsTimeline: last 30 days of Project.createdAt (new)
+        // VisitorPing TTL is 90 days, User/Project docs are permanent, so no
+        // retention change was needed to serve a true 30-day Month.
+        const RANGE_DAYS = 30;
         const now = Date.now();
         const fifteenMinAgo = new Date(now - 15 * 60 * 1000);
         const twentyFourHoursAgo = new Date(now - 24 * 60 * 60 * 1000);
         const sevenDaysAgo = new Date(now - 7 * 24 * 60 * 60 * 1000);
         const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
+        const [totalSimulations, simulationsTimelineRaw] = await Promise.all([
+            Project.countDocuments(),
+            Project.aggregate([
+                {
+                    $group: {
+                        _id: { $dateToString: { format: "%Y-%m-%d", date: "$createdAt" } },
+                        count: { $sum: 1 }
+                    }
+                },
+                { $sort: { _id: 1 } }
+            ])
+        ]);
+
+        const simulationsByDay = new Map(
+            (simulationsTimelineRaw || []).map((r) => [r._id, r.count])
+        );
+        const simulationsTimeline = [];
+        for (let i = RANGE_DAYS - 1; i >= 0; i--) {
+            const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+            simulationsTimeline.push({ date: d, count: simulationsByDay.get(d) || 0 });
+        }
 
         // Fetch counts across different timeframes
         const [
@@ -471,10 +500,10 @@ export const getUsageAnalytics = async (req, res) => {
             count: b.count
         }));
 
-        // Fetch last 7 days of compilation telemetry
-        const sevenDaysDateStr = new Date(sevenDaysAgo).toISOString().split('T')[0];
+        // Fetch last 30 days of compilation telemetry (true Month window)
+        const thirtyDaysDateStr = new Date(thirtyDaysAgo).toISOString().split('T')[0];
         const rawTelemetry = await SystemTelemetry.find({
-            date: { $gte: sevenDaysDateStr }
+            date: { $gte: thirtyDaysDateStr }
         }).sort({ date: 1 }).lean();
 
         let totalSuccess = 0;
@@ -586,9 +615,11 @@ export const getUsageAnalytics = async (req, res) => {
             .sort((a, b) => b.count - a.count)
             .slice(0, 10);
 
-        // Compute 14-day visitor & pageview timeline
+        // Compute 30-day visitor & pageview timeline (true Month window).
+        // Frontend slices the tail for Today (1) / Week (7); Month/All time
+        // show the full 30-day series.
         const timelineMap = {};
-        for (let i = 13; i >= 0; i--) {
+        for (let i = RANGE_DAYS - 1; i >= 0; i--) {
             const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
             timelineMap[d] = { date: d, visitors: 0, hits: 0 };
         }
@@ -641,7 +672,7 @@ export const getUsageAnalytics = async (req, res) => {
             User.aggregate([{ $match: { createdAt: { $gte: sevenDaysAgo } } }, { $group: { _id: "$role", count: { $sum: 1 } } }]),
             User.aggregate([{ $match: { createdAt: { $gte: thirtyDaysAgo } } }, { $group: { _id: "$role", count: { $sum: 1 } } }]),
             User.aggregate([
-                { $match: { createdAt: { $gte: new Date(now - 14 * 24 * 60 * 60 * 1000) } } },
+                { $match: { createdAt: { $gte: new Date(now - RANGE_DAYS * 24 * 60 * 60 * 1000) } } },
                 {
                     $group: {
                         _id: {
@@ -675,9 +706,9 @@ export const getUsageAnalytics = async (req, res) => {
             month: formatRoleCounts(monthUsersByRole),
         };
 
-        // Format 14-day registration timeline
+        // Format 30-day registration timeline (true Month window)
         const regTimelineMap = {};
-        for (let i = 13; i >= 0; i--) {
+        for (let i = RANGE_DAYS - 1; i >= 0; i--) {
             const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
             regTimelineMap[d] = { date: d, student: 0, teacher: 0, user: 0, total: 0 };
         }
@@ -697,10 +728,9 @@ export const getUsageAnalytics = async (req, res) => {
 
         registeredUsers.timeline = Object.values(regTimelineMap);
 
-        res.json({
-            success: true,
-            stats: {
+        return {
                 totalSimulations,
+                simulationsTimeline,
                 activeSessions,
                 todayVisitors,
                 weekVisitors,
@@ -711,6 +741,7 @@ export const getUsageAnalytics = async (req, res) => {
                 peakConcurrency: activeSessions,
                 topLibraries: topLibraries.length > 0 ? topLibraries : [],
                 compilationHistory,
+                rangeDays: RANGE_DAYS,
                 regions,
                 visitorList,
                 topCountries,
@@ -719,10 +750,44 @@ export const getUsageAnalytics = async (req, res) => {
                 deviceStats,
                 browserStats,
                 registeredUsers
-            }
-        });
+            };
+};
+
+/**
+ * Fetches global usage analytics and comprehensive visitor metrics for the admin dashboard
+ */
+export const getUsageAnalytics = async (req, res) => {
+    try {
+        const stats = await buildUsageAnalyticsStats();
+        res.json({ success: true, stats });
     } catch (error) {
         console.error('Analytics Error:', error);
+        res.status(500).json({ error: 'Failed to fetch analytics' });
+    }
+};
+
+/**
+ * Public analytics snapshot for the standalone /analytics page.
+ * Same aggregates as the admin endpoint, but strips everything that must
+ * never be exposed publicly:
+ *  - visitorList (raw IPs, sessionIds, userAgents, exact coords, first/last seen)
+ *  - regions (lat/lng + IP sets per cluster)
+ *  - browserStats (raw userAgent fingerprinting)
+ * Kept: counts, country/city aggregates, timelines, deviceStats,
+ * compilationHistory, simulationsTimeline, rangeDays, topLibraries,
+ * registeredUsers.
+ */
+export const getPublicAnalytics = async (req, res) => {
+    try {
+        const stats = await buildUsageAnalyticsStats();
+        const {
+            // eslint-disable-next-line no-unused-vars
+            visitorList, regions, browserStats,
+            ...publicStats
+        } = stats;
+        res.json({ success: true, stats: publicStats });
+    } catch (error) {
+        console.error('Public Analytics Error:', error);
         res.status(500).json({ error: 'Failed to fetch analytics' });
     }
 };

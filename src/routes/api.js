@@ -55,11 +55,13 @@ router.get('/components/public-installed', backupInstalledComponents);
 
 
 import { getPendingDeployments, approveDeployment, rejectDeployment, rollbackDeployment, notifyChange, getNotifications, triggerBuild, getWorkflowLogs, dismissNotification } from '../controllers/deploymentController.js';
-import { getInfrastructureStatus, getSystemLogs, streamSystemLogs, restartService, getUsageAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus, getResourceStatus, recalibrate, getCalibrationScripts, updateCalibrationScripts, getHostStatus } from '../controllers/adminController.js';
+import { getInfrastructureStatus, getSystemLogs, streamSystemLogs, restartService, getUsageAnalytics, getPublicAnalytics, getAuditHistory, getPublicSystemStatus, toggleMaintenanceMode, getMaintenanceStatus, getResourceStatus, recalibrate, getCalibrationScripts, updateCalibrationScripts, getHostStatus } from '../controllers/adminController.js';
 import { handleVisitorPingExpress } from '../services/telemetryService.js';
 
 // Public Telemetry
 router.post('/public/ping', handleVisitorPingExpress);
+// Sanitized aggregate analytics for the public /analytics page (no auth, no IPs/coords/sessions)
+router.get('/public/analytics', getPublicAnalytics);
 import {
   getAdminGlobalAdventureConfig,
   upsertAdminGlobalAdventureConfig,
