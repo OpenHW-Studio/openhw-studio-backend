@@ -11,12 +11,8 @@ import session from 'express-session';
 import passport from './config/passport.js';
 import authRoutes from './routes/auth.js';
 import { registerLiveSimulationWebSocket } from './services/liveSimulationService.js';
-import { initESP32Module } from './esp32/index.js';
-import { initSTM32Module } from './stm32/index.js';
-import { syncPermanentLibraries } from './services/dynamicLibraryManager.js';
-import { initPools, shutdown as shutdownHotPool } from './services/hotPoolManager.js';
-import { initLibraryIndexService } from './services/libraryIndexService.js';
-import { reloadBudget } from './services/resourceManager.js';
+import { initCompilerBoot } from './compiler/libraryBoot.js';
+import { initCompilerModule, isCompilerRole, isMainRole } from './compiler/index.js';
 import { startAccountPurgeWorker } from './workers/accountPurgeWorker.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -42,58 +38,28 @@ const resolveConfiguredPath = (rawPath, fallbackCandidates = []) => {
 };
 
 const PORT = process.env.PORT || 5001;
-const role = process.env.ROLE || 'all-in-one';
+const ROLE = process.env.ROLE || 'single';
 console.log(`
 =============================================================
-  OPENHW STUDIO BACKEND - ROLE: ${role.toUpperCase()}
+  OPENHW STUDIO BACKEND - ROLE: ${ROLE.toUpperCase()}
   Port: ${PORT}
 =============================================================
 `);
 
-// Ensure required directories and files exist
-const tempDir = path.join(__dirname, '../temp');
-const dataDir = path.join(__dirname, '../data/components');
-const indexFile = path.join(dataDir, 'index.ts');
-
-[tempDir, dataDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log(`Created directory: ${dir}`);
-  }
-});
-
-// --- Boot Synchronization for Shared Library Pool ---
-const officialLibsVolume = path.join(__dirname, '../data/libraries/permanent');
-const cacheLibsVolume = path.join(__dirname, '../data/libraries/cache');
-
-[officialLibsVolume, cacheLibsVolume].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
-
-// Initialize Library Index Service (loads / updates library_index.json)
-initLibraryIndexService();
-
-// Synchronize libraries listed in data/libraries.json
-console.log('Boot Sync: Checking permanent libraries pool...');
-await syncPermanentLibraries();
-
-if (!fs.existsSync(indexFile)) {
-  fs.writeFileSync(indexFile, '\n');
-  console.log(`Initialized: ${indexFile}`);
-}
+// Library pool + compile cache boot — owned by the compiler process
+// (ROLE=compiler, or single-service local dev). ROLE=main skips it.
+await initCompilerBoot();
 
 let isDbConnected = false;
-if (!process.env.ROLE || process.env.ROLE === 'main') {
+if (isCompilerRole()) {
+  console.log("ℹ️ Compiler role: MongoDB database connection bypassed.");
+} else {
   console.log("Attempting to connect to MongoDB...");
   isDbConnected = await connectDB();
 
   if (!isDbConnected) {
     console.warn("⚠️  Running in DEGRADED MODE: Database-backed features (Auth, Profiles) will be unavailable.");
   }
-} else {
-  console.log("ℹ️ Worker role: MongoDB database connection bypassed.");
 }
 
 const app = express();
@@ -188,39 +154,68 @@ const createInMemoryRateLimiter = ({ windowMs, limit, keyResolver }) => {
   };
 };
 
+// Rate limits (env-configurable for Docker deploys):
+// COMPILE_RATE_LIMIT_PER_MIN — per-IP cap on POST /api/compile[/diagnostics]
+//   (default 20/min: humans click Run rarely, bots hammer it).
+// AUTH_RATE_LIMIT_PER_MIN — per-IP cap on auth POSTs (signin/signup/OTP/
+//   password-reset, default 10/min) to slow credential stuffing + OTP spam.
+// General traffic keeps the old 300/min (600 for /admin polling).
+const COMPILE_RATE_LIMIT = Math.max(1, Number(process.env.COMPILE_RATE_LIMIT_PER_MIN || 20));
+const AUTH_RATE_LIMIT = Math.max(1, Number(process.env.AUTH_RATE_LIMIT_PER_MIN || 10));
+const AUTH_POST_PATHS = new Set([
+  '/api/user/signin', '/api/user/signup', '/api/user/send-otp',
+  '/api/user/verify-otp', '/api/user/google', '/api/user/forgot-password',
+  '/api/user/forgot-password/init', '/api/user/forgot-password/verify',
+  '/auth/google', '/auth/google/signup',
+]);
 app.use(createInMemoryRateLimiter({
   windowMs: 60 * 1000,
   limit: (req) => {
     const p = req.path || req.originalUrl || '';
-    return p.includes('/admin') ? 600 : 300;
+    if (p.includes('/admin')) return 600;
+    if (req.method === 'POST' && (p === '/api/compile' || p.endsWith('/compile') || p.endsWith('/compile/diagnostics'))) {
+      return COMPILE_RATE_LIMIT;
+    }
+    if (req.method === 'POST') {
+      const full = p.startsWith('/api') || p.startsWith('/auth') ? p : (req.originalUrl || p);
+      for (const prefix of AUTH_POST_PATHS) {
+        if (full === prefix || full.startsWith(`${prefix}/`) || full.startsWith(`${prefix}?`)) return AUTH_RATE_LIMIT;
+      }
+    }
+    return 300;
   },
   keyResolver: (req) => `${req.ip}:${req.path}`,
 }));
-app.use(express.json({ limit: '25mb' }));
-app.use(express.urlencoded({ extended: true, limit: '25mb' }));
+// Body cap: auth/compile JSON never legitimately exceeds ~1 MB
+// (firmware comes back OUT, source goes IN capped at 512 KB by
+// checkCompileInputSize). Classroom file uploads ride on multipart with
+// their own multer limits, so a 1 MB JSON cap breaks nothing.
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
-app.get('/health', (req, res) => res.json({ status: 'ok' }));
+app.get('/health', (req, res) => res.json({ status: 'ok', role: ROLE }));
 
-app.use('/api', apiRoutes);
-app.use('/auth', authRoutes);
+if (isCompilerRole()) {
+  // Compiler-worker: ONLY compile execution paths. No auth routes, no DB
+  // routes, no static assets — the main backend owns everything else.
+  initCompilerModule(app);
+} else {
+  app.use('/api', apiRoutes);
+  app.use('/auth', authRoutes);
+}
 
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.status(200).json({ status: 'ok', role: ROLE, timestamp: new Date().toISOString() });
 });
 
-app.get('/api/network-gateway/pcap', (req, res) => {
-  const clientId = req.query.clientId;
-  if (!clientId) {
-    return res.status(400).send('Missing clientId query parameter.');
-  }
-
-  const pcapPath = path.resolve(backendRoot, `data/qemu_${clientId}.pcap`);
-  if (fs.existsSync(pcapPath)) {
-    res.download(pcapPath, `qemu_${clientId}.pcap`);
-  } else {
-    res.status(404).send('No network traffic captured for this session yet.');
-  }
-});
+// Compiler-worker serves nothing below: no examples, avatars, or uploads.
+if (isCompilerRole()) {
+  // PORT is defined at startup
+  const server = http.createServer(app);
+  server.listen(PORT, () => {
+    console.log(`OpenHW Studio Compiler Worker running on port ${PORT}`);
+  });
+} else {
 
 // Serve demo/guide files from openhw-studio-examples repo.
 //
@@ -276,38 +271,12 @@ app.use('/api/assets/classroom', express.static(classroomAssetsDir));
 // PORT is defined at startup
 const server = http.createServer(app);
 await registerLiveSimulationWebSocket(server);
-initESP32Module(server);
-initSTM32Module(server);
 
 server.listen(PORT, async () => {
   console.log(`OpenHW Studio Backend running on port ${PORT}`);
 
-  const budgetFile = path.resolve(backendRoot, 'data/calibrated_budget.json');
-  if (!fs.existsSync(budgetFile)) {
-    console.log('[Boot] Calibrated budget file missing. Triggering calibration via Health Agent...');
-    try {
-      fetch('http://openhw-health-agent:8080/api/calibrate', { method: 'POST' })
-        .then(() => console.log('[Boot] Calibration triggered successfully.'))
-        .catch(err => console.error('[Boot] Failed to trigger calibration:', err.message));
-    } catch (err) {
-      console.error('[Boot] Calibration fetch failed:', err);
-    }
-  }
-
-  // Hot Pool: pre-warm one idle QEMU (ESP32) and one Renode (STM32) VM.
-  // Set HOT_POOL_ENABLED=false in .env to disable (e.g. very low-RAM machines).
-  const hotPoolEnabled = (process.env.HOT_POOL_ENABLED ?? 'true') !== 'false';
-  if (hotPoolEnabled) {
-    initPools().catch(err => console.error('[HotPool] Init error (server unaffected):', err.message));
-  } else {
-    console.log('[HotPool] Disabled via HOT_POOL_ENABLED=false');
-  }
-
   // Account purge worker — runs daily to permanently wipe expired accounts
   startAccountPurgeWorker();
 });
-
-// Graceful shutdown — kill idle pool VMs cleanly
-process.on('SIGTERM', () => { shutdownHotPool(); process.exit(0); });
-process.on('SIGINT',  () => { shutdownHotPool(); process.exit(0); });
+} // end non-compiler boot
 // Nodemon trigger change for --port 0 fix

@@ -4,7 +4,6 @@
   "ignore": [
     "src/config/libraries.json",
     "**/libraries.json",
-    "builds/**",
     "temp/**",
     ".env",
     "*.log"

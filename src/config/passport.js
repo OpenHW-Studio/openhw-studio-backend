@@ -2,7 +2,9 @@ import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import User from '../models/User.js';
 
-const googleClientId = process.env.VITE_GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+// Server-canonical env first; VITE_ fallback kept only for legacy deploys
+// that exported the public client ID under the Vite name.
+const googleClientId = process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
 if (googleClientId && googleClientSecret &&
@@ -35,8 +37,8 @@ if (googleClientId && googleClientSecret &&
                             await user.save();
                         }
                         
-                        // Auto-upgrade existing user to admin if email is in VITE_ADMIN_EMAILS
-                        const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+                        // Auto-upgrade existing user to admin if email is in ADMIN_EMAILS
+                        const adminEmails = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
                         if (adminEmails.includes(email.toLowerCase()) && user.role !== 'admin') {
                             user.role = 'admin';
                             await user.save();
@@ -51,8 +53,8 @@ if (googleClientId && googleClientSecret &&
                     const allowedRoles = ['student', 'teacher', 'user'];
                     let role = allowedRoles.includes(state.role) ? state.role : 'user';
 
-                    // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
-                    const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+                    // Auto-grant admin role if email is in ADMIN_EMAILS
+                    const adminEmails = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
                     if (adminEmails.includes(email.toLowerCase())) {
                         role = 'admin';
                     }

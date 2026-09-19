@@ -1,0 +1,68 @@
+# OpenHW Studio — Compiler Worker image
+# Owns arduino-cli + AVR/RP2040 cores, Pico SDK, the library pool
+# (data/libraries), the compile result cache, and build workspaces.
+# No MongoDB client work happens here; ROLE=compiler bypasses the DB.
+FROM node:20
+
+# Toolchains: AVR + ARM GCC, Pico SDK build deps, ccache.
+RUN apt-get update && apt-get install -y \
+    curl \
+    python3 \
+    wget \
+    xz-utils \
+    git \
+    make \
+    cmake \
+    gcc-arm-none-eabi \
+    libnewlib-arm-none-eabi \
+    build-essential \
+    ca-certificates \
+    gnupg \
+    ccache \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install arduino-cli
+RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+ENV PATH=$PATH:/root/bin
+
+# Initialize arduino-cli and install AVR + RP2040/Pico cores.
+# To add a board family later: install its core here AND register the
+# fqbn matcher in src/compiler/boardRegistry.js — nothing else changes.
+RUN arduino-cli config init && \
+    arduino-cli config set board_manager.additional_urls https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json && \
+    arduino-cli core update-index && \
+    arduino-cli core install arduino:avr && \
+    arduino-cli core install rp2040:rp2040 && \
+    mkdir -p /tmp/dummy_rp2040/dummy_rp2040 && \
+    echo 'void setup(){} void loop(){}' > /tmp/dummy_rp2040/dummy_rp2040/dummy_rp2040.ino && \
+    arduino-cli compile --fqbn rp2040:rp2040:rpipico /tmp/dummy_rp2040/dummy_rp2040 || true && \
+    rm -rf /tmp/dummy_rp2040 && \
+    rm -rf /root/.arduino15/staging/*
+
+# Install Raspberry Pi Pico SDK (pico-sdk builder path)
+ENV PICO_SDK_PATH=/opt/pico-sdk
+RUN git clone --depth 1 -b master https://github.com/raspberrypi/pico-sdk.git $PICO_SDK_PATH && \
+    cd $PICO_SDK_PATH && \
+    git submodule update --init --depth 1
+
+# ccache stores compiled objects on the persistent data volume
+ENV CCACHE_DIR=/app/data/ccache
+ENV CCACHE_MAXSIZE=2G
+
+WORKDIR /app
+
+COPY openhw-studio-backend/package*.json ./
+
+RUN npm install --omit=dev
+
+COPY openhw-studio-backend/ .
+
+# Ensure temp and data directories exist
+RUN mkdir -p temp data/components data/libraries/permanent data/libraries/cache
+
+EXPOSE 5001
+
+ENV PORT=5001
+ENV ROLE=compiler
+
+CMD ["npm", "start"]

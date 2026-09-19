@@ -24,23 +24,7 @@
         "OneWire"
     ],
     "cached": [
-        "Adafruit IntelliKeys",
-        "Adafruit Keypad",
-        "Adafruit LiquidCrystal",
-        "Adafruit MCP23017 Arduino Library",
-        "Adafruit PCD8544 Nokia 5110 LCD library",
-        "Adafruit SH110X",
-        "Adafruit SPIFlash",
-        "Adafruit STMPE610",
-        "Adafruit TCA8418",
-        "Adafruit TSC2007",
-        "Adafruit TinyUSB Library",
-        "Adafruit TouchScreen",
-        "AnalogKey",
-        "IRremote",
         "Keypad",
-        "MIDI Library",
-        "SdFat - Adafruit Fork",
-        "SevSeg"
+        "Servo@1.1.8"
     ]
 }

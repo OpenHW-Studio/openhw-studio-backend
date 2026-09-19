@@ -7,14 +7,13 @@
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
+import { getDataRoot } from '../compiler/paths.js';
 
-const BUDGET_FILE = path.join('/app/data', 'calibrated_budget.json');
+const BUDGET_FILE = path.join(getDataRoot(), 'calibrated_budget.json');
 
 const DEFAULT_BUDGET = {
     uno_compile: 150, uno_sim: 50,
-    pico_compile: 300, pico_sim: 100,
-    esp32_compile: 800, esp32_sim: 250,
-    stm32_compile: 400, stm32_sim: 150
+    pico_compile: 300, pico_sim: 100
 };
 
 export function loadCalibratedBudget() {
@@ -26,14 +25,23 @@ export function loadCalibratedBudget() {
     return DEFAULT_BUDGET;
 }
 
-// Calculate global points pool (Total memory minus 2000MB system reserve)
-const SYSTEM_RESERVE_MB = 2000;
-const TOTAL_PHYSICAL_MB = Math.round(os.totalmem() / (1024 * 1024));
-export const GLOBAL_POOL_LIMIT = Math.max(1000, TOTAL_PHYSICAL_MB - SYSTEM_RESERVE_MB);
+// Pool size: this process's own share of the box, NOT host RAM.
+// On a 4 CPU / 16 GB host the compiler-worker container gets 8 GB, so the
+// pool is (8 GB − reserve). Overridable via COMPILE_POOL_MB for testing or
+// differently-sized workers. The old code read host RAM (os.totalmem),
+// which over-admits compiles when the container limit is much smaller.
+const WORKER_MEM_MB = Math.max(
+    512,
+    Number(process.env.COMPILE_POOL_MB || 8192),
+);
+const COMPILER_RESERVE_MB = Math.max(
+    0,
+    Number(process.env.COMPILE_RESERVE_MB || 1024),
+);
+export const GLOBAL_POOL_LIMIT = Math.max(500, WORKER_MEM_MB - COMPILER_RESERVE_MB);
 
 let activePoints = 0;
 const activeAllocations = new Map(); // key (id) -> { id, points, tag, timestamp }
-const waitingQueue = [];
 let budget = loadCalibratedBudget();
 
 /**
@@ -59,20 +67,23 @@ export function getStatus() {
         totalPoints: GLOBAL_POOL_LIMIT,
         activePoints,
         availablePoints: GLOBAL_POOL_LIMIT - activePoints,
-        waitingCount: waitingQueue.length,
+        waitingCount: 0, // no queue: full pool rejects immediately (see acquirePoints)
         budget,
         allocations: Array.from(activeAllocations.values())
     };
 }
 
 /**
- * Request points from the global pool.
+ * Request points from the pool.
+ * Policy (per user decision): NO waiting queue for compiles — if the pool
+ * can't fit the request right now, reject immediately so the caller gets
+ * HTTP 503 "compile server is full". This keeps fail-fast behavior under
+ * exam-spike load instead of piling up 3-minute timeouts.
  * Returns a Promise that resolves with an allocation ID.
  */
 export function acquirePoints(points, tag = 'unknown', timeoutMs = 180000) {
     return new Promise((resolve, reject) => {
         const id = Math.random().toString(36).substring(2, 9);
-        const request = { id, points, tag, resolve, reject, timeoutId: null };
 
         // Attempt immediate allocation
         if (activePoints + points <= GLOBAL_POOL_LIMIT) {
@@ -82,19 +93,12 @@ export function acquirePoints(points, tag = 'unknown', timeoutMs = 180000) {
             return resolve(id);
         }
 
-        // Enqueue if pool is full
-        console.log(`[ResourceManager] 🟡 Resource limit reached. Queuing request for ${points} points ("${tag}"). Pool: ${activePoints}/${GLOBAL_POOL_LIMIT}`);
-        
-        request.timeoutId = setTimeout(() => {
-            const idx = waitingQueue.findIndex(r => r.id === id);
-            if (idx !== -1) {
-                waitingQueue.splice(idx, 1);
-                console.log(`[ResourceManager] ⏰ Request for ${points} points ("${tag}") timed out in queue.`);
-                reject(new Error(`Timeout waiting for resource allocation (${points} points)`));
-            }
-        }, timeoutMs);
-
-        waitingQueue.push(request);
+        // Pool full → reject immediately (no queue).
+        const err = new Error('Compile server is full for now. Please try again in a moment.');
+        err.code = 'POOL_FULL';
+        err.retryAfterSec = 30;
+        console.log(`[ResourceManager] 🔴 Pool full (${activePoints}/${GLOBAL_POOL_LIMIT}), rejecting ${points} pts for "${tag}".`);
+        return reject(err);
     });
 }
 
@@ -121,18 +125,5 @@ export function releasePoints(allocationKey) {
         console.log(`[ResourceManager] Pool status after release: ${activePoints}/${GLOBAL_POOL_LIMIT}`);
     }
 
-    // Process waiting queue
-    while (waitingQueue.length > 0) {
-        const nextReq = waitingQueue[0];
-        if (activePoints + nextReq.points <= GLOBAL_POOL_LIMIT) {
-            waitingQueue.shift();
-            if (nextReq.timeoutId) clearTimeout(nextReq.timeoutId);
-            activePoints += nextReq.points;
-            activeAllocations.set(nextReq.id, { id: nextReq.id, points: nextReq.points, tag: nextReq.tag, timestamp: Date.now() });
-            console.log(`[ResourceManager] 🟢 Queued request allocated: ${nextReq.points} for tag "${nextReq.tag}". Pool: ${activePoints}/${GLOBAL_POOL_LIMIT}`);
-            nextReq.resolve(nextReq.id);
-        } else {
-            break; // FIFO: block queue if next request can't be satisfied
-        }
-    }
+    // No waiting queue (fail-fast policy) — nothing to drain here.
 }

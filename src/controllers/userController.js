@@ -51,15 +51,87 @@ const serializeUser = (user) => ({
   permanentDeleteAt: user.permanentDeleteAt || null,
 });
 
+// Sign-in brute-force guard (per email+IP, in-memory).
+// Survives nothing (restart clears it) by design — Mongo-backed lockout
+// already exists on the model (failed_attempts/account_locked_until) for
+// durable enforcement; this stops rapid-fire guessing between restarts.
+const signinAttempts = new Map(); // key -> { count, firstAt, lockedUntil }
+const SIGNIN_MAX_ATTEMPTS = Math.max(1, Number(process.env.SIGNIN_MAX_ATTEMPTS || 10));
+const SIGNIN_WINDOW_MS = Number(process.env.SIGNIN_WINDOW_MS || 15 * 60 * 1000);
+const SIGNIN_LOCK_MS = Number(process.env.SIGNIN_LOCK_MS || 15 * 60 * 1000);
+
+const signinThrottleKey = (email, ip) => `${email}::${ip}`;
+
+const checkSigninThrottle = (email, ip) => {
+  const key = signinThrottleKey(email, ip);
+  const now = Date.now();
+  const entry = signinAttempts.get(key);
+  if (!entry) return null;
+  if (entry.lockedUntil && now < entry.lockedUntil) {
+    return Math.ceil((entry.lockedUntil - now) / 1000);
+  }
+  if (now - entry.firstAt > SIGNIN_WINDOW_MS) {
+    signinAttempts.delete(key);
+    return null;
+  }
+  return null;
+};
+
+const recordSigninFailure = (email, ip) => {
+  const key = signinThrottleKey(email, ip);
+  const now = Date.now();
+  const entry = signinAttempts.get(key);
+  if (!entry || now - entry.firstAt > SIGNIN_WINDOW_MS) {
+    signinAttempts.set(key, { count: 1, firstAt: now, lockedUntil: 0 });
+    return;
+  }
+  entry.count += 1;
+  if (entry.count >= SIGNIN_MAX_ATTEMPTS) {
+    entry.lockedUntil = now + SIGNIN_LOCK_MS;
+  }
+};
+
+const clearSigninThrottle = (email, ip) => {
+  signinAttempts.delete(signinThrottleKey(email, ip));
+};
+
 const signinUser = async (req, res) => {
   try {
     const { email, password, role } = req.body;
     const sanitizedEmail = normalizeEmail(email || "");
+    const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+
+    // Generic message used for every credential failure so attackers can't
+    // distinguish "no such email" from "wrong password" (user enumeration).
+    const GENERIC_FAIL = { message: "Invalid email or password." };
+
+    // Throttle check runs before any DB/user lookup so locked-out
+    // email+IP pairs cost no hashing and leak no existence signal.
+    const lockedSecs = checkSigninThrottle(sanitizedEmail, clientIp);
+    if (lockedSecs) {
+      res.setHeader('Retry-After', String(lockedSecs));
+      return res.status(429).json({
+        message: `Too many sign-in attempts. Try again in ${Math.ceil(lockedSecs / 60)} minute(s).`,
+      });
+    }
 
     const user = await User.findOne({ email: sanitizedEmail });
 
+    // Durable per-account lockout (survives restarts via the User model).
+    if (user?.account_locked_until && new Date(user.account_locked_until) > new Date()) {
+      const secs = Math.ceil((new Date(user.account_locked_until) - Date.now()) / 1000);
+      res.setHeader('Retry-After', String(secs));
+      return res.status(429).json({
+        message: `Too many sign-in attempts. Try again in ${Math.ceil(secs / 60)} minute(s).`,
+      });
+    }
+
+    // Unknown email: run a dummy verify so response time matches the
+    // wrong-password path (timing side-channel), then fail generically.
     if (!user) {
-      return res.status(400).json({ message: "User not found" });
+      try { await verifyPassword(await argon2.hash("dummy-timing-filler"), password || "x"); } catch {}
+      recordSigninFailure(sanitizedEmail, clientIp);
+      return res.status(401).json(GENERIC_FAIL);
     }
 
     // ── Block Guard ──────────────────────────────────────────────────────
@@ -103,15 +175,35 @@ const signinUser = async (req, res) => {
     }
 
     if (!user.password) {
-      return res.status(400).json({
-        message: "This account was registered using Google. Please sign in with Continue with Google."
+      recordSigninFailure(sanitizedEmail, clientIp);
+      return res.status(401).json({
+        message: "This account uses Google sign-in. Please use Continue with Google.",
       });
     }
 
     const { ok: isMatch } = await verifyPassword(user.password, password);
     if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" });
+      recordSigninFailure(sanitizedEmail, clientIp);
+      // Durable lockout: escalate after repeated failures on this account.
+      try {
+        user.failed_attempts = (user.failed_attempts || 0) + 1;
+        if (user.failed_attempts >= SIGNIN_MAX_ATTEMPTS) {
+          user.account_locked_until = new Date(Date.now() + SIGNIN_LOCK_MS);
+          user.failed_attempts = 0;
+        }
+        await user.save();
+      } catch {}
+      return res.status(401).json(GENERIC_FAIL);
     }
+
+    clearSigninThrottle(sanitizedEmail, clientIp);
+    try {
+      if (user.failed_attempts || user.account_locked_until) {
+        user.failed_attempts = 0;
+        user.account_locked_until = null;
+        await user.save();
+      }
+    } catch {}
 
     // If admin is logging in as teacher/student/user, override the role in the JWT
     let roleForToken = user.role;
@@ -122,6 +214,7 @@ const signinUser = async (req, res) => {
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -235,6 +328,7 @@ const signupUser = async (req, res) => {
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -256,7 +350,7 @@ const signupUser = async (req, res) => {
 
 const logoutController = async (req, res) => {
   try {
-    res.clearCookie("jwt", { httpOnly: true, sameSite: "strict" });
+    res.clearCookie("jwt", { httpOnly: true, sameSite: "strict", secure: process.env.NODE_ENV === "production" });
     res.clearCookie("connect.sid");
     if (req.session && typeof req.session.destroy === "function") {
       req.session.destroy(() => {});
@@ -404,8 +498,8 @@ const googleLogin = async (req, res) => {
       const allowedRoles = ["student", "teacher", "user", "admin"];
       let selectedRole = allowedRoles.includes(role) ? role : "user";
 
-      // Auto-grant admin role if email is in VITE_ADMIN_EMAILS
-      const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+      // Auto-grant admin role if email is in ADMIN_EMAILS
+      const adminEmails = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
       if (adminEmails.includes(email.toLowerCase())) {
         selectedRole = "admin";
       }
@@ -453,8 +547,8 @@ const googleLogin = async (req, res) => {
           await user.save();
         }
       }
-      // Auto-upgrade existing user to admin if email is in VITE_ADMIN_EMAILS
-      const adminEmails = (process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
+      // Auto-upgrade existing user to admin if email is in ADMIN_EMAILS
+      const adminEmails = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || "").split(',').map(e => e.trim().toLowerCase());
       if (adminEmails.includes(user.email.toLowerCase()) && user.role !== "admin") {
         user.role = "admin";
         await user.save();
@@ -495,6 +589,7 @@ const googleLogin = async (req, res) => {
     res.cookie("jwt", token, {
       httpOnly: true,
       sameSite: "strict",
+      secure: process.env.NODE_ENV === "production",
       maxAge: 24 * 60 * 60 * 1000,
     });
 
@@ -517,13 +612,56 @@ const googleLogin = async (req, res) => {
   }
 };
 
+// Forgot-password request guard (per email+IP, in-memory).
+// Always returns success so callers can't probe which emails exist.
+const forgotAttempts = new Map(); // key -> { count, firstAt }
+const FORGOT_MAX = Math.max(1, Number(process.env.FORGOT_MAX_PER_HOUR || 5));
+const FORGOT_WINDOW_MS = 60 * 60 * 1000;
+
+const checkForgotThrottle = (email, ip) => {
+  const key = `${email}::${ip}`;
+  const now = Date.now();
+  const entry = forgotAttempts.get(key);
+  if (!entry) return false;
+  if (now - entry.firstAt > FORGOT_WINDOW_MS) {
+    forgotAttempts.delete(key);
+    return false;
+  }
+  return entry.count >= FORGOT_MAX;
+};
+
+const recordForgotAttempt = (email, ip) => {
+  const key = `${email}::${ip}`;
+  const now = Date.now();
+  const entry = forgotAttempts.get(key);
+  if (!entry || now - entry.firstAt > FORGOT_WINDOW_MS) {
+    forgotAttempts.set(key, { count: 1, firstAt: now });
+    return;
+  }
+  entry.count += 1;
+};
+
 const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email: normalizeEmail(email) });
+    const sanitized = normalizeEmail(email || "");
+    const clientIp = req.ip || req.socket?.remoteAddress || 'unknown';
+    // Neutral response: identical whether or not the email exists.
+    const NEUTRAL = { success: true, data: 'If an account exists for that email, a reset link has been sent.' };
+
+    if (!isValidEmailFormat(sanitized)) {
+      return res.status(200).json(NEUTRAL);
+    }
+    if (checkForgotThrottle(sanitized, clientIp)) {
+      res.setHeader('Retry-After', '3600');
+      return res.status(429).json({ message: "Too many reset requests. Try again later." });
+    }
+    recordForgotAttempt(sanitized, clientIp);
+
+    const user = await User.findOne({ email: sanitized });
 
     if (!user) {
-      return res.status(404).json({ message: "User not found" });
+      return res.status(200).json(NEUTRAL);
     }
 
     // Create reset token
@@ -551,7 +689,7 @@ const forgotPassword = async (req, res) => {
         message,
       });
 
-      res.status(200).json({ success: true, data: 'Email sent' });
+      res.status(200).json({ success: true, data: 'If an account exists for that email, a reset link has been sent.' });
     } catch (err) {
       console.error(err);
       user.resetPasswordToken = undefined;

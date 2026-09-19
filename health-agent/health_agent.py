@@ -230,8 +230,6 @@ BUDGET_FILE = "/app/data/calibrated_budget.json"
 
 DEFAULT_SCRIPTS = {
     "uno": "#include <Wire.h>\n#include <SPI.h>\n#include <Servo.h>\n#include <LiquidCrystal.h>\n#include <SoftwareSerial.h>\nLiquidCrystal lcd(12, 11, 5, 4, 3, 2);\nServo myservo;\nvoid setup() {\n  Serial.begin(9600);\n  lcd.begin(16, 2);\n  lcd.print(\"Calibration\");\n  myservo.attach(9);\n}\nvoid loop() {\n  for(int pos=0; pos<=180; pos++) {\n    myservo.write(pos);\n    delay(15);\n  }\n}",
-    "esp32": "#include <WiFi.h>\n#include <WiFiClientSecure.h>\n#include <WebServer.h>\n#include <Wire.h>\n#include <SPI.h>\n#include <SPIFFS.h>\n#include <HTTPClient.h>\nWebServer server(80);\nvoid setup() {\n  Serial.begin(115200);\n  WiFi.begin(\"test\", \"test\");\n  if(!SPIFFS.begin(true)){ Serial.println(\"SPIFFS Mount Failed\"); }\n  server.on(\"/\", [](){ server.send(200, \"text/plain\", \"Hello World\"); });\n  server.begin();\n}\nvoid loop() {\n  server.handleClient();\n  float heavyMath = sqrt(pow(sin(millis()), 2) + pow(cos(millis()), 2));\n  Serial.println(heavyMath);\n}",
-    "stm32": "#include <Wire.h>\n#include <SPI.h>\nvoid setup() {\n  Serial.begin(115200);\n  Wire.begin();\n  SPI.begin();\n}\nvoid loop() {\n  double complexMath = 0;\n  for(int i = 0; i < 1000; i++) {\n    complexMath += sin(i) * cos(i);\n  }\n  Serial.println(complexMath);\n  delay(10);\n}",
     "pico": "#include <Wire.h>\n#include <SPI.h>\n#include <LittleFS.h>\nvoid setup() {\n  Serial.begin(115200);\n  LittleFS.begin();\n}\nvoid setup1() {\n  // Multicore initialization\n}\nvoid loop() {\n  float data = analogRead(26);\n  Serial.println(data * 3.3 / 1023.0);\n}\nvoid loop1() {\n  // Core 1 busy loop\n  delay(1);\n}"
 }
 
@@ -319,19 +317,20 @@ def watchdog():
 def execute_calibration_suite():
     print("[Calibration] Starting Automated Calibration Suite in Docker...")
     scripts = load_calibration_scripts()
-    
+
+    # Only boards the compiler-worker actually builds (see
+    # src/compiler/boardRegistry.js + Dockerfile.compiler). Stale budgets for
+    # removed boards (esp32/stm32) are dropped, never re-added.
     budget = {
         "uno_compile": 150, "uno_sim": 50,
-        "pico_compile": 300, "pico_sim": 100,
-        "esp32_compile": 800, "esp32_sim": 250,
-        "stm32_compile": 400, "stm32_sim": 150
+        "pico_compile": 300, "pico_sim": 100
     }
-    
-    # We use esp32-worker for esp32/uno/pico, stm32-worker for stm32 (they have arduino-cli)
-    budget["esp32_compile"] = run_calibration_test("esp32", "openhw-esp32-worker:develop", "esp32:esp32:esp32", scripts.get("esp32", DEFAULT_SCRIPTS["esp32"]))
-    budget["uno_compile"] = run_calibration_test("uno", "openhw-esp32-worker:develop", "arduino:avr:uno", scripts.get("uno", DEFAULT_SCRIPTS["uno"]))
-    budget["pico_compile"] = run_calibration_test("pico", "openhw-esp32-worker:develop", "rp2040:rp2040:rpipico", scripts.get("pico", DEFAULT_SCRIPTS["pico"]))
-    budget["stm32_compile"] = run_calibration_test("stm32", "openhw-stm32-worker:develop", "STMicroelectronics:stm32:GenF1", scripts.get("stm32", DEFAULT_SCRIPTS["stm32"]))
+
+    # The compiler-worker image carries AVR + RP2040 cores, so one image
+    # calibrates both boards. Tag follows the deployed worker if pinned.
+    compiler_image = os.getenv("COMPILER_WORKER_IMAGE", "openhw-compiler-worker:develop")
+    budget["uno_compile"] = run_calibration_test("uno", compiler_image, "arduino:avr:uno", scripts.get("uno", DEFAULT_SCRIPTS["uno"]))
+    budget["pico_compile"] = run_calibration_test("pico", compiler_image, "rp2040:rp2040:rpipico", scripts.get("pico", DEFAULT_SCRIPTS["pico"]))
     
     os.makedirs(os.path.dirname(BUDGET_FILE), exist_ok=True)
     with open(BUDGET_FILE, "w") as f:

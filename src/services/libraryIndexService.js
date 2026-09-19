@@ -1,13 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { fileURLToPath } from 'url';
+import { getLibraryIndexDir } from '../compiler/paths.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Data directory paths
-const DATA_DIR = path.resolve(__dirname, '../../../data/libraries');
+// Data directory paths (single source of truth: src/compiler/paths.js)
+const DATA_DIR = getLibraryIndexDir();
 const LOCAL_INDEX_PATH = path.join(DATA_DIR, 'library_index.json');
 const LOCAL_PYTHON_PATH = path.join(DATA_DIR, 'python_bundle_index.json');
 

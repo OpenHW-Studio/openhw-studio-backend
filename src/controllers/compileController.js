@@ -5,26 +5,53 @@ import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
 
-import { handleESP32Compile } from '../esp32/index.js';
-import { handleSTM32Compile } from '../stm32/index.js';
 import { parseLibrariesTxt } from '../services/libraryTxtParser.js';
 import { ensureLibrariesForCompile } from '../services/dynamicLibraryManager.js';
-import { pruneUniversalCachePool } from '../services/compileCachePruner.js';
 import { enqueueCompile } from '../services/compileQueueManager.js';
 import { getCost } from '../services/resourceManager.js';
+import { resolveBoard, normalizeArtifactRequest } from '../compiler/boardRegistry.js';
+import { selectArtifacts, toLegacyPayload } from '../compiler/artifactSelector.js';
+import { getCompileResultFromCache, setCompileResultCache } from '../compiler/resultCache.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 const TEMP_DIR = path.resolve(__dirname, '../../temp');
-const UF2_PAYLOAD_PREFIX = 'UF2BASE64:';
-const COMPILE_RESULT_TTL_MS = Number(process.env.COMPILE_RESULT_TTL_MS || (1000 * 60 * 30));
-const COMPILE_RESULT_CACHE_MAX = Math.max(8, Number(process.env.COMPILE_RESULT_CACHE_MAX || 120));
 const COMPILE_WORKSPACE_ROOT = path.join(TEMP_DIR, 'compile-workspaces');
+// Workspace GC caps (env-configurable for Docker deploys):
+// COMPILE_WORKSPACE_TTL_MS — workspace age before cleanup (default 12 h).
+// COMPILE_WORKSPACE_MAX    — max live workspaces kept (default 48).
 const COMPILE_WORKSPACE_TTL_MS = Number(process.env.COMPILE_WORKSPACE_TTL_MS || (1000 * 60 * 60 * 12));
 const COMPILE_WORKSPACE_MAX = Math.max(8, Number(process.env.COMPILE_WORKSPACE_MAX || 48));
-const PICO_UNO_CACHE_ROOT = path.join(TEMP_DIR, 'pico-uno-compile-cache');
+// Input size guards — reject abuse before touching disk/toolchain.
+// Tuned for real sketches: 512 KB total source, 64 files max, 256 KB per file.
+const MAX_SOURCE_FILES = Math.max(1, Number(process.env.COMPILE_MAX_FILES || 64));
+const MAX_FILE_BYTES = Math.max(1024, Number(process.env.COMPILE_MAX_FILE_BYTES || 262144));
+const MAX_TOTAL_BYTES = Math.max(4096, Number(process.env.COMPILE_MAX_TOTAL_BYTES || 524288));
+
+function checkCompileInputSize({ code, files }) {
+    const fileList = Array.isArray(files) ? files : [];
+    if (fileList.length > MAX_SOURCE_FILES) {
+        return `Too many source files (${fileList.length} > ${MAX_SOURCE_FILES}).`;
+    }
+    let total = typeof code === 'string' ? Buffer.byteLength(code) : 0;
+    for (const f of fileList) {
+        const content = typeof f?.content === 'string' ? f.content : '';
+        const size = Buffer.byteLength(content);
+        if (size > MAX_FILE_BYTES) {
+            return `Source file "${String(f?.name || 'unnamed').slice(0, 64)}" exceeds ${MAX_FILE_BYTES} bytes.`;
+        }
+        total += size;
+        if (total > MAX_TOTAL_BYTES) {
+            return `Total source size exceeds ${MAX_TOTAL_BYTES} bytes.`;
+        }
+    }
+    if (total > MAX_TOTAL_BYTES) {
+        return `Total source size exceeds ${MAX_TOTAL_BYTES} bytes.`;
+    }
+    return null;
+}
 const DEFAULT_PICO_MICROPYTHON_UF2_SOURCE = String(
     process.env.PICO_MICROPYTHON_UART0_UF2_URL
     || process.env.PICO_MICROPYTHON_UF2_URL
@@ -46,7 +73,6 @@ const PICO_CIRCUITPYTHON_CACHE_TTL_MS = Number(process.env.PICO_CIRCUITPYTHON_CA
 let picoMicropythonUf2Cache = null;
 let picoMicropythonHexCache = null;
 let picoCircuitPythonUf2Cache = null;
-const compileResultCache = new Map();
 
 function stableSourceFiles(files) {
     const list = Array.isArray(files) ? files : [];
@@ -60,103 +86,49 @@ function stableSourceFiles(files) {
         .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-function buildCompileRequestHash({ code, files, fqbn, builder, libraries_txt }) {
+function buildCompileRequestHash({ code, files, fqbn, builder, libraries_txt, artifacts }) {
     const payload = {
         code: typeof code === 'string' ? code : '',
         files: stableSourceFiles(files),
         fqbn: String(fqbn || '').trim() || 'arduino:avr:uno',
         builder: String(builder || '').trim() || 'arduino-cli',
         libraries_txt: String(libraries_txt || '').trim(),
+        artifacts: Array.isArray(artifacts) ? [...artifacts].sort() : [],
     };
     return crypto.createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
-function pruneCompileResultCache() {
-    const now = Date.now();
-    for (const [key, entry] of compileResultCache.entries()) {
-        if (!entry || (now - entry.createdAt) > COMPILE_RESULT_TTL_MS) {
-            compileResultCache.delete(key);
-        }
-    }
-
-    while (compileResultCache.size > COMPILE_RESULT_CACHE_MAX) {
-        const oldestKey = compileResultCache.keys().next().value;
-        if (!oldestKey) break;
-        compileResultCache.delete(oldestKey);
-    }
-}
-
-function getCompileResultFromCache(requestHash) {
-    if (!requestHash) return null;
-    
-    // 1. Try in-memory cache
-    pruneCompileResultCache();
-    let hit = compileResultCache.get(requestHash);
-    if (hit) {
-        // Touch for simple LRU behavior.
-        compileResultCache.delete(requestHash);
-        compileResultCache.set(requestHash, hit);
-        return {
-            hex: hit.hex,
-            artifactType: hit.artifactType,
-            artifactName: hit.artifactName,
-            elf: hit.elf,
-            elfName: hit.elfName,
-            gdb: hit.gdb,
-            stdout: hit.stdout,
-            diagnostics: hit.diagnostics || null,
-        };
-    }
-
-    // 2. Try on-disk cache
-    const cacheFile = path.join(PICO_UNO_CACHE_ROOT, requestHash, 'result.json');
-    if (fs.existsSync(cacheFile)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
-            // Touch mtime to mark it as recently used
-            const now = new Date();
-            fs.utimesSync(cacheFile, now, now);
-            fs.utimesSync(path.dirname(cacheFile), now, now);
-
-            // Populate in-memory cache
-            compileResultCache.set(requestHash, data);
-            return data;
-        } catch {
-            return null;
-        }
-    }
-
-    return null;
-}
-
-function setCompileResultCache(requestHash, payload) {
-    if (!requestHash || !payload || !payload.hex) return;
-
-    const data = {
-        createdAt: Date.now(),
-        hex: payload.hex,
-        artifactType: payload.artifactType || null,
-        artifactName: payload.artifactName || null,
-        elf: payload.elf || '',
-        elfName: payload.elfName || null,
-        gdb: payload.gdb || null,
-        stdout: payload.stdout || '',
-        diagnostics: payload.diagnostics || null,
+/**
+ * Shape a compile result for the wire: legacy primary fields (hex/elf/…)
+ * plus the full `artifacts` map the frontend selects from.
+ * Every artifact entry is { fileName, encoding, data }.
+ */
+function shapeCompileResponse({ primary, artifacts, outputFiles, stdout, diagnostics, cache }) {
+    return {
+        // Legacy primary contract — untouched so old frontends keep working.
+        hex: primary.payload,
+        artifactType: primary.artifactType,
+        artifactPayload: primary.payload,
+        uf2: primary.artifactType === 'uf2' ? primary.payload : '',
+        intelHex: primary.artifactType === 'hex' ? primary.payload : '',
+        artifactName: primary.artifactName,
+        outputFiles,
+        success: true,
+        elf: primary.elfPayload || '',
+        elfName: primary.elfName || null,
+        gdb: primary.gdb || null,
+        stdout: stdout || '',
+        diagnostics: diagnostics || null,
+        // New contract: exact files the frontend asked for via `artifacts`.
+        artifacts: artifacts || {},
+        requestedArtifacts: Object.keys(artifacts || {}),
+        cache: cache || 'miss',
     };
-
-    compileResultCache.set(requestHash, data);
-    pruneCompileResultCache();
-
-    // Persist to disk and prune
-    try {
-        const cacheDir = path.join(PICO_UNO_CACHE_ROOT, requestHash);
-        fs.mkdirSync(cacheDir, { recursive: true });
-        fs.writeFileSync(path.join(cacheDir, 'result.json'), JSON.stringify(data, null, 2), 'utf8');
-        pruneUniversalCachePool();
-    } catch (e) {
-        console.error('[Compile Cache] Failed to write Pico/Uno cache to disk:', e.message);
-    }
 }
+
+// NOTE: firmware result cache (L1 memory + L2 disk result.json) lives in
+// src/compiler/resultCache.js — imported above as
+// getCompileResultFromCache / setCompileResultCache. Do not re-add locals here.
 
 function ensureCompileWorkspace(scopeHash, safeSketchName) {
     const sketchFolderName = `${safeSketchName}_${String(scopeHash || '').slice(0, 8) || '00000000'}`;
@@ -471,88 +443,11 @@ function sendCompileFailure(res, statusCode, payload, context = {}) {
     });
 }
 
-function resolveCompileArtifact(buildDir, targetFqbn) {
-    const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
-    const lowerFqbn = String(targetFqbn || '').toLowerCase();
-    const preferredExts = lowerFqbn.includes('rp2040')
-        ? ['.uf2', '.hex']
-        : ['.hex', '.uf2'];
-
-    for (const ext of preferredExts) {
-        const matchingArtifacts = outFiles
-            .filter((name) => name.toLowerCase().endsWith(ext))
-            .map((name) => {
-                const artifactPath = path.join(buildDir, name);
-                let mtimeMs = 0;
-                try {
-                    mtimeMs = fs.statSync(artifactPath).mtimeMs;
-                } catch {
-                    mtimeMs = 0;
-                }
-                return { name, artifactPath, mtimeMs };
-            })
-            .sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.name.localeCompare(b.name));
-
-        const selected = matchingArtifacts[0];
-        if (!selected) continue;
-
-        if (ext === '.hex') {
-            const text = fs.readFileSync(selected.artifactPath, 'utf8');
-            return {
-                payload: text,
-                artifactType: 'hex',
-                artifactName: selected.name,
-                outputFiles: outFiles,
-            };
-        }
-
-        const raw = fs.readFileSync(selected.artifactPath);
-        return {
-            payload: `${UF2_PAYLOAD_PREFIX}${raw.toString('base64')}`,
-            artifactType: 'uf2',
-            artifactName: selected.name,
-            outputFiles: outFiles,
-        };
-    }
-
-    return {
-        payload: '',
-        artifactType: null,
-        artifactName: null,
-        outputFiles: outFiles,
-    };
-}
-
-function resolveElfArtifact(buildDir) {
-    const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
-    const matchingElfs = outFiles
-        .filter((name) => name.toLowerCase().endsWith('.elf'))
-        .map((name) => {
-            const elfPath = path.join(buildDir, name);
-            let mtimeMs = 0;
-            try {
-                mtimeMs = fs.statSync(elfPath).mtimeMs;
-            } catch {
-                mtimeMs = 0;
-            }
-            return { name, elfPath, mtimeMs };
-        })
-        .sort((a, b) => (b.mtimeMs - a.mtimeMs) || a.name.localeCompare(b.name));
-
-    const selectedElf = matchingElfs[0];
-    if (!selectedElf) {
-        return {
-            elfPayload: '',
-            elfName: null,
-        };
-    }
-
-    const raw = fs.readFileSync(selectedElf.elfPath);
-    return {
-        elfPayload: `ELFBASE64:${raw.toString('base64')}`,
-        elfName: selectedElf.name,
-    };
-}
+// NOTE: legacy single-artifact resolvers (resolveCompileArtifact /
+// resolveElfArtifact) were replaced by src/compiler/artifactSelector.js
+// (selectArtifacts), which extracts exactly the artifacts the frontend asks
+// for via the `artifacts` request param. Kept documented here so future
+// board ports don't reintroduce parallel resolvers.
 
 function resolveGdbMeta(targetFqbn = '') {
     const fqbn = String(targetFqbn || '').toLowerCase();
@@ -934,14 +829,35 @@ async function fetchPicoCircuitPythonUf2Asset() {
 }
 
 export const compileArduinoCode = async (req, res) => {
-    const { code, files, sketchName, fqbn, builder, target } = req.body || {};
+    const { code, files, sketchName, fqbn, builder, target, artifacts: requestedArtifacts } = req.body || {};
 
-    if (target === 'esp32' || String(fqbn).includes('esp32')) {
-        return handleESP32Compile(req, res);
+    let targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
+
+    const board = resolveBoard(targetFqbn);
+    if (!board) {
+        return sendCompileFailure(
+            res,
+            400,
+            {
+                error: `Unsupported board FQBN: ${targetFqbn}.`,
+                details: 'This compiler supports Arduino Uno (arduino:avr:uno) and Raspberry Pi Pico (rp2040:rp2040) targets. Add the board to src/compiler/boardRegistry.js to extend support.',
+                supportedBoards: ['arduino:avr:uno', 'rp2040:rp2040'],
+            },
+            { builder, fqbn: targetFqbn, stage: 'request' }
+        );
     }
 
-    if (target === 'stm32' || String(fqbn).toLowerCase().includes('stm32')) {
-        return handleSTM32Compile(req, res);
+    const normalizedBuilder = String(builder || '').trim() || board.defaultBuilder;
+    const wantedArtifacts = normalizeArtifactRequest(requestedArtifacts, board);
+
+    const sizeError = checkCompileInputSize({ code, files });
+    if (sizeError) {
+        return sendCompileFailure(
+            res,
+            413,
+            { error: 'Compile request too large.', details: sizeError },
+            { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'request' }
+        );
     }
 
     if (!code && (!Array.isArray(files) || files.length === 0)) {
@@ -949,13 +865,10 @@ export const compileArduinoCode = async (req, res) => {
             res,
             400,
             { error: 'No code or files provided.', details: 'The compile request must include code or at least one source file.' },
-            { builder, fqbn, stage: 'request' }
+            { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'request' }
         );
     }
 
-    let targetFqbn = typeof fqbn === 'string' && fqbn.trim() ? fqbn.trim() : 'arduino:avr:uno';
-    
-    const normalizedBuilder = String(builder || '').trim() || 'arduino-cli';
     const safeSketchName = sanitizeSketchName(sketchName || 'sketch');
     const requestHash = buildCompileRequestHash({
         code,
@@ -963,6 +876,7 @@ export const compileArduinoCode = async (req, res) => {
         fqbn: targetFqbn,
         builder: normalizedBuilder,
         libraries_txt: req.body?.libraries_txt,
+        artifacts: wantedArtifacts,
     });
 
     const cacheHit = getCompileResultFromCache(requestHash);
@@ -1146,7 +1060,8 @@ pico_add_extra_outputs(firmware)
             configureArgs.push('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache');
         }
 
-          enqueueCompile(getCost('pico', 'compile'), () => new Promise((resolve) => {
+          try {
+              await enqueueCompile(getCost(board?.costTarget || 'pico', 'compile'), () => new Promise((resolve) => {
               const doBuild = (cfgStdout = '', cfgStderr = '') => {
                   execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
                   if (buildErr) {
@@ -1163,36 +1078,46 @@ pico_add_extra_outputs(firmware)
                   }
 
                   try {
-                      const uf2Files = fs.readdirSync(buildDir).filter((f) => f.toLowerCase().endsWith('.uf2'));
-                      if (uf2Files.length === 0) throw new Error('No .uf2 file found in build output.');
-
-                      const uf2Path = path.join(buildDir, uf2Files[0]);
-                      const uf2Raw = fs.readFileSync(uf2Path);
-                      const uf2Payload = `${UF2_PAYLOAD_PREFIX}${uf2Raw.toString('base64')}`;
-
-                      let elfPayload = '';
-                      const elfFiles = fs.readdirSync(buildDir).filter((f) => f.toLowerCase().endsWith('.elf'));
-                      if (elfFiles.length > 0) {
-                          elfPayload = `ELFBASE64:${fs.readFileSync(path.join(buildDir, elfFiles[0])).toString('base64')}`;
+                      const stdoutText = `${cfgStdout || ''}\n${buildStdout || ''}`.trim();
+                      const { artifacts, outputFiles } = selectArtifacts(buildDir, wantedArtifacts);
+                      const primaryName = wantedArtifacts[0];
+                      const primaryEntry = artifacts[primaryName];
+                      if (!primaryEntry) {
+                          return sendCompileFailure(
+                              res,
+                              500,
+                              {
+                                  error: 'Compilation finished but no firmware artifact was produced.',
+                                  details: `Requested ${wantedArtifacts.join(', ')} for ${targetFqbn}. Found: ${outputFiles.join(', ') || '(none)'}`,
+                                  requestedArtifacts: wantedArtifacts,
+                              },
+                              { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'artifact' }
+                          );
                       }
 
-                      const responsePayload = {
-                          hex: uf2Payload,
-                          artifactType: 'uf2',
-                          artifactName: uf2Files[0],
-                          elf: elfPayload,
-                          elfName: elfFiles.length > 0 ? elfFiles[0] : null,
-                          gdb: resolveGdbMeta('rp2040'),
-                          stdout: `${cfgStdout || ''}\n${buildStdout || ''}`.trim(),
+                      const elfEntry = artifacts.elf || null;
+                      const responsePayload = shapeCompileResponse({
+                          primary: {
+                              payload: toLegacyPayload(primaryName, primaryEntry),
+                              artifactType: primaryName,
+                              artifactName: primaryEntry.fileName,
+                              elfPayload: elfEntry ? toLegacyPayload('elf', elfEntry) : '',
+                              elfName: elfEntry?.fileName || null,
+                              gdb: resolveGdbMeta('rp2040'),
+                          },
+                          artifacts,
+                          outputFiles,
+                          stdout: stdoutText,
                           diagnostics: buildCompileSuccessDiagnostics({
-                              stdout: `${cfgStdout || ''}\n${buildStdout || ''}`.trim(),
+                              stdout: stdoutText,
                               builder: normalizedBuilder,
                               fqbn: targetFqbn,
                           }),
-                      };
+                          cache: 'miss',
+                      });
 
                       setCompileResultCache(requestHash, responsePayload);
-                      return res.json({ ...responsePayload, cache: 'miss' });
+                      return res.json({ ...responsePayload });
                   } catch (err) {
                       console.error('Error extracting UF2:', err);
                       return sendCompileFailure(
@@ -1228,6 +1153,16 @@ pico_add_extra_outputs(firmware)
               doBuild(cfgStdout, cfgStderr);
           });
           }));
+          } catch (poolErr) {
+              if (poolErr?.code === 'POOL_FULL') {
+                  res.setHeader('Retry-After', String(poolErr.retryAfterSec || 30));
+                  return res.status(503).json({
+                      error: 'Compile server is full for now. Please try again in a moment.',
+                      retryAfterSec: poolErr.retryAfterSec || 30,
+                  });
+              }
+              throw poolErr;
+          }
           return;
     }
 
@@ -1250,52 +1185,36 @@ pico_add_extra_outputs(firmware)
         '--build-property', `compiler.cpp.cmd=ccache ${ccacheCpp}`,
     ] : [];
 
-    const COMPILE_CACHE_DIR = path.join(TEMP_DIR, 'arduino-cache');
-    
+    // NOTE: arduino-cli's own core cache lives under ~/.arduino15 + the
+    // per-workspace build dir; no separate COMPILE_CACHE_DIR is needed.
+
+    // Ask arduino-cli for a linker map alongside the firmware so `map`
+    // is available when the frontend requests it. Harmless when unrequested:
+    // selectArtifacts only picks files the frontend asked for.
+    const wantMap = wantedArtifacts.includes('map');
+    const mapFlag = wantMap
+        ? (String(targetFqbn).toLowerCase().includes('rp2040')
+            ? ['--build-property', 'compiler.c.elf.extra_flags=-Wl,-Map,{build.path}/{build.project_name}.map']
+            : ['--build-property', 'compiler.c.elf.extra_flags=-Wl,-Map,{build.path}/{build.project_name}.map'])
+        : [];
+
     const cliArgs = [
         'compile',
         '--fqbn', targetFqbn,
         '--build-path', buildDir,
         '--jobs', '4',
         ...ccacheProps,
+        ...mapFlag,
         ...libraryFlags,
     ];
 
     cliArgs.push(sketchDir);
 
-      enqueueCompile(getCost('uno', 'compile'), () => new Promise((resolve) => {
+      try {
+      await enqueueCompile(getCost(board?.costTarget || 'uno', 'compile'), () => new Promise((resolve) => {
           execFile(ARDUINO_CLI_PATH, cliArgs, {
               env: { ...process.env, CC_CACHE_ENABLED: '1', CCACHE_MAXSIZE: '2G' }
           }, (error, stdout, stderr) => {
-        // Read produced firmware artifact regardless of warnings, but handle hard errors.
-        let compiledArtifact = {
-            payload: '',
-            artifactType: null,
-            artifactName: null,
-            outputFiles: [],
-        };
-        let elfArtifact = {
-            elfPayload: '',
-            elfName: null,
-        };
-
-        try {
-            compiledArtifact = resolveCompileArtifact(buildDir, targetFqbn);
-            elfArtifact = resolveElfArtifact(buildDir);
-        } catch (err) {
-            console.error('Error resolving compilation artifacts:', err);
-            compiledArtifact = {
-                payload: '',
-                artifactType: null,
-                artifactName: null,
-                outputFiles: [],
-            };
-            elfArtifact = {
-                elfPayload: '',
-                elfName: null,
-            };
-        }
-
         if (error) {
             console.error('Compile error:', error || stdout);
             return sendCompileFailure(
@@ -1309,43 +1228,65 @@ pico_add_extra_outputs(firmware)
             );
         }
 
-        if (!compiledArtifact.payload) {
+        const { artifacts, outputFiles } = selectArtifacts(buildDir, wantedArtifacts);
+        const primaryName = wantedArtifacts[0];
+        const primaryEntry = artifacts[primaryName];
+
+        if (!primaryEntry) {
             return sendCompileFailure(
                 res,
                 500,
                 {
                     error: 'Compilation finished but no firmware artifact was produced.',
-                    details: `Expected .hex${String(targetFqbn).toLowerCase().includes('rp2040') ? ' or .uf2' : ''} in build output. Found: ${compiledArtifact.outputFiles.join(', ') || '(none)'}`,
+                    details: `Requested ${wantedArtifacts.join(', ')} for ${targetFqbn}. Found: ${outputFiles.join(', ') || '(none)'}`,
+                    requestedArtifacts: wantedArtifacts,
                 },
                 { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'artifact' }
             );
         }
 
-        const responsePayload = {
-            hex: compiledArtifact.payload, // Backward compatibility
-            artifactType: compiledArtifact.artifactType,
-            artifactPayload: compiledArtifact.payload,
-            uf2: compiledArtifact.artifactType === 'uf2' ? compiledArtifact.payload : '',
-            intelHex: compiledArtifact.artifactType === 'hex' ? compiledArtifact.payload : '',
-            artifactName: compiledArtifact.artifactName,
-            outputFiles: compiledArtifact.outputFiles,
-            success: true,
-            elf: elfArtifact.elfPayload,
-            elfName: elfArtifact.elfName,
-            gdb: resolveGdbMeta(targetFqbn),
-            stdout: stdout,
+        const elfEntry = artifacts.elf || null;
+        const elfPayload = elfEntry ? toLegacyPayload('elf', elfEntry) : '';
+        const primaryPayload = toLegacyPayload(primaryName, primaryEntry);
+        const responsePayload = shapeCompileResponse({
+            primary: {
+                payload: primaryPayload,
+                artifactType: primaryName,
+                artifactName: primaryEntry.fileName,
+                elfPayload,
+                elfName: elfEntry?.fileName || null,
+                gdb: resolveGdbMeta(targetFqbn),
+            },
+            artifacts,
+            outputFiles,
+            stdout,
             diagnostics: buildCompileSuccessDiagnostics({
                 stdout,
                 builder: normalizedBuilder,
                 fqbn: targetFqbn,
             }),
-        };
+            cache: 'miss',
+        });
+        // Extra legacy aliases some simulator code reads directly.
+        responsePayload.artifactPayload = primaryPayload;
+        responsePayload.uf2 = primaryName === 'uf2' ? primaryPayload : '';
+        responsePayload.intelHex = primaryName === 'hex' ? primaryPayload : '';
 
         setCompileResultCache(requestHash, responsePayload);
-        res.json({ ...responsePayload, cache: 'miss' });
+        res.json({ ...responsePayload });
         resolve();
       });
       }));
+      } catch (poolErr) {
+          if (poolErr?.code === 'POOL_FULL') {
+              res.setHeader('Retry-After', String(poolErr.retryAfterSec || 30));
+              return res.status(503).json({
+                  error: 'Compile server is full for now. Please try again in a moment.',
+                  retryAfterSec: poolErr.retryAfterSec || 30,
+              });
+          }
+          throw poolErr;
+      }
 };
 
 function resolveAvrdudeExecutable() {
@@ -1424,41 +1365,19 @@ export const flashFirmware = (req, res) => {
 
     try {
         fs.mkdirSync(flashDir, { recursive: true });
-        
-        if (targetFqbn.toLowerCase().includes('esp32')) {
-            const binFile = path.join(flashDir, `firmware_${flashId}.bin`);
-            const binaryBuffer = Buffer.from(hexContent, 'base64');
-            fs.writeFileSync(binFile, binaryBuffer);
 
-            const args = [
-                '-m', 'esptool',
-                '--port', cleanPort,
-            ];
-            if (Number.isFinite(cleanBaud) && cleanBaud > 0) {
-                args.push('--baud', String(Math.trunc(cleanBaud)));
-            }
-            args.push('write_flash', '-z', '0x0', binFile);
-
-            execFile('python', args, (error, stdout, stderr) => {
-                fs.rm(flashDir, { recursive: true, force: true }, (rmErr) => {
-                    if (rmErr) console.error(`Failed to clean up flash dir: ${flashDir}`, rmErr);
-                });
-
-                if (error) {
-                    console.error('Flash error:', stderr || stdout);
-                    return res.status(400).json({
-                        error: 'Flashing failed',
-                        details: stderr || stdout,
-                    });
-                }
-
-                return res.json({
-                    ok: true,
-                    message: 'Firmware flashed successfully via esptool.',
-                    output: stdout || stderr || '',
-                });
-            });
-            return;
+        const loweredFqbn = targetFqbn.toLowerCase();
+        if (loweredFqbn.includes('esp32') || loweredFqbn.includes('stm32')) {
+            fs.rm(flashDir, { recursive: true, force: true }, () => {});
+            return sendCompileFailure(
+                res,
+                410,
+                {
+                    error: 'ESP32/STM32 hardware flashing is not supported in this build.',
+                    details: 'This backend build supports Arduino Uno (arduino:avr) and Raspberry Pi Pico (rp2040) targets only.',
+                },
+                { builder: 'arduino-cli', fqbn: targetFqbn, stage: 'request' }
+            );
         }
 
         fs.writeFileSync(hexFile, hexContent, 'utf8');
