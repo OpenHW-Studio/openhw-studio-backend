@@ -239,8 +239,13 @@ export const deleteInstalledComponent = (req, res) => {
 
 /**
  * Lightweight version hash for the installed custom components.
- * Computed from: sorted component IDs + manifest mtime.
- * Only reads file stats (no content) — very fast, no performance impact.
+ * Computed from: sorted component IDs + content hash of the four
+ * transpile inputs (ui/logic/validation/index). mtime alone is NOT enough:
+ * git checkouts, deploys and volume restores can rewrite files with fresh
+ * mtimes or preserve stale mtimes on changed content — either way the
+ * frontend would keep rendering stale cached components (BOUNDS crashes,
+ * null-context reads) or refetch on every load. File sizes keep it fast
+ * (a few KB of stat+read per component, only top-level files).
  * Used by the frontend to decide whether its IndexedDB cache is still valid.
  */
 export const getComponentsVersion = (req, res) => {
@@ -254,7 +259,27 @@ export const getComponentsVersion = (req, res) => {
             if (!fs.statSync(itemPath).isDirectory()) continue;
             const manifestPath = path.join(itemPath, 'manifest.json');
             if (!fs.existsSync(manifestPath)) continue;
-            
+
+            // Hash the four transpile inputs by content (size + bytes via
+            // FNV-1a fold — cheap, no crypto import). Any byte change in any
+            // input invalidates the frontend cache for ALL components (global
+            // version), which is exactly what we want: fail safe, refetch.
+            let contentSig = 0;
+            for (const fname of ['manifest.json', 'ui.tsx', 'ui.jsx', 'logic.ts', 'logic.js', 'validation.ts', 'validation.js', 'index.ts', 'index.js']) {
+                const filePath = path.join(itemPath, fname);
+                if (!fs.existsSync(filePath)) continue;
+                try {
+                    const stat = fs.statSync(filePath);
+                    if (!stat.isFile()) continue;
+                    contentSig = (Math.imul(contentSig, 31) + stat.size) >>> 0;
+                    const buf = fs.readFileSync(filePath);
+                    const step = Math.max(1, Math.floor(buf.length / 4096));
+                    for (let i = 0; i < buf.length; i += step) {
+                        contentSig = (Math.imul(contentSig, 31) + buf[i]) >>> 0;
+                    }
+                } catch (_) { /* unreadable file — mtime fallback below */ }
+            }
+
             let maxMtime = 0;
             const dirFiles = fs.readdirSync(itemPath);
             for (const file of dirFiles) {
@@ -264,8 +289,8 @@ export const getComponentsVersion = (req, res) => {
                     maxMtime = stat.mtimeMs;
                 }
             }
-            
-            hashInput += `${item}:${maxMtime}|`;
+
+            hashInput += `${item}:${contentSig}:${maxMtime}|`;
             count++;
         }
 
