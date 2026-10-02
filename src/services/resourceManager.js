@@ -13,6 +13,10 @@ const BUDGET_FILE = path.join(getDataRoot(), 'calibrated_budget.json');
 
 const DEFAULT_BUDGET = {
     uno_compile: 150, uno_sim: 50,
+    pico_compile: 300, pico_sim: 100,
+    esp32_compile: 400, esp32_sim: 150,
+    stm32f1_compile: 300, stm32f1_sim: 100,
+    stm32f4_compile: 350, stm32f4_sim: 120,
 };
 
 export function loadCalibratedBudget() {

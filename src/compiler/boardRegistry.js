@@ -30,6 +30,42 @@ const BOARD_DEFINITIONS = Object.freeze([
         defaultArtifacts: Object.freeze(['hex', 'elf']),
         costTarget: 'uno',
     },
+    {
+        id: 'pico',
+        label: 'Raspberry Pi Pico (RP2040)',
+        fqbnMatchers: ['rp2040:rp2040'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['uf2', 'elf']),
+        costTarget: 'pico',
+    },
+    {
+        id: 'esp32',
+        label: 'ESP32 DevKit',
+        fqbnMatchers: ['esp32:esp32'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['bin', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['bin', 'elf']),
+        costTarget: 'esp32',
+    },
+    {
+        id: 'stm32f1',
+        label: 'STM32F1 Blue Pill',
+        fqbnMatchers: ['stmicroelectronics:stm32', ':genf1', 'bluepill'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['bin', 'elf']),
+        costTarget: 'stm32f1',
+    },
+    {
+        id: 'stm32f4',
+        label: 'STM32F4 Discovery',
+        fqbnMatchers: [':genf4', 'disco_f407', 'f407'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['bin', 'elf']),
+        costTarget: 'stm32f4',
+    },
 ]);
 
 /**
