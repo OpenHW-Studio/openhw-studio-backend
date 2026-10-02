@@ -80,10 +80,24 @@ const allowedOrigins = new Set(
     ...(process.env.FRONTEND_URLS || '').split(','),
     process.env.FRONTEND_URL || 'http://localhost:5173',
     'http://127.0.0.1:5173',
+    // Local dev convenience: docs site, preview servers, compiler worker.
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
+    'http://localhost:4173',
+    'http://127.0.0.1:4173',
+    'http://localhost:5000',
+    'http://127.0.0.1:5000',
+    'http://localhost:5001',
+    'http://127.0.0.1:5001',
   ]
     .map(origin => origin.trim())
     .filter(Boolean)
 );
+
+// Any loopback origin (any local port) — vite/docs/preview ports move
+// around, so matching exact ports in prod config is brittle.
+const LOOPBACK_ORIGIN_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i;
+const isProd = process.env.NODE_ENV === 'production';
 
 app.use(session({
     secret: SESSION_SECRET,
@@ -102,7 +116,16 @@ app.use(passport.session());
 
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.has(origin)) {
+    // Same-origin / curl / server-to-server: no Origin header → allow.
+    if (!origin) {
+      callback(null, true);
+      return;
+    }
+    if (!isProd && LOOPBACK_ORIGIN_RE.test(origin)) {
+      callback(null, true);
+      return;
+    }
+    if (allowedOrigins.has(origin)) {
       callback(null, true);
       return;
     }
