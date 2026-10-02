@@ -573,7 +573,14 @@ export const compileArduinoCode = async (req, res) => {
     const isAVR  = String(targetFqbn).includes('avr');
 
     // Disabled for AVR because its platform.txt prepends compiler.path directly, which breaks the ccache command.
-    const useCcache = process.platform !== 'win32' && !isAVR;
+    // Disabled for ARM cores (rp2040/esp32/stm32): their platform.txt files
+    // set compiler.c.cmd to an absolute toolchain path (e.g. pqt-gcc/...,
+    // esp-x32/..., xpack-arm-none-eabi-gcc/...), so prepending `ccache `
+    // produces `ccache <abs-path>` which execs a nonexistent binary.
+    // arduino-cli's own core cache already speeds rebuilds; re-enable only
+    // with per-core CC mapping (compiler.<tool>.cmd per platform).
+    const useCcache = false;
+    void isAVR;
 
     const ccacheC   = 'arm-none-eabi-gcc';
     const ccacheCpp = 'arm-none-eabi-g++';
@@ -623,7 +630,7 @@ export const compileArduinoCode = async (req, res) => {
             );
         }
 
-        const { artifacts, outputFiles } = selectArtifacts(buildDir, wantedArtifacts);
+        const { artifacts, outputFiles } = selectArtifacts(buildDir, wantedArtifacts, sketchFolderName);
         const primaryName = wantedArtifacts[0];
         const primaryEntry = artifacts[primaryName];
 

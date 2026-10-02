@@ -30,10 +30,12 @@ const EXTENSIONS_BY_ARTIFACT = Object.freeze({
     map: ['.map'],
 });
 
-function newestMatch(outFiles, buildDir, extensions) {
+function newestMatch(outFiles, buildDir, extensions, nameHint = '') {
     const loweredExts = extensions.map((ext) => ext.toLowerCase());
+    const hint = String(nameHint || '').toLowerCase();
     const matches = outFiles
         .filter((name) => loweredExts.some((ext) => name.toLowerCase().endsWith(ext)))
+        .filter((name) => !hint || name.toLowerCase().includes(hint))
         .map((name) => {
             const filePath = path.join(buildDir, name);
             let mtimeMs = 0;
@@ -51,16 +53,29 @@ function newestMatch(outFiles, buildDir, extensions) {
 /**
  * @param {string} buildDir - absolute path to the finished build output dir
  * @param {string[]} wanted - normalized artifact names (see boardRegistry)
+ * @param {string} [sketchHint] - sketch file base name to prefer (avoids
+ *   picking bootloader/partitions/boot_app0 siblings for `bin`)
  * @returns {{ artifacts: Record<string, { fileName: string, encoding: 'utf8'|'base64', data: string }>, outputFiles: string[] }}
  */
-export function selectArtifacts(buildDir, wanted) {
+export function selectArtifacts(buildDir, wanted, sketchHint = '') {
     const outFiles = fs.existsSync(buildDir) ? fs.readdirSync(buildDir) : [];
     const artifacts = {};
 
     for (const name of wanted || []) {
         const extensions = EXTENSIONS_BY_ARTIFACT[name];
         if (!extensions) continue;
-        const match = newestMatch(outFiles, buildDir, extensions);
+        // ESP32 builds emit several .bin siblings (bootloader, partitions,
+        // boot_app0, merged). Prefer the sketch's own image:
+        //   <sketch>.ino.merged.bin > <sketch>.ino.bin (app only).
+        // The merged image is what esptool flashes (bootloader @0x1000,
+        // partitions @0x8000, app @0x10000); esp32-emu boots it at offset 0.
+        let match = null;
+        if (name === 'bin' && sketchHint) {
+            const safe = String(sketchHint).replace(/[^a-zA-Z0-9._-]/g, '_');
+            match = newestMatch(outFiles, buildDir, [`.ino.merged.bin`], safe)
+                || newestMatch(outFiles, buildDir, [`.ino.bin`], safe);
+        }
+        if (!match) match = newestMatch(outFiles, buildDir, extensions);
         if (!match) continue;
 
         try {

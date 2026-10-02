@@ -60,7 +60,7 @@ const BOARD_DEFINITIONS = Object.freeze([
     {
         id: 'stm32f4',
         label: 'STM32F4 Discovery',
-        fqbnMatchers: [':genf4', 'disco_f407', 'f407'],
+        fqbnMatchers: ['stmicroelectronics:stm32:disco', 'disco_f407vg', ':genf4', 'f407'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['bin', 'elf']),
