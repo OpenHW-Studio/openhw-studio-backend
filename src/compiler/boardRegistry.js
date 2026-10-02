@@ -5,7 +5,7 @@
  *
  * Each board entry declares:
  *   - fqbn matchers (lowercase substrings that identify the board family)
- *   - default builder ('arduino-cli' or 'pico-sdk')
+ *   - default builder ('arduino-cli')
  *   - supported artifacts (subset of: hex, uf2, bin, elf, map)
  *   - default artifacts returned when the frontend omits `artifacts`
  *   - resource cost tag passed to the resource manager / compile queue
@@ -29,17 +29,6 @@ const BOARD_DEFINITIONS = Object.freeze([
         supportedArtifacts: Object.freeze(['hex', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['hex', 'elf']),
         costTarget: 'uno',
-    },
-    {
-        id: 'pico',
-        label: 'Raspberry Pi Pico',
-        fqbnMatchers: ['rp2040:rp2040'],
-        defaultBuilder: 'arduino-cli',
-        // pico-sdk builder resolves to the same family; switching builder
-        // does not change which fqbn strings match this entry.
-        supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
-        defaultArtifacts: Object.freeze(['uf2', 'elf']),
-        costTarget: 'pico',
     },
 ]);
 

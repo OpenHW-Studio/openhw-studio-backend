@@ -13,7 +13,6 @@ const BUDGET_FILE = path.join(getDataRoot(), 'calibrated_budget.json');
 
 const DEFAULT_BUDGET = {
     uno_compile: 150, uno_sim: 50,
-    pico_compile: 300, pico_sim: 100
 };
 
 export function loadCalibratedBudget() {

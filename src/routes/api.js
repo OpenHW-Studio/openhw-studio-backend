@@ -131,9 +131,6 @@ if (isMainRole()) {
   router.post('/compile/diagnostics', proxyCompileToWorker);
   router.post('/compile/flash', protectRoute, proxyCompileToWorker);
   router.get('/compile/ports', protectRoute, proxyCompileToWorker);
-  router.get('/compile/pico/micropython-uf2', proxyCompileToWorker);
-  router.get('/compile/pico/micropython-hex', proxyCompileToWorker);
-  router.get('/compile/pico/circuitpython-uf2', proxyCompileToWorker);
   // Library search/install/list stay local (shared volume + index service).
   router.use('/compile', compileRoutes);
 } else {

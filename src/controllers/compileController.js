@@ -52,28 +52,6 @@ function checkCompileInputSize({ code, files }) {
     }
     return null;
 }
-const DEFAULT_PICO_MICROPYTHON_UF2_SOURCE = String(
-    process.env.PICO_MICROPYTHON_UART0_UF2_URL
-    || process.env.PICO_MICROPYTHON_UF2_URL
-    || ''
-).trim();
-const DEFAULT_PICO_MICROPYTHON_HEX_SOURCE = String(
-    process.env.PICO_MICROPYTHON_HEX_PATH
-    || process.env.PICO_MICROPYTHON_HEX_SOURCE
-    || './data/firmware/rp2040-micropython-uart.hex'
-).trim();
-const DEFAULT_PICO_CIRCUITPYTHON_UF2_SOURCE = String(
-    process.env.PICO_CIRCUITPYTHON_UF2_PATH
-    || process.env.PICO_CIRCUITPYTHON_UF2_URL
-    || './data/firmware/adafruit-circuitpython-raspberry_pi_pico-en_US-8.2.7.uf2'
-).trim();
-const PICO_MICROPYTHON_CACHE_TTL_MS = Number(process.env.PICO_MICROPYTHON_CACHE_TTL_MS || (1000 * 60 * 60 * 6));
-const PICO_CIRCUITPYTHON_CACHE_TTL_MS = Number(process.env.PICO_CIRCUITPYTHON_CACHE_TTL_MS || (1000 * 60 * 60 * 6));
-
-let picoMicropythonUf2Cache = null;
-let picoMicropythonHexCache = null;
-let picoCircuitPythonUf2Cache = null;
-
 function stableSourceFiles(files) {
     const list = Array.isArray(files) ? files : [];
     return list
@@ -213,58 +191,8 @@ function pruneCompileWorkspaces() {
     });
 }
 
-function resolvePicoMicropythonUf2Source() {
-    const source = DEFAULT_PICO_MICROPYTHON_UF2_SOURCE;
-    if (!source) {
-        throw new Error('Missing PICO_MICROPYTHON_UART0_UF2_URL (or PICO_MICROPYTHON_UF2_URL) for Pico MicroPython UF2 source.');
-    }
 
-    const lower = source.toLowerCase();
-    if (lower.includes('micropython.org/resources/firmware/rpi_pico')) {
-        throw new Error('Configured UF2 source points to official micropython.org firmware (USB CDC REPL). Use a UART0-enabled Pico MicroPython UF2 build.');
-    }
 
-    if (/^https?:\/\//i.test(source)) {
-        return { kind: 'url', value: source };
-    }
-
-    const filePath = path.isAbsolute(source)
-        ? source
-        : path.resolve(__dirname, '../../', source);
-    return { kind: 'file', value: filePath };
-}
-
-function resolvePicoMicropythonHexSource() {
-    const source = DEFAULT_PICO_MICROPYTHON_HEX_SOURCE;
-    if (!source) {
-        throw new Error('Missing PICO_MICROPYTHON_HEX_PATH (or PICO_MICROPYTHON_HEX_SOURCE) for Pico MicroPython HEX source.');
-    }
-
-    if (/^https?:\/\//i.test(source)) {
-        return { kind: 'url', value: source };
-    }
-
-    const filePath = path.isAbsolute(source)
-        ? source
-        : path.resolve(__dirname, '../../', source);
-    return { kind: 'file', value: filePath };
-}
-
-function resolvePicoCircuitPythonUf2Source() {
-    const source = DEFAULT_PICO_CIRCUITPYTHON_UF2_SOURCE;
-    if (!source) {
-        throw new Error('Missing PICO_CIRCUITPYTHON_UF2_PATH (or PICO_CIRCUITPYTHON_UF2_URL) for Pico CircuitPython UF2 source.');
-    }
-
-    if (/^https?:\/\//i.test(source)) {
-        return { kind: 'url', value: source };
-    }
-
-    const filePath = path.isAbsolute(source)
-        ? source
-        : path.resolve(__dirname, '../../', source);
-    return { kind: 'file', value: filePath };
-}
 
 function sanitizeSketchName(name) {
     const base = String(name || '').trim() || 'sketch';
@@ -319,33 +247,10 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
     const lowerBuilder = String(builder || '').toLowerCase();
     const lowerFqbn = String(fqbn || '').toLowerCase();
 
-    if (lower.includes("platform 'rp2040:rp2040' not found")
-        || lower.includes('platform rp2040:rp2040 is not found')
-        || lower.includes('missing fqbn')) {
+    if (lower.includes('missing fqbn')) {
         return {
             category: 'missing-platform',
-            hint: 'Install the required Arduino core (for RP2040: arduino-cli core install rp2040:rp2040).',
-        };
-    }
-
-    if (lowerBuilder === 'pico-sdk' && lower.includes('pico_sdk_path')) {
-        return {
-            category: 'sdk-config',
-            hint: 'Configure PICO_SDK_PATH or ensure openhw-studio-backend/external/pico-sdk exists.',
-        };
-    }
-
-    if (lower.includes('arm-none-eabi') && (lower.includes('not found') || lower.includes('no such file'))) {
-        return {
-            category: 'missing-toolchain',
-            hint: 'Install ARM GCC toolchain or set PICO_TOOLCHAIN_PATH to a valid toolchain root.',
-        };
-    }
-
-    if (lower.includes('ninja') && lower.includes('not found')) {
-        return {
-            category: 'missing-build-tool',
-            hint: 'Install Ninja and ensure it is available on PATH.',
+            hint: 'Install the required Arduino core (arduino-cli core install arduino:avr).',
         };
     }
 
@@ -364,11 +269,10 @@ function classifyCompileFailure(text, builder = '', fqbn = '') {
     }
 
     if (lower.includes('no firmware artifact was produced')
-        || (lowerFqbn.includes('rp2040') && lower.includes('no .uf2 file found'))
-        || lower.includes('expected .hex or .uf2 in build output')) {
+        || lower.includes('expected .hex in build output')) {
         return {
             category: 'artifact-missing',
-            hint: 'Build completed without UF2/HEX output. Verify board selection and build output directory.',
+            hint: 'Build completed without HEX output. Verify board selection and build output directory.',
         };
     }
 
@@ -451,14 +355,6 @@ function sendCompileFailure(res, statusCode, payload, context = {}) {
 
 function resolveGdbMeta(targetFqbn = '') {
     const fqbn = String(targetFqbn || '').toLowerCase();
-    if (fqbn.includes('rp2040') || fqbn.includes('pico')) {
-        return {
-            arch: 'arm',
-            gdb: 'arm-none-eabi-gdb',
-            targetRemote: 'localhost:3333',
-        };
-    }
-
     if (fqbn.includes('avr') || fqbn.includes('arduino:avr')) {
         return {
             arch: 'avr',
@@ -474,127 +370,9 @@ function resolveGdbMeta(targetFqbn = '') {
     };
 }
 
-function resolvePicoSdkPath() {
-    const envPath = String(process.env.PICO_SDK_PATH || '').trim();
-    const candidates = [
-        envPath,
-        path.resolve(__dirname, '../../external/pico-sdk'),
-        path.resolve(process.cwd(), 'external/pico-sdk'),
-        path.resolve(process.cwd(), 'openhw-studio-backend/external/pico-sdk'),
-    ].filter(Boolean);
 
-    for (const candidate of candidates) {
-        const importCmake = path.join(candidate, 'external', 'pico_sdk_import.cmake');
-        if (fs.existsSync(importCmake)) {
-            return candidate;
-        }
-    }
-    return '';
-}
 
-function resolveRp2040ToolchainPaths() {
-    const compilerExe = os.platform() === 'win32' ? 'arm-none-eabi-gcc.exe' : 'arm-none-eabi-gcc';
-    const explicit = String(process.env.PICO_TOOLCHAIN_PATH || '').trim();
-    if (explicit) {
-        const explicitBin = path.join(explicit, 'bin');
-        const explicitExeInBin = path.join(explicitBin, compilerExe);
-        const explicitExeDirect = path.join(explicit, compilerExe);
-        if (fs.existsSync(explicitExeInBin)) {
-            return { root: explicit, bin: explicitBin };
-        }
-        if (fs.existsSync(explicitExeDirect)) {
-            return { root: path.dirname(explicit), bin: explicit };
-        }
-    }
 
-    const dataCandidates = [
-        String(process.env.ARDUINO_DATA_DIR || '').trim(),
-        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
-        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
-    ].filter(Boolean);
-
-    for (const dataDir of dataCandidates) {
-        const toolsRoot = path.join(dataDir, 'packages', 'rp2040', 'tools', 'pqt-gcc');
-        if (!fs.existsSync(toolsRoot)) continue;
-
-        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => entry.name)
-            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
-
-        for (const version of versions) {
-            const root = path.join(toolsRoot, version);
-            const bin = path.join(root, 'bin');
-            const gccExe = path.join(bin, compilerExe);
-            if (fs.existsSync(gccExe)) {
-                return { root, bin };
-            }
-        }
-    }
-
-    return { root: '', bin: '' };
-}
-
-function resolveRp2040PicotoolExecutable() {
-    const exeName = os.platform() === 'win32' ? 'picotool.exe' : 'picotool';
-    const explicitExe = String(process.env.PICO_PICOTOOL_EXE || '').trim();
-    if (explicitExe && fs.existsSync(explicitExe)) {
-        return explicitExe;
-    }
-
-    const explicitDir = String(process.env.PICO_PICOTOOL_DIR || '').trim();
-    if (explicitDir) {
-        const explicitCandidate = path.join(explicitDir, exeName);
-        if (fs.existsSync(explicitCandidate)) {
-            return explicitCandidate;
-        }
-    }
-
-    const dataCandidates = [
-        String(process.env.ARDUINO_DATA_DIR || '').trim(),
-        process.env.LOCALAPPDATA ? path.join(process.env.LOCALAPPDATA, 'Arduino15') : '',
-        process.env.APPDATA ? path.join(process.env.APPDATA, 'Arduino15') : '',
-    ].filter(Boolean);
-
-    for (const dataDir of dataCandidates) {
-        const toolsRoot = path.join(dataDir, 'packages', 'rp2040', 'tools', 'pqt-picotool');
-        if (!fs.existsSync(toolsRoot)) continue;
-
-        const versions = fs.readdirSync(toolsRoot, { withFileTypes: true })
-            .filter((entry) => entry.isDirectory())
-            .map((entry) => entry.name)
-            .sort((a, b) => b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' }));
-
-        for (const version of versions) {
-            const exePath = path.join(toolsRoot, version, exeName);
-            if (fs.existsSync(exePath)) {
-                return exePath;
-            }
-        }
-    }
-
-    return '';
-}
-
-function resolveNinjaExecutable() {
-    const envNinja = String(process.env.CMAKE_MAKE_PROGRAM || process.env.NINJA || '').trim();
-    const candidates = [
-        envNinja,
-        path.resolve(__dirname, '../../../.venv/Scripts/ninja.exe'),
-        path.resolve(__dirname, '../../env/Scripts/ninja.exe'),
-    ].filter(Boolean);
-
-    for (const candidate of candidates) {
-        if (fs.existsSync(candidate)) return candidate;
-    }
-
-    // On unix-like systems we can usually rely on PATH if not found above.
-    if (os.platform() !== 'win32') {
-        return 'ninja';
-    }
-
-    return '';
-}
 
 function execFileAsync(cmd, args) {
     return new Promise((resolve, reject) => {
@@ -667,166 +445,8 @@ async function listSystemSerialPorts() {
     }
 }
 
-async function fetchPicoMicropythonUf2Asset() {
-    const sourceInfo = resolvePicoMicropythonUf2Source();
-    const now = Date.now();
-    const isFresh = picoMicropythonUf2Cache
-        && (now - picoMicropythonUf2Cache.fetchedAt) < PICO_MICROPYTHON_CACHE_TTL_MS;
 
-    if (isFresh) {
-        return { ...picoMicropythonUf2Cache, cacheState: 'hit' };
-    }
 
-    try {
-        if (sourceInfo.kind === 'url') {
-            const upstream = await fetch(sourceInfo.value, {
-                headers: {
-                    'user-agent': 'OpenHW-Studio-Backend/1.0',
-                },
-            });
-
-            if (!upstream.ok) {
-                throw new Error(`Upstream UF2 fetch failed (${upstream.status})`);
-            }
-
-            const arrBuf = await upstream.arrayBuffer();
-            const buffer = Buffer.from(arrBuf);
-            const parsed = new URL(sourceInfo.value);
-            const fileName = path.basename(parsed.pathname || '') || 'pico-micropython-uart0.uf2';
-
-            picoMicropythonUf2Cache = {
-                buffer,
-                fileName,
-                fetchedAt: now,
-                contentType: upstream.headers.get('content-type') || 'application/octet-stream',
-            };
-        } else {
-            const buffer = fs.readFileSync(sourceInfo.value);
-            const fileName = path.basename(sourceInfo.value) || 'pico-micropython-uart0.uf2';
-
-            picoMicropythonUf2Cache = {
-                buffer,
-                fileName,
-                fetchedAt: now,
-                contentType: 'application/octet-stream',
-            };
-        }
-
-        return { ...picoMicropythonUf2Cache, cacheState: 'miss' };
-    } catch (err) {
-        if (picoMicropythonUf2Cache) {
-            return { ...picoMicropythonUf2Cache, cacheState: 'stale' };
-        }
-        throw err;
-    }
-}
-
-async function fetchPicoMicropythonHexAsset() {
-    const sourceInfo = resolvePicoMicropythonHexSource();
-    const now = Date.now();
-    const isFresh = picoMicropythonHexCache
-        && (now - picoMicropythonHexCache.fetchedAt) < PICO_MICROPYTHON_CACHE_TTL_MS;
-
-    if (isFresh) {
-        return { ...picoMicropythonHexCache, cacheState: 'hit' };
-    }
-
-    try {
-        if (sourceInfo.kind === 'url') {
-            const upstream = await fetch(sourceInfo.value, {
-                headers: {
-                    'user-agent': 'OpenHW-Studio-Backend/1.0',
-                },
-            });
-
-            if (!upstream.ok) {
-                throw new Error(`Upstream HEX fetch failed (${upstream.status})`);
-            }
-
-            const text = await upstream.text();
-            const parsed = new URL(sourceInfo.value);
-            const fileName = path.basename(parsed.pathname || '') || 'rp2040-micropython-uart.hex';
-
-            picoMicropythonHexCache = {
-                buffer: Buffer.from(String(text || ''), 'utf8'),
-                fileName,
-                fetchedAt: now,
-                contentType: upstream.headers.get('content-type') || 'text/plain; charset=utf-8',
-            };
-        } else {
-            const buffer = fs.readFileSync(sourceInfo.value);
-            const fileName = path.basename(sourceInfo.value) || 'rp2040-micropython-uart.hex';
-
-            picoMicropythonHexCache = {
-                buffer,
-                fileName,
-                fetchedAt: now,
-                contentType: 'text/plain; charset=utf-8',
-            };
-        }
-
-        return { ...picoMicropythonHexCache, cacheState: 'miss' };
-    } catch (err) {
-        if (picoMicropythonHexCache) {
-            return { ...picoMicropythonHexCache, cacheState: 'stale' };
-        }
-        throw err;
-    }
-}
-
-async function fetchPicoCircuitPythonUf2Asset() {
-    const sourceInfo = resolvePicoCircuitPythonUf2Source();
-    const now = Date.now();
-    const isFresh = picoCircuitPythonUf2Cache
-        && (now - picoCircuitPythonUf2Cache.fetchedAt) < PICO_CIRCUITPYTHON_CACHE_TTL_MS;
-
-    if (isFresh) {
-        return { ...picoCircuitPythonUf2Cache, cacheState: 'hit' };
-    }
-
-    try {
-        if (sourceInfo.kind === 'url') {
-            const upstream = await fetch(sourceInfo.value, {
-                headers: {
-                    'user-agent': 'OpenHW-Studio-Backend/1.0',
-                },
-            });
-
-            if (!upstream.ok) {
-                throw new Error(`Upstream CircuitPython UF2 fetch failed (${upstream.status})`);
-            }
-
-            const arrBuf = await upstream.arrayBuffer();
-            const buffer = Buffer.from(arrBuf);
-            const parsed = new URL(sourceInfo.value);
-            const fileName = path.basename(parsed.pathname || '') || 'adafruit-circuitpython-raspberry_pi_pico-en_US-8.2.7.uf2';
-
-            picoCircuitPythonUf2Cache = {
-                buffer,
-                fileName,
-                fetchedAt: now,
-                contentType: upstream.headers.get('content-type') || 'application/octet-stream',
-            };
-        } else {
-            const buffer = fs.readFileSync(sourceInfo.value);
-            const fileName = path.basename(sourceInfo.value) || 'adafruit-circuitpython-raspberry_pi_pico-en_US-8.2.7.uf2';
-
-            picoCircuitPythonUf2Cache = {
-                buffer,
-                fileName,
-                fetchedAt: now,
-                contentType: 'application/octet-stream',
-            };
-        }
-
-        return { ...picoCircuitPythonUf2Cache, cacheState: 'miss' };
-    } catch (err) {
-        if (picoCircuitPythonUf2Cache) {
-            return { ...picoCircuitPythonUf2Cache, cacheState: 'stale' };
-        }
-        throw err;
-    }
-}
 
 export const compileArduinoCode = async (req, res) => {
     const { code, files, sketchName, fqbn, builder, target, artifacts: requestedArtifacts } = req.body || {};
@@ -840,8 +460,8 @@ export const compileArduinoCode = async (req, res) => {
             400,
             {
                 error: `Unsupported board FQBN: ${targetFqbn}.`,
-                details: 'This compiler supports Arduino Uno (arduino:avr:uno) and Raspberry Pi Pico (rp2040:rp2040) targets. Add the board to src/compiler/boardRegistry.js to extend support.',
-                supportedBoards: ['arduino:avr:uno', 'rp2040:rp2040'],
+                details: 'This compiler supports Arduino Uno (arduino:avr:uno). Add the board to src/compiler/boardRegistry.js to extend support.',
+                supportedBoards: ['arduino:avr:uno'],
             },
             { builder, fqbn: targetFqbn, stage: 'request' }
         );
@@ -944,228 +564,6 @@ export const compileArduinoCode = async (req, res) => {
         );
     }
 
-    // Handle pico-sdk builder
-    if (normalizedBuilder === 'pico-sdk') {
-        const picoSdkPath = resolvePicoSdkPath();
-        if (!picoSdkPath) {
-            return sendCompileFailure(
-                res,
-                400,
-                {
-                    error: 'Pico SDK build failed',
-                    details: 'PICO_SDK_PATH is not configured and no local SDK was found at openhw-studio-backend/external/pico-sdk.',
-                },
-                { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
-            );
-        }
-
-        const toolchain = resolveRp2040ToolchainPaths();
-        if (!toolchain.root || !toolchain.bin) {
-            return sendCompileFailure(
-                res,
-                400,
-                {
-                    error: 'Pico SDK build failed',
-                    details: 'ARM toolchain not found for Pico SDK. Install/repair Arduino RP2040 core (rp2040:rp2040) or set PICO_TOOLCHAIN_PATH.',
-                },
-                { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
-            );
-        }
-
-        const ninjaExe = resolveNinjaExecutable();
-        if (!ninjaExe) {
-            return sendCompileFailure(
-                res,
-                400,
-                {
-                    error: 'Pico SDK build failed',
-                    details: 'Ninja build tool was not found. Install Ninja or set CMAKE_MAKE_PROGRAM to ninja executable.',
-                },
-                { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'precheck' }
-            );
-        }
-
-        const picotoolExe = resolveRp2040PicotoolExecutable();
-
-        const cmakelists = path.join(sketchDir, 'CMakeLists.txt');
-        let sources = [];
-        // Gather written files
-        const filesInDir = fs.readdirSync(sketchDir);
-        for (const f of filesInDir) {
-            if (f.endsWith('.c') || f.endsWith('.cpp') || f.endsWith('.S')) {
-                sources.push(f);
-            }
-        }
-        if (sources.length === 0) {
-            // If there were no .c/.cpp files, then rename the main sketch to .cpp so cmake handles it.
-            const cppName = `${sketchFolderName}.cpp`;
-            fs.renameSync(mainSketchFile, path.join(sketchDir, cppName));
-            sources.push(cppName);
-        }
-        const picotoolShim = picotoolExe
-            ? [
-                'if (DEFINED ENV{PICO_PICOTOOL_EXE} AND NOT TARGET picotool)',
-                'file(TO_CMAKE_PATH "$ENV{PICO_PICOTOOL_EXE}" OPENHW_PICOTOOL_EXE)',
-                'if (EXISTS "${OPENHW_PICOTOOL_EXE}")',
-                'add_executable(picotool IMPORTED GLOBAL)',
-                'set_property(TARGET picotool PROPERTY IMPORTED_LOCATION "${OPENHW_PICOTOOL_EXE}")',
-                'message(STATUS "Using preinstalled picotool at ${OPENHW_PICOTOOL_EXE}")',
-                'endif()',
-                'endif()',
-                '',
-            ].join('\n')
-            : '';
-        const cmaketemplated = `cmake_minimum_required(VERSION 3.13)
-include($ENV{PICO_SDK_PATH}/external/pico_sdk_import.cmake)
-project(pico_project)
-${picotoolShim}pico_sdk_init()
-add_executable(firmware ${sources.join(' ')})
-pico_enable_stdio_usb(firmware 1)
-pico_enable_stdio_uart(firmware 1)
-target_link_libraries(firmware pico_stdlib)
-pico_add_extra_outputs(firmware)
-`;
-        fs.writeFileSync(cmakelists, cmaketemplated);
-
-        const cmakePathEntries = [
-            toolchain.bin,
-            ...(path.isAbsolute(ninjaExe) ? [path.dirname(ninjaExe)] : []),
-            ...(picotoolExe && path.isAbsolute(picotoolExe) ? [path.dirname(picotoolExe)] : []),
-            process.env.PATH || '',
-        ];
-
-        const cmakeEnv = {
-            ...process.env,
-            PICO_SDK_PATH: picoSdkPath,
-            PICO_TOOLCHAIN_PATH: toolchain.root,
-            ...(picotoolExe ? { PICO_PICOTOOL_EXE: picotoolExe.replace(/\\/g, '/') } : {}),
-            PATH: cmakePathEntries.join(path.delimiter),
-        };
-
-        const configureArgs = [
-            '-S',
-            sketchDir,
-            '-B',
-            buildDir,
-            '-G',
-            'Ninja',
-            `-DCMAKE_MAKE_PROGRAM=${ninjaExe}`,
-            `-DPICO_SDK_PATH=${picoSdkPath}`,
-            `-DPICO_TOOLCHAIN_PATH=${toolchain.root}`,
-            '-DPICO_BOARD=pico',
-        ];
-
-        if (process.platform !== 'win32') {
-            configureArgs.push('-DCMAKE_C_COMPILER_LAUNCHER=ccache');
-            configureArgs.push('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache');
-        }
-
-          try {
-              await enqueueCompile(getCost(board?.costTarget || 'pico', 'compile'), () => new Promise((resolve) => {
-              const doBuild = (cfgStdout = '', cfgStderr = '') => {
-                  execFile('cmake', ['--build', buildDir, '--target', 'firmware', '--config', 'Release'], { cwd: sketchDir, env: cmakeEnv }, (buildErr, buildStdout, buildStderr) => {
-                  if (buildErr) {
-                      console.error('Pico SDK build error:', buildStderr || buildStdout);
-                      return sendCompileFailure(
-                          res,
-                          400,
-                          {
-                              error: 'Pico SDK build failed',
-                              details: `${cfgStderr || cfgStdout}\n${buildStderr || buildStdout}`.trim(),
-                          },
-                          { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'build' }
-                      );
-                  }
-
-                  try {
-                      const stdoutText = `${cfgStdout || ''}\n${buildStdout || ''}`.trim();
-                      const { artifacts, outputFiles } = selectArtifacts(buildDir, wantedArtifacts);
-                      const primaryName = wantedArtifacts[0];
-                      const primaryEntry = artifacts[primaryName];
-                      if (!primaryEntry) {
-                          return sendCompileFailure(
-                              res,
-                              500,
-                              {
-                                  error: 'Compilation finished but no firmware artifact was produced.',
-                                  details: `Requested ${wantedArtifacts.join(', ')} for ${targetFqbn}. Found: ${outputFiles.join(', ') || '(none)'}`,
-                                  requestedArtifacts: wantedArtifacts,
-                              },
-                              { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'artifact' }
-                          );
-                      }
-
-                      const elfEntry = artifacts.elf || null;
-                      const responsePayload = shapeCompileResponse({
-                          primary: {
-                              payload: toLegacyPayload(primaryName, primaryEntry),
-                              artifactType: primaryName,
-                              artifactName: primaryEntry.fileName,
-                              elfPayload: elfEntry ? toLegacyPayload('elf', elfEntry) : '',
-                              elfName: elfEntry?.fileName || null,
-                              gdb: resolveGdbMeta('rp2040'),
-                          },
-                          artifacts,
-                          outputFiles,
-                          stdout: stdoutText,
-                          diagnostics: buildCompileSuccessDiagnostics({
-                              stdout: stdoutText,
-                              builder: normalizedBuilder,
-                              fqbn: targetFqbn,
-                          }),
-                          cache: 'miss',
-                      });
-
-                      setCompileResultCache(requestHash, responsePayload);
-                      return res.json({ ...responsePayload });
-                  } catch (err) {
-                      console.error('Error extracting UF2:', err);
-                      return sendCompileFailure(
-                          res,
-                          500,
-                          { error: 'Failed to extract UF2.', details: err?.message || 'UF2 extraction failed.' },
-                          { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'artifact' }
-                      );
-                  } finally {
-                      resolve();
-                  }
-              });
-          };
-
-          if (fs.existsSync(path.join(buildDir, 'CMakeCache.txt'))) {
-              return doBuild();
-          }
-
-          execFile('cmake', configureArgs, { cwd: sketchDir, env: cmakeEnv }, (cfgErr, cfgStdout, cfgStderr) => {
-              if (cfgErr) {
-                  console.error('Pico SDK configure error:', cfgStderr || cfgStdout);
-                  sendCompileFailure(
-                      res,
-                      400,
-                      {
-                          error: 'Pico SDK build failed',
-                          details: cfgStderr || cfgStdout,
-                      },
-                      { builder: normalizedBuilder, fqbn: targetFqbn, stage: 'configure' }
-                  );
-                  return resolve();
-              }
-              doBuild(cfgStdout, cfgStderr);
-          });
-          }));
-          } catch (poolErr) {
-              if (poolErr?.code === 'POOL_FULL') {
-                  res.setHeader('Retry-After', String(poolErr.retryAfterSec || 30));
-                  return res.status(503).json({
-                      error: 'Compile server is full for now. Please try again in a moment.',
-                      retryAfterSec: poolErr.retryAfterSec || 30,
-                  });
-              }
-              throw poolErr;
-          }
-          return;
-    }
-
     // Parse and resolve libraries from the optional libraries_txt field
     const libraryEntries = parseLibrariesTxt(req.body?.libraries_txt);
     const libraryPaths   = await ensureLibrariesForCompile(libraryEntries);
@@ -1174,9 +572,8 @@ pico_add_extra_outputs(firmware)
     // Determine target
     const isAVR  = String(targetFqbn).includes('avr');
 
-    // Disabled for AVR and RP2040 because their platform.txt prepends compiler.path directly, which breaks the ccache command.
-    const isRP2040 = String(targetFqbn).includes('rp2040');
-    const useCcache = process.platform !== 'win32' && !isAVR && !isRP2040;
+    // Disabled for AVR because its platform.txt prepends compiler.path directly, which breaks the ccache command.
+    const useCcache = process.platform !== 'win32' && !isAVR;
 
     const ccacheC   = 'arm-none-eabi-gcc';
     const ccacheCpp = 'arm-none-eabi-g++';
@@ -1193,9 +590,7 @@ pico_add_extra_outputs(firmware)
     // selectArtifacts only picks files the frontend asked for.
     const wantMap = wantedArtifacts.includes('map');
     const mapFlag = wantMap
-        ? (String(targetFqbn).toLowerCase().includes('rp2040')
-            ? ['--build-property', 'compiler.c.elf.extra_flags=-Wl,-Map,{build.path}/{build.project_name}.map']
-            : ['--build-property', 'compiler.c.elf.extra_flags=-Wl,-Map,{build.path}/{build.project_name}.map'])
+        ? ['--build-property', 'compiler.c.elf.extra_flags=-Wl,-Map,{build.path}/{build.project_name}.map']
         : [];
 
     const cliArgs = [
@@ -1374,7 +769,7 @@ export const flashFirmware = (req, res) => {
                 410,
                 {
                     error: 'ESP32/STM32 hardware flashing is not supported in this build.',
-                    details: 'This backend build supports Arduino Uno (arduino:avr) and Raspberry Pi Pico (rp2040) targets only.',
+                    details: 'This backend build supports Arduino Uno (arduino:avr) targets only.',
                 },
                 { builder: 'arduino-cli', fqbn: targetFqbn, stage: 'request' }
             );
@@ -1446,56 +841,5 @@ export const listSerialPorts = async (req, res) => {
     }
 };
 
-export const getDefaultPicoMicroPythonUf2 = async (req, res) => {
-    try {
-        const asset = await fetchPicoMicropythonUf2Asset();
 
-        res.setHeader('Content-Type', asset.contentType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${asset.fileName || 'pico-micropython.uf2'}"`);
-        res.setHeader('Cache-Control', 'public, max-age=3600');
-        res.setHeader('X-OpenHW-UF2-Cache', asset.cacheState || 'unknown');
 
-        return res.status(200).send(asset.buffer);
-    } catch (err) {
-        return res.status(502).json({
-            error: 'Failed to fetch default Pico MicroPython UF2',
-            details: err?.message || 'Unknown error',
-        });
-    }
-};
-
-export const getDefaultPicoMicroPythonHex = async (req, res) => {
-    try {
-        const asset = await fetchPicoMicropythonHexAsset();
-
-        res.setHeader('Content-Type', asset.contentType || 'text/plain; charset=utf-8');
-        res.setHeader('Content-Disposition', `inline; filename="${asset.fileName || 'rp2040-micropython-uart.hex'}"`);
-        res.setHeader('Cache-Control', 'public, max-age=3600');
-        res.setHeader('X-OpenHW-HEX-Cache', asset.cacheState || 'unknown');
-
-        return res.status(200).send(asset.buffer);
-    } catch (err) {
-        return res.status(502).json({
-            error: 'Failed to fetch default Pico MicroPython HEX',
-            details: err?.message || 'Unknown error',
-        });
-    }
-};
-
-export const getDefaultPicoCircuitPythonUf2 = async (req, res) => {
-    try {
-        const asset = await fetchPicoCircuitPythonUf2Asset();
-
-        res.setHeader('Content-Type', asset.contentType || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${asset.fileName || 'adafruit-circuitpython-raspberry_pi_pico-en_US-8.2.7.uf2'}"`);
-        res.setHeader('Cache-Control', 'public, max-age=3600');
-        res.setHeader('X-OpenHW-UF2-Cache', asset.cacheState || 'unknown');
-
-        return res.status(200).send(asset.buffer);
-    } catch (err) {
-        return res.status(502).json({
-            error: 'Failed to fetch default Pico CircuitPython UF2',
-            details: err?.message || 'Unknown error',
-        });
-    }
-};
