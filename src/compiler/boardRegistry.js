@@ -31,18 +31,22 @@ const BOARD_DEFINITIONS = Object.freeze([
         costTarget: 'uno',
     },
     {
-        id: 'pico',
-        label: 'Raspberry Pi Pico (RP2040)',
-        fqbnMatchers: ['rp2040:rp2040', 'rpipico'],
+        id: 'pico2',
+        label: 'Raspberry Pi Pico 2 (RP2350)',
+        // BEFORE pico: 'rpipico2' also contains 'rpipico', and
+        // 'wiznet_5500_evb_pico2' contains 'wiznet_5500_evb_pico' —
+        // resolveBoard uses find(), so this entry must precede the pico
+        // entry for Pico 2 FQBNs to resolve here.
+        fqbnMatchers: ['rpipico2', 'rp2350', 'rpipico2w', 'wiznet_5500_evb_pico2', 'pico2'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['uf2', 'elf']),
         costTarget: 'pico',
     },
     {
-        id: 'pico2',
-        label: 'Raspberry Pi Pico 2 (RP2350)',
-        fqbnMatchers: ['rpipico2', 'rp2350', 'pico2'],
+        id: 'pico',
+        label: 'Raspberry Pi Pico (RP2040)',
+        fqbnMatchers: ['rp2040:rp2040', 'rpipico', 'rpipicow', 'wiznet_5500_evb_pico', 'wiznet_6300'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['uf2', 'elf']),
@@ -60,7 +64,11 @@ const BOARD_DEFINITIONS = Object.freeze([
     {
         id: 'stm32f1',
         label: 'STM32F1 Blue Pill',
-        fqbnMatchers: [':genf1', 'bluepill'],
+        // GenF1 pnum parts + Nucleo-64 F103RB (all compile via arduino-cli,
+        // same STM32 core). GD32 parts have no core entry — they compile as
+        // the closest STM32F103 part; the runner still applies the GD32
+        // IDCODE via the chip opt (see gapStm32f1.md).
+        fqbnMatchers: [':genf1', 'bluepill', 'maplemini', 'nucleo_64', 'nucleo_f103rb', 'generic_f103'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['bin', 'elf']),
@@ -69,7 +77,7 @@ const BOARD_DEFINITIONS = Object.freeze([
     {
         id: 'stm32f4',
         label: 'STM32F4 Discovery',
-        fqbnMatchers: ['stmicroelectronics:stm32:disco', 'disco_f407vg', ':genf4', 'f407'],
+        fqbnMatchers: ['stmicroelectronics:stm32:disco', 'disco_f407vg', 'disco_f429zi', ':genf4', 'blackpill_f401', 'blackpill_f411', 'black_f407ve', 'f407', 'f401', 'f411', 'f429'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['bin', 'elf']),
