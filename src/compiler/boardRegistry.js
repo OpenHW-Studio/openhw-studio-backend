@@ -33,7 +33,16 @@ const BOARD_DEFINITIONS = Object.freeze([
     {
         id: 'pico',
         label: 'Raspberry Pi Pico (RP2040)',
-        fqbnMatchers: ['rp2040:rp2040'],
+        fqbnMatchers: ['rp2040:rp2040', 'rpipico'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['uf2', 'elf']),
+        costTarget: 'pico',
+    },
+    {
+        id: 'pico2',
+        label: 'Raspberry Pi Pico 2 (RP2350)',
+        fqbnMatchers: ['rpipico2', 'rp2350', 'pico2'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['uf2', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['uf2', 'elf']),
@@ -51,7 +60,7 @@ const BOARD_DEFINITIONS = Object.freeze([
     {
         id: 'stm32f1',
         label: 'STM32F1 Blue Pill',
-        fqbnMatchers: ['stmicroelectronics:stm32', ':genf1', 'bluepill'],
+        fqbnMatchers: [':genf1', 'bluepill'],
         defaultBuilder: 'arduino-cli',
         supportedArtifacts: Object.freeze(['bin', 'hex', 'elf', 'map']),
         defaultArtifacts: Object.freeze(['bin', 'elf']),
