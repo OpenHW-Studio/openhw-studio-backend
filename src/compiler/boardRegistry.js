@@ -83,6 +83,19 @@ const BOARD_DEFINITIONS = Object.freeze([
         defaultArtifacts: Object.freeze(['bin', 'elf']),
         costTarget: 'stm32f4',
     },
+    {
+        // Retro 8/16-bit boards (8086emu): no arduino FQBN — the frontend
+        // assembles .asm in-WASM and never calls /compile for these kinds.
+        // The entry exists so isSupportedFqbn('retro:8086') is true for
+        // validation/routing code that gates on registry membership.
+        id: 'retro',
+        label: 'Retro 8/16-bit (8086emu assembler)',
+        fqbnMatchers: ['retro:'],
+        defaultBuilder: 'retro-asm',
+        supportedArtifacts: Object.freeze(['asm']),
+        defaultArtifacts: Object.freeze(['asm']),
+        costTarget: 'retro',
+    },
 ]);
 
 /**
