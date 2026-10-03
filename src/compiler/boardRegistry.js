@@ -31,6 +31,29 @@ const BOARD_DEFINITIONS = Object.freeze([
         costTarget: 'uno',
     },
     {
+        id: 'nano',
+        label: 'Arduino Nano (ATmega328P, old bootloader)',
+        // Same arduino:avr core as Uno (already installed); the
+        // atmega328old cpu option only selects the bootloader, which the
+        // simulator does not model — the hex is chip-identical to Uno.
+        fqbnMatchers: ['arduino:avr:nano'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['hex', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['hex', 'elf']),
+        costTarget: 'uno',
+    },
+    {
+        id: 'mega',
+        label: 'Arduino Mega 2560',
+        // Same arduino:avr core as Uno (already installed); ATmega2560
+        // hex runs on the AVRRunner mega peripheral set (mega-timers).
+        fqbnMatchers: ['arduino:avr:mega'],
+        defaultBuilder: 'arduino-cli',
+        supportedArtifacts: Object.freeze(['hex', 'elf', 'map']),
+        defaultArtifacts: Object.freeze(['hex', 'elf']),
+        costTarget: 'uno',
+    },
+    {
         id: 'pico2',
         label: 'Raspberry Pi Pico 2 (RP2350)',
         // BEFORE pico: 'rpipico2' also contains 'rpipico', and
