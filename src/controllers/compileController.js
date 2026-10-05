@@ -108,11 +108,21 @@ function shapeCompileResponse({ primary, artifacts, outputFiles, stdout, diagnos
 // src/compiler/resultCache.js — imported above as
 // getCompileResultFromCache / setCompileResultCache. Do not re-add locals here.
 
+let workspaceNonce = 0;
+
 function ensureCompileWorkspace(scopeHash, safeSketchName) {
-    const sketchFolderName = `${safeSketchName}_${String(scopeHash || '').slice(0, 8) || '00000000'}`;
+    // Per-request isolation: concurrent compiles of the SAME sketch used to
+    // share sketchDir+buildDir (clearWorkspaceSources rm + two arduino-cli
+    // on one build dir = guaranteed corruption → HTTP 400). Each request
+    // gets its own dirs (folder==ino rule preserved via the shared nonce);
+    // ccache keeps repeated builds fast, the result cache skips them
+    // entirely, and dirs are removed after artifacts are read into memory
+    // (see cleanupCompileWorkspace; prune backstops leftovers).
+    const nonce = `${Date.now().toString(36)}${(workspaceNonce = (workspaceNonce + 1) % 1296).toString(36)}${Math.floor(Math.random() * 1296).toString(36)}`;
+    const sketchFolderName = `${safeSketchName}_${String(scopeHash || '').slice(0, 8) || '00000000'}_${nonce}`;
     const scopeRoot = path.join(COMPILE_WORKSPACE_ROOT, String(scopeHash || 'default'));
     const sketchDir = path.join(scopeRoot, sketchFolderName);
-    const buildDir = path.join(scopeRoot, 'build');
+    const buildDir = path.join(scopeRoot, `build_${nonce}`);
 
     fs.mkdirSync(sketchDir, { recursive: true });
     fs.mkdirSync(buildDir, { recursive: true });
@@ -124,6 +134,16 @@ function ensureCompileWorkspace(scopeHash, safeSketchName) {
         sketchFolderName,
         mainSketchFile: path.join(sketchDir, `${sketchFolderName}.ino`),
     };
+}
+
+/** Best-effort removal of a per-request workspace (artifacts already in memory). */
+function cleanupCompileWorkspace(sketchDir, buildDir) {
+    for (const dir of [sketchDir, buildDir]) {
+        if (!dir) continue;
+        try {
+            fs.rmSync(dir, { recursive: true, force: true });
+        } catch { /* prune backstops leftovers */ }
+    }
 }
 
 function clearWorkspaceSources(sketchDir) {
@@ -619,6 +639,7 @@ export const compileArduinoCode = async (req, res) => {
           }, (error, stdout, stderr) => {
         if (error) {
             console.error('Compile error:', error || stdout);
+            cleanupCompileWorkspace(sketchDir, buildDir);
             return sendCompileFailure(
                 res,
                 400,
@@ -635,6 +656,7 @@ export const compileArduinoCode = async (req, res) => {
         const primaryEntry = artifacts[primaryName];
 
         if (!primaryEntry) {
+            cleanupCompileWorkspace(sketchDir, buildDir);
             return sendCompileFailure(
                 res,
                 500,
@@ -675,6 +697,7 @@ export const compileArduinoCode = async (req, res) => {
         responsePayload.intelHex = primaryName === 'hex' ? primaryPayload : '';
 
         setCompileResultCache(requestHash, responsePayload);
+        cleanupCompileWorkspace(sketchDir, buildDir);
         res.json({ ...responsePayload });
         resolve();
       });
