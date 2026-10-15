@@ -24,6 +24,7 @@
         "OneWire"
     ],
     "cached": [
+        "FastLED",
         "Keypad",
         "Servo@1.1.8"
     ]
