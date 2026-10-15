@@ -48,8 +48,34 @@ const serializeUser = (user) => ({
 const generateOtp = () =>
   String(crypto.randomInt(100000, 999999));
 
-// ─── Rate-limit helper (max 3 sends per email per 10 min window) ─────────────
+// ─── Rate-limit helpers ───────────────────────────────────────────────────────
 const MAX_OTP_ATTEMPTS = 3;
+// Max OTP *sends* per email per 10-min window. Enforced BEFORE deleting the
+// old record (the old code deleted first, so the count was always zero).
+const MAX_OTP_SENDS = Math.max(1, Number(process.env.OTP_MAX_SENDS || 3));
+const OTP_SEND_WINDOW_MS = 10 * 60 * 1000;
+const otpSendAttempts = new Map(); // email -> { count, firstAt }
+
+const checkOtpSendThrottle = (email) => {
+  const now = Date.now();
+  const entry = otpSendAttempts.get(email);
+  if (!entry) return false;
+  if (now - entry.firstAt > OTP_SEND_WINDOW_MS) {
+    otpSendAttempts.delete(email);
+    return false;
+  }
+  return entry.count >= MAX_OTP_SENDS;
+};
+
+const recordOtpSend = (email) => {
+  const now = Date.now();
+  const entry = otpSendAttempts.get(email);
+  if (!entry || now - entry.firstAt > OTP_SEND_WINDOW_MS) {
+    otpSendAttempts.set(email, { count: 1, firstAt: now });
+    return;
+  }
+  entry.count += 1;
+};
 
 // ─── Send OTP ─────────────────────────────────────────────────────────────────
 /**
@@ -103,9 +129,13 @@ export const sendOtp = async (req, res) => {
       });
     }
 
-    // ── 3. Rate-limit: delete any existing OTP record first ──────────────────
-    //    Count how many OTPs were sent in last 10 min (they auto-expire anyway).
-    //    If the existing record still exists it means the user is retrying quickly.
+    // ── 3. Rate-limit sends per email (checked BEFORE deleting old record) ──
+    if (checkOtpSendThrottle(sanitizedEmail)) {
+      return res.status(429).json({
+        error: 'Too many verification codes sent. Please wait 10 minutes and try again.',
+      });
+    }
+    recordOtpSend(sanitizedEmail);
     await Otp.deleteMany({ email: sanitizedEmail, purpose: 'signup' });
 
     // ── 4. Generate OTP & hash it for storage ────────────────────────────────
@@ -241,6 +271,7 @@ export const verifyOtp = async (req, res) => {
     res.cookie('jwt', token, {
       httpOnly: true,
       sameSite: 'strict',
+      secure: process.env.NODE_ENV === 'production',
       maxAge: 24 * 60 * 60 * 1000,
     });
 

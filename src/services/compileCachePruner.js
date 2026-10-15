@@ -1,17 +1,24 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { getBackendRoot } from '../compiler/paths.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const TEMP_DIR = path.join(getBackendRoot(), 'temp');
 
-const BUILDS_DIR = path.resolve(__dirname, '../../builds');
-const TEMP_DIR = path.resolve(__dirname, '../../temp');
+// ─── Cache storage limits (env-configurable for Docker deploys) ─────────────
+// RESULT_CACHE_MAX_MB:    hard cap for temp/compile-results (default 500 MB).
+// RESULT_CACHE_TARGET_MB: prune down to this after exceeding the cap (default 400 MB).
+const parseMb = (value, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+};
+const RESULT_MAX_MB = parseMb(process.env.RESULT_CACHE_MAX_MB, 500);
+const RESULT_TARGET_MB = Math.min(parseMb(process.env.RESULT_CACHE_TARGET_MB, 400), RESULT_MAX_MB);
 
 const CACHE_DIRS = [
-    { target: 'esp32',    path: path.join(BUILDS_DIR, 'esp32-compile-cache'),     binary: 'merged-flash.bin' },
-    { target: 'stm32',    path: path.join(BUILDS_DIR, 'stm32-compile-cache'),     binary: 'firmware.elf' },
-    { target: 'pico-uno', path: path.join(TEMP_DIR, 'pico-uno-compile-cache'),    binary: 'result.json' }
+    { target: 'compile-results', path: path.join(TEMP_DIR, 'compile-results'), binary: 'result.json' },
+    // Legacy dir from before the compiler-worker refactor; pruned if present,
+    // ignored once empty. Safe to remove this entry after one release cycle.
+    { target: 'pico-uno-legacy', path: path.join(TEMP_DIR, 'pico-uno-compile-cache'), binary: 'result.json' }
 ];
 
 /**
@@ -35,8 +42,9 @@ function _folderSize(dirPath) {
 }
 
 /**
- * Calculates total size of the compilation cache pool and evicts least recently
- * used entries if total usage exceeds 900 MB, down to 800 MB.
+ * Calculates total size of the firmware result cache pool (L2 disk,
+ * temp/compile-results) and evicts least recently used entries when total
+ * usage exceeds 500 MB, down to 400 MB.
  * Runs asynchronously to prevent blocking request threads.
  */
 export async function pruneUniversalCachePool() {
@@ -88,16 +96,13 @@ export async function pruneUniversalCachePool() {
         const sizeInMb = totalSize / (1024 * 1024);
         console.log(`[Compile Cache Pool] Current total storage usage: ${sizeInMb.toFixed(2)} MB`);
 
-        // Each Docker container has its own isolated /app/builds tmpfs, so this
-        // limit applies per-container (esp32-worker and stm32-worker independently).
-        // Cap cache at 500 MB; prune down to 400 MB when exceeded.
-        // This leaves ≥1.5 GB headroom on esp32-worker (2 GB tmpfs)
-        // and ≥500 MB headroom on stm32-worker (1 GB tmpfs) for active builds.
-        const limitBytes  = 500 * 1024 * 1024; // 500 MB
-        const targetBytes = 400 * 1024 * 1024; // 400 MB
+        // The compiler-worker container owns /app/temp, so this limit applies
+        // to that one service. This leaves headroom on the worker for active builds.
+        const limitBytes  = RESULT_MAX_MB * 1024 * 1024;
+        const targetBytes = RESULT_TARGET_MB * 1024 * 1024;
 
         if (totalSize > limitBytes) {
-            console.log(`[Compile Cache Pool] ⚠️ Storage limit exceeded (${sizeInMb.toFixed(2)} MB > 500 MB). Starting LRU eviction...`);
+            console.log(`[Compile Cache Pool] ⚠️ Storage limit exceeded (${sizeInMb.toFixed(2)} MB > ${RESULT_MAX_MB} MB). Starting LRU eviction...`);
             
             // Sort entries ascending (oldest first)
             allCachedEntries.sort((a, b) => a.mtimeMs - b.mtimeMs);

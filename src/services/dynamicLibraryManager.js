@@ -7,7 +7,8 @@
  *                 Downloaded once on server boot, never pruned.
  *
  *   cache/      — Dynamically fetched libraries (latest or specific versions).
- *                 Subject to a 512 MB LRU prune cycle.
+ *                 LRU-pruned past LIB_CACHE_MAX_MB (default 512 MB, prune to
+ *                 LIB_CACHE_TARGET_MB, default 400 MB).
  *                 Versioned entries stored under cache/<Name>@<version>/.
  *
  * Public API:
@@ -24,20 +25,29 @@ import AdmZip from 'adm-zip';
 import { execFile } from 'child_process';
 import util from 'util';
 import { getLibraryMetadata } from './libraryIndexService.js';
+import { getCacheDir, getPermanentDir } from '../compiler/paths.js';
 
 const execFileAsync = util.promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname  = path.dirname(__filename);
 
-const DATA_DIR      = path.resolve(__dirname, '../../../data');
-const CACHE_DIR     = path.join(DATA_DIR, 'libraries/cache');
-const PERM_DIR      = path.join(DATA_DIR, 'libraries/permanent');
+const CACHE_DIR     = getCacheDir();
+const PERM_DIR      = getPermanentDir();
 const CONFIG_FILE   = path.resolve(__dirname, '../config/libraries.json');
 const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
 
-const MAX_CACHE_SIZE   = 512 * 1024 * 1024; // 512 MB  (cache only)
-const PRUNE_TARGET_SIZE = 400 * 1024 * 1024; // 400 MB
+// ─── Cache storage limits (env-configurable for Docker deploys) ─────────────
+// LIB_CACHE_MAX_MB:    hard cap for data/libraries/cache (default 512 MB).
+// LIB_CACHE_TARGET_MB: prune down to this after exceeding the cap (default 400 MB).
+const parseMb = (value, fallback) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+};
+const MAX_CACHE_MB = parseMb(process.env.LIB_CACHE_MAX_MB, 512);
+const TARGET_CACHE_MB = Math.min(parseMb(process.env.LIB_CACHE_TARGET_MB, 400), MAX_CACHE_MB);
+const MAX_CACHE_SIZE    = MAX_CACHE_MB * 1024 * 1024;    // cache only
+const PRUNE_TARGET_SIZE = TARGET_CACHE_MB * 1024 * 1024;
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -59,7 +69,7 @@ function pruneCache() {
     let cacheSize = getDirectorySize(CACHE_DIR);
     if (cacheSize <= MAX_CACHE_SIZE) return;
 
-    console.log(`[LibraryCache] Cache size (${(cacheSize / 1024 / 1024).toFixed(2)} MB) exceeds 512 MB limit. Pruning to 400 MB...`);
+    console.log(`[LibraryCache] Cache size (${(cacheSize / 1024 / 1024).toFixed(2)} MB) exceeds ${MAX_CACHE_MB} MB limit. Pruning to ${TARGET_CACHE_MB} MB...`);
 
     const libs = fs.readdirSync(CACHE_DIR, { withFileTypes: true })
         .filter(d => d.isDirectory())

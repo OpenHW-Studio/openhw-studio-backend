@@ -1,10 +1,10 @@
 import express from 'express';
 const router = express.Router();
-import { compileArduinoCode } from '../controllers/compileController.js';
 import { searchLibrary, installLibrary, listLibraries, uninstallLibrary, getLibrariesInfo, getLibrariesConfig, updateLibrariesConfig, getCachedLibraries, clearCache } from '../controllers/libController.js';
 import { protectRoute } from '../middleware/authMiddleware.js';
 import userRoutes from './user.js';
 import compileRoutes from './compile.js';
+import { proxyCompileToWorker, isMainRole } from '../compiler/index.js';
 import classroomRoutes from './classroom.js';
 import progressRouter from './progress.js'
 import gamificationRouter from './gamification.js'
@@ -120,7 +120,22 @@ router.post('/validation/run', validateCircuitController);
 
 // User routes for authentication and management
 router.use('/user', userRoutes);
-router.use('/compile', compileRoutes);
+// ROLE=main proxies compile-execution traffic to the compiler-worker;
+// every other role mounts the compile router directly
+// (single-service dev + compiler-worker).
+if (isMainRole()) {
+  // Execution paths — owned by the compiler-worker. Auth policy mirrors
+  // routes/compile.js: guest compile stays public; flash/ports require
+  // protectRoute (401s surface from the worker, enforced again there).
+  router.post('/compile', proxyCompileToWorker);
+  router.post('/compile/diagnostics', proxyCompileToWorker);
+  router.post('/compile/flash', protectRoute, proxyCompileToWorker);
+  router.get('/compile/ports', protectRoute, proxyCompileToWorker);
+  // Library search/install/list stay local (shared volume + index service).
+  router.use('/compile', compileRoutes);
+} else {
+  router.use('/compile', compileRoutes);
+}
 router.use('/classroom', classroomRoutes);
 router.use('/progress', progressRouter);
 router.use('/gamification', gamificationRouter);

@@ -240,6 +240,8 @@ export const dismissNotification = (req, res) => {
     res.json({ success: true, message: 'Notification dismissed.' });
 };
 
+const DEPLOY_BRANCH = process.env.DEPLOY_BRANCH || 'develop';
+
 /**
  * Trigger a rebuild of the main repos from the dashboard
  */
@@ -254,7 +256,7 @@ export const triggerBuild = async (req, res) => {
         const response = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${target_repo}/actions/workflows/deploy.yml/dispatches`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ref: 'develop' })
+            body: JSON.stringify({ ref: DEPLOY_BRANCH })
         });
 
         if (!response.ok) {
@@ -275,21 +277,24 @@ export const triggerBuild = async (req, res) => {
 };
 
 /**
- * Trigger a manual rollback to a specific Docker image tag
+ * Trigger a manual rollback to a specific Docker image tag.
+ * NOTE: rollback.yml only rolls the `backend` service today. The admin UI
+ * passes just a repo name, so compiler-worker rollbacks still need a manual
+ * `docker compose pull compiler-worker && up -d` on the host.
  */
 export const rollbackDeployment = async (req, res) => {
     const { repo, image_tag } = req.body;
-    
+
     if (!repo || !ALLOWED_REPOS.includes(repo) || !image_tag) {
         return res.status(400).json({ error: 'Invalid repo or missing image_tag.' });
     }
-    
+
     try {
         const response = await fetchWithTimeout(`https://api.github.com/repos/${GITHUB_OWNER}/${repo}/actions/workflows/rollback.yml/dispatches`, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                ref: 'develop',
+                ref: DEPLOY_BRANCH,
                 inputs: {
                     image_tag: image_tag
                 }
