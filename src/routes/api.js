@@ -123,6 +123,7 @@ router.post('/validation/run', validateCircuitController);
 router.use('/user', userRoutes);
 router.use('/compile', compileRoutes);
 router.use('/classroom', classroomRoutes);
+router.use('/classrooms', classroomRoutes);
 router.use('/progress', progressRouter);
 router.use('/gamification', gamificationRouter);
 router.use('/project-bank', projectBankRouter);
