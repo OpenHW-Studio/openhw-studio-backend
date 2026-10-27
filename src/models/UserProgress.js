@@ -65,6 +65,17 @@ const UserProgressSchema = new mongoose.Schema(
       default: [],
     },
 
+    // ── Custom Community Adventures ──────────────────────────────────────────
+    customAdventures: [{
+      mapId: { type: mongoose.Schema.Types.ObjectId, ref: 'AdventureMap' },
+      mapSlug: { type: String, required: true },
+      completedMissions: [{ type: String }],
+      isCompleted: { type: Boolean, default: false },
+      certificateClaimed: { type: Boolean, default: false },
+      certificateId: { type: String, default: null },
+      lastActive: { type: Date, default: Date.now },
+    }],
+
     // ── Streaks ──────────────────────────────────────────────────────────────
     currentStreak: { type: Number, default: 0 },
     longestStreak: { type: Number, default: 0 },
