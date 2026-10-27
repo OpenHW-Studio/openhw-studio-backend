@@ -30,9 +30,14 @@ export async function getAdventureMaps(req, res) {
     const filter = { status: 'published' };
 
     if (classroomId && mongoose.Types.ObjectId.isValid(classroomId)) {
-      filter.classroomId = new mongoose.Types.ObjectId(classroomId);
+      const cls = await Class.findById(classroomId).select('assignedAdventureMaps').lean();
+      const assignedIds = (cls?.assignedAdventureMaps || []).map(id => new mongoose.Types.ObjectId(id));
+      filter.$or = [
+        { classroomId: new mongoose.Types.ObjectId(classroomId) },
+        { _id: { $in: assignedIds } }
+      ];
       delete filter.scope;
-      delete filter.status; // allow all maps belonging to this classroom
+      delete filter.status; // allow all maps belonging to or assigned to this classroom
     } else if (tab === 'official') {
       filter.isOfficial = true;
       filter.isPublic = true;

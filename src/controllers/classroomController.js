@@ -5,6 +5,7 @@ import Notice from "../models/Notice.js";
 import Comment from "../models/Comment.js";
 import Submission from "../models/Submission.js";
 import User from "../models/User.js";
+import AdventureMap from "../models/AdventureMap.js";
 import { getClassroomAssetPublicPath } from "../middleware/classroomUpload.js";
 //enhanced
 const { ObjectId } = mongoose.Types;
@@ -1463,5 +1464,88 @@ export const deleteComment = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Failed to delete comment.", error: error.message });
+  }
+};
+
+export const assignAdventureMapToClassroom = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { mapId } = req.body;
+
+    if (!mapId) {
+      return res.status(400).json({ message: "mapId is required." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Classroom not found." });
+    }
+
+    const isClassTeacher = extractId(classroom.teacher) === extractId(req.user?._id || req.user?.id);
+    const isAdmin = req.user?.role === 'admin';
+    if (!isClassTeacher && !isAdmin) {
+      return res.status(403).json({ message: "Only the class teacher can assign adventure maps." });
+    }
+
+    let mapQuery = { _id: mapId };
+    if (!mongoose.Types.ObjectId.isValid(mapId)) {
+      mapQuery = { slug: mapId };
+    }
+    const map = await AdventureMap.findOne(mapQuery);
+    if (!map) {
+      return res.status(404).json({ message: "Adventure map not found." });
+    }
+
+    await Class.findByIdAndUpdate(classId, {
+      $addToSet: { assignedAdventureMaps: map._id }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Adventure map "${map.title}" assigned to classroom successfully.`,
+      mapId: map._id
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to assign adventure map.", error: error.message });
+  }
+};
+
+export const unassignAdventureMapFromClassroom = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { mapId } = req.body;
+
+    if (!mapId) {
+      return res.status(400).json({ message: "mapId is required." });
+    }
+
+    const classroom = await Class.findById(classId);
+    if (!classroom) {
+      return res.status(404).json({ message: "Classroom not found." });
+    }
+
+    const isClassTeacher = extractId(classroom.teacher) === extractId(req.user?._id || req.user?.id);
+    const isAdmin = req.user?.role === 'admin';
+    if (!isClassTeacher && !isAdmin) {
+      return res.status(403).json({ message: "Only the class teacher can unassign adventure maps." });
+    }
+
+    let resolvedMapId = mapId;
+    if (!mongoose.Types.ObjectId.isValid(mapId)) {
+      const map = await AdventureMap.findOne({ slug: mapId });
+      if (map) resolvedMapId = map._id;
+    }
+
+    await Class.findByIdAndUpdate(classId, {
+      $pull: { assignedAdventureMaps: resolvedMapId }
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Adventure map unassigned from classroom successfully.",
+      mapId: resolvedMapId
+    });
+  } catch (error) {
+    return res.status(500).json({ message: "Failed to unassign adventure map.", error: error.message });
   }
 };
