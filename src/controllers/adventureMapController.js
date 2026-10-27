@@ -2,6 +2,7 @@ import AdventureMap from '../models/AdventureMap.js';
 import UserProgress from '../models/UserProgress.js';
 import Certificate from '../models/Certificate.js';
 import Class from '../models/Class.js';
+import Notice from '../models/Notice.js';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
 
@@ -308,6 +309,19 @@ export async function createAdventureMap(req, res) {
     });
 
     await newMap.save();
+
+    if (classroomId) {
+      try {
+        await Notice.create({
+          classId: classroomId,
+          title: `🗺️ New Adventure Journey: ${newMap.title}`,
+          message: `Your teacher has created an exclusive adventure journey: "${newMap.title}" (${newMap.board || 'Hardware'}). Go to the Adventure Map tab to explore worlds, complete missions, and earn XP!`,
+          createdBy: userId,
+        });
+      } catch (noticeErr) {
+        console.warn('Failed to create classroom notice for new adventure map:', noticeErr);
+      }
+    }
 
     return res.status(201).json({
       success: true,

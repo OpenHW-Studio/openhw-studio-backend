@@ -1500,6 +1500,18 @@ export const assignAdventureMapToClassroom = async (req, res) => {
       $addToSet: { assignedAdventureMaps: map._id }
     });
 
+    // Automatically post notice to classroom stream and send notification to enrolled students
+    try {
+      await Notice.create({
+        classId: classroom._id,
+        title: `🗺️ New Adventure Journey: ${map.title}`,
+        message: `Your teacher has assigned the "${map.title}" (${map.boardArchitecture?.board || map.board || 'Hardware'}) adventure map to this class. Head over to the Adventure Map tab to explore worlds, complete missions, and earn XP!`,
+        createdBy: req.user?._id || req.user?.id,
+      });
+    } catch (noticeErr) {
+      console.warn("Failed to create notice for adventure map assignment:", noticeErr);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Adventure map "${map.title}" assigned to classroom successfully.`,
