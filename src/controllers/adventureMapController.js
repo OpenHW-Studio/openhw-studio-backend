@@ -2,6 +2,7 @@ import AdventureMap from '../models/AdventureMap.js';
 import UserProgress from '../models/UserProgress.js';
 import Certificate from '../models/Certificate.js';
 import Class from '../models/Class.js';
+import ClassAdventureProgress from '../models/ClassAdventureProgress.js';
 import Notice from '../models/Notice.js';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
@@ -510,6 +511,40 @@ export async function completeAdventureMission(req, res) {
     userAdv.lastActive = new Date();
 
     await progress.save();
+
+    // Also record in ClassAdventureProgress if this map belongs to or is assigned to student's classroom
+    try {
+      const candidateClassIds = [];
+      if (map.classroomId) candidateClassIds.push(map.classroomId.toString());
+      const assignedClasses = await Class.find({
+        assignedAdventureMaps: map._id,
+        students: userId
+      }).select('_id').lean();
+      assignedClasses.forEach(c => candidateClassIds.push(c._id.toString()));
+
+      // Unique class IDs
+      const uniqueClassIds = Array.from(new Set(candidateClassIds));
+      for (const cId of uniqueClassIds) {
+        const cap = await ClassAdventureProgress.findOneAndUpdate(
+          { classId: cId, studentId: userId },
+          { $setOnInsert: { classId: cId, studentId: userId } },
+          { new: true, upsert: true, setDefaultsOnInsert: true }
+        );
+        const alreadyInClass = (cap.completedProjects || []).some(p => p.projectSlug === missionSlug);
+        if (!alreadyInClass) {
+          cap.completedProjects.push({
+            projectSlug: missionSlug,
+            xpEarned: Number(xpReward || 100),
+            completedAt: new Date()
+          });
+          cap.xp += Math.max(0, Number(xpReward || 100));
+          cap.lastActivityAt = new Date();
+          await cap.save();
+        }
+      }
+    } catch (classProgErr) {
+      console.warn('Failed to mirror custom adventure mission into ClassAdventureProgress:', classProgErr);
+    }
 
     return res.json({
       success: true,
