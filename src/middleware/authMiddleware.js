@@ -136,3 +136,23 @@ export const requireAdmin = (req, res, next) => {
   }
   return res.status(403).json({ message: "Admin access required" });
 };
+
+/**
+ * Role-based access middleware factory.
+ * Usage: requireRole('teacher', 'user', 'admin')
+ * Blocks any user whose role is NOT in the allowedRoles list.
+ * Always allows 'admin' through unless explicitly excluded.
+ */
+export const requireRole = (...allowedRoles) => (req, res, next) => {
+  if (!req.user) {
+    return res.status(401).json({ message: "Authentication required" });
+  }
+  const role = req.user.role;
+  if (!allowedRoles.includes(role)) {
+    return res.status(403).json({
+      success: false,
+      message: `Access denied. This action requires one of the following roles: ${allowedRoles.join(', ')}. Your role: ${role}.`,
+    });
+  }
+  next();
+};
