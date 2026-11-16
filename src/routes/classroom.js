@@ -26,6 +26,8 @@ import {
   createComment,
   getComments,
   deleteComment,
+  assignAdventureMapToClassroom,
+  unassignAdventureMapFromClassroom,
 } from "../controllers/classroomController.js";
 import {
   getClassAdventureConfig,
@@ -75,6 +77,9 @@ router.post("/:classId/adventure/progress/events", protectRoute, postClassAdvent
 router.get("/:classId/adventure/progress/students", protectRoute, getClassAdventureStudentProgress);
 router.get("/:classId/adventure/unlocks", protectRoute, getAdventureUnlocks);
 router.post("/:classId/adventure/unlocks", protectRoute, unlockAdventureComponents);
+
+router.post("/:classId/adventure-maps/assign", protectRoute, assignAdventureMapToClassroom);
+router.post("/:classId/adventure-maps/unassign", protectRoute, unassignAdventureMapFromClassroom);
 
 router.get("/:classId", protectRoute, getClassroomById);
 router.put("/:classId", protectRoute, updateClassroom);

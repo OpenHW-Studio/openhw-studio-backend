@@ -284,6 +284,7 @@ export const getClassAdventureStudentProgress = async (req, res) => {
           level: progress?.level || 1,
           completedProjectsCount: completedProjects.length,
           completedProjects,
+          quizAttempts: progress?.quizAttempts || [],
           lastActivityAt: progress?.lastActivityAt || null,
         },
       };

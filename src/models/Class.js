@@ -8,7 +8,8 @@ const classSchema = new mongoose.Schema({
   joinCode: { type: String, required: true, unique: true },
   students: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
   assignments: [{ type: mongoose.Schema.Types.ObjectId, ref: "Assignment" }],
-  notices: [{ type: mongoose.Schema.Types.ObjectId, ref: "Notice" }]
+  notices: [{ type: mongoose.Schema.Types.ObjectId, ref: "Notice" }],
+  assignedAdventureMaps: [{ type: mongoose.Schema.Types.ObjectId, ref: "AdventureMap" }]
 }, { timestamps: true });
 
 export default mongoose.model("Class", classSchema);
