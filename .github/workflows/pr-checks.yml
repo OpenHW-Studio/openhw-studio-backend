@@ -38,7 +38,7 @@ jobs:
         uses: docker/build-push-action@v5
         with:
           context: .
-          file: ./openhw-studio-backend/Dockerfile
+          file: ./openhw-studio-backend/Dockerfile.main
           push: false # We only build to verify it works, we don't push it yet!
           tags: test-backend:pr
 

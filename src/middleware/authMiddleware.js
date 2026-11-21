@@ -18,9 +18,9 @@ export const protectRoute = async (req, res, next) => {
       ? authHeader.split(" ")[1]
       : null;
     const cookieToken = parseCookieToken(req.headers.cookie || "");
-    const queryToken = req.query?.token || null;
-
-    const token = bearerToken || cookieToken || queryToken;
+    // NOTE: no ?token= query fallback — query strings land in access logs,
+    // browser history, and Referer headers. Bearer header or httpOnly cookie.
+    const token = bearerToken || cookieToken;
     if (!token) {
       console.log("[Auth] No token provided");
       return res.status(401).json({ message: "Unauthorized: No token provided" });
@@ -103,9 +103,9 @@ export const optionalAuth = async (req, res, next) => {
       ? authHeader.split(" ")[1]
       : null;
     const cookieToken = parseCookieToken(req.headers.cookie || "");
-    const queryToken = req.query?.token || null;
 
-    const token = bearerToken || cookieToken || queryToken;
+    // NOTE: no ?token= query fallback (see protectRoute).
+    const token = bearerToken || cookieToken;
     if (token && process.env.JWT_SECRET) {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       const user = await User.findById(decoded.id).select("-password");
@@ -124,7 +124,8 @@ export const requireAdmin = (req, res, next) => {
   if (!req.user) {
     return res.status(401).json({ message: "Authentication required" });
   }
-  const adminEmails = (process.env.VITE_ADMIN_EMAILS || "")
+  // Server-canonical ADMIN_EMAILS first; VITE_ fallback for legacy deploys.
+  const adminEmails = (process.env.ADMIN_EMAILS || process.env.VITE_ADMIN_EMAILS || "")
     .split(",")
     .map((e) => e.trim().toLowerCase());
 

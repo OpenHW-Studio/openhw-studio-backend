@@ -1,13 +1,44 @@
 # Production Docker Compose for OpenHW Studio
+#
+# NOTE ON CAPS: `memory` is a HARD ceiling — the container is OOM-killed past
+# it even if the host has free RAM. `cpus` throttles (compile just slows down,
+# nothing dies). Reservations are soft scheduler hints, not enforcement.
+# NOTE ON SYNTAX: `deploy.resources` is IGNORED by plain `docker compose up`
+# (swarm-only). The top-level `cpus` / `mem_limit` / `mem_reservation` keys
+# below are what actually enforce caps in your deploy (compose up -d).
+# Both are set so caps hold under `compose up` AND `stack deploy`.
 services:
+  # ── 4 CPU / 16 GB host budget (OS takes ~2 GB off the top) ──────────────
+  #   OS reserve ......... ~2.0 GB (not a container — just leave it free)
+  #   mongodb ............  1.0 CPU / 2 GB  (hard cap per user request)
+  #   backend (main) .....  0.5 CPU / 2 GB  (API/proxy only, no toolchain)
+  #   compiler-worker ....  2.0 CPU / 8 GB  (the heavy lifter: arduino-cli)
+  #   network-gateway .... 0.25 CPU / 512 MB
+  #   frontend (nginx) ... 0.25 CPU / 512 MB
+  #   health-agent .......  no CPU cap / 512 MB (tiny python watchdog)
+  #   ─────────────────────────────────────────────────────────────
+  #   CPU limits total .  4.0  |  RAM limits total ~13 GB + 2 GB OS = ~15 GB
+  #   (~1 GB headroom left for docker overhead / spikes)
   mongodb:
     image: mongo:6.0
     container_name: openhw-mongodb
     restart: always
+    command: ["--wiredTigerCacheSizeGB", "0.75"]
     ports:
       - "27017:27017"
     volumes:
       - mongodb_data:/data/db
+    cpus: '1.0'
+    mem_limit: 2G
+    mem_reservation: 1G
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 1G
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 10s
@@ -23,7 +54,6 @@ services:
         condition: service_healthy
     environment:
       - PORT=5000
-      - ROLE=main
       - MONGO_URI=mongodb://mongodb:27017/openhw-studio-production
       - JWT_SECRET=${JWT_SECRET}
       - SESSION_SECRET=${SESSION_SECRET}
@@ -32,14 +62,11 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
       - GOOGLE_CALLBACK_URL=${GOOGLE_CALLBACK_URL}
-      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-$VITE_GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
-      - VITE_ADMIN_EMAILS=${VITE_ADMIN_EMAILS}
+      - ADMIN_EMAILS=${ADMIN_EMAILS}
       - EXAMPLES_DIR=/app/openhw-studio-examples/examples
-      - ESP32_WORKER_HTTP_URL=http://openhw-esp32-worker:5001
-      - ESP32_WORKER_WS_URL=ws://openhw-esp32-worker:5001
-      - STM32_WORKER_HTTP_URL=http://openhw-stm32-worker:5002
-      - STM32_WORKER_WS_URL=ws://openhw-stm32-worker:5002
+      - COMPILER_WORKER_HTTP_URL=http://openhw-compiler-worker:5001
       - SMTP_HOST=${SMTP_HOST}
       - SMTP_PORT=${SMTP_PORT}
       - SMTP_EMAIL=${SMTP_EMAIL}
@@ -51,55 +78,54 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     tmpfs:
       - /app/temp:size=512M
-      - /app/builds:size=256M
+    cpus: '0.5'
+    mem_limit: 2G
+    mem_reservation: 1G
     deploy:
       resources:
         limits:
-          cpus: '2.0'
+          cpus: '0.5'
           memory: 2G
+        reservations:
+          cpus: '0.25'
+          memory: 1G
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/api/lib-list"]
       interval: 15s
       timeout: 5s
       retries: 5
 
-  esp32-worker:
-    image: ${DOCKER_USERNAME}/openhw-esp32-worker:${BACKEND_TAG:-develop}
-    container_name: openhw-esp32-worker
+  compiler-worker:
+    image: ${DOCKER_USERNAME}/openhw-compiler-worker:${BACKEND_TAG:-develop}
+    container_name: openhw-compiler-worker
     restart: on-failure
     environment:
       - PORT=5001
-      - ROLE=esp32-worker
+      - ROLE=compiler
       - SESSION_SECRET=${SESSION_SECRET}
+      # Cache storage limits (MB, LRU-evicted past the cap).
+      # Library downloads (persistent volume) + compiled firmware (tmpfs).
+      - LIB_CACHE_MAX_MB=${LIB_CACHE_MAX_MB:-512}
+      - LIB_CACHE_TARGET_MB=${LIB_CACHE_TARGET_MB:-400}
+      - RESULT_CACHE_MAX_MB=${RESULT_CACHE_MAX_MB:-500}
+      - RESULT_CACHE_TARGET_MB=${RESULT_CACHE_TARGET_MB:-400}
+      # Guest compile abuse guard: per-IP POSTs/min to /api/compile.
+      - COMPILE_RATE_LIMIT_PER_MIN=${COMPILE_RATE_LIMIT_PER_MIN:-20}
     volumes:
       - ./persistent-data/data:/app/data
     tmpfs:
-      - /app/temp:size=1G
-      - /app/builds:size=2G
+      - /app/temp:size=2G
+    cpus: '2.0'
+    mem_limit: 8G
+    mem_reservation: 4G
     deploy:
       resources:
         limits:
           cpus: '2.0'
-          memory: 3.5G
-
-  stm32-worker:
-    image: ${DOCKER_USERNAME}/openhw-stm32-worker:${BACKEND_TAG:-develop}
-    container_name: openhw-stm32-worker
-    restart: on-failure
-    environment:
-      - PORT=5002
-      - ROLE=stm32-worker
-      - SESSION_SECRET=${SESSION_SECRET}
-    volumes:
-      - ./persistent-data/data:/app/data
-    tmpfs:
-      - /app/temp:size=1G
-      - /app/builds:size=1G
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2.5G
+          memory: 8G
+        reservations:
+          cpus: '1.0'
+          memory: 4G
 
   network-gateway:
     image: ${DOCKER_USERNAME}/openhw-network-gateway:${BACKEND_TAG:-develop}
@@ -110,11 +136,16 @@ services:
       - GATEWAY_MODE=public
     ports:
       - "5099:5099"
+    cpus: '0.25'
+    mem_limit: 512M
+    mem_reservation: 128M
     deploy:
       resources:
         limits:
-          cpus: '1.0'
+          cpus: '0.25'
           memory: 512M
+        reservations:
+          memory: 128M
 
   frontend:
     image: ${DOCKER_USERNAME}/openhw-frontend:${FRONTEND_TAG:-develop}
@@ -125,6 +156,16 @@ services:
     depends_on:
       backend:
         condition: service_healthy
+    cpus: '0.25'
+    mem_limit: 512M
+    mem_reservation: 128M
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 512M
+        reservations:
+          memory: 128M
 
   health-agent:
     image: ${DOCKER_USERNAME}/openhw-health-agent:${HEALTH_AGENT_TAG:-develop}
@@ -133,11 +174,20 @@ services:
     environment:
       - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID}
+      - COMPILER_WORKER_IMAGE=${DOCKER_USERNAME}/openhw-compiler-worker:${BACKEND_TAG:-develop}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - /proc:/proc:ro
       - /:/host_root:ro
       - ./persistent-data/data:/app/data
+    mem_limit: 512M
+    mem_reservation: 128M
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
 volumes:
   mongodb_data:

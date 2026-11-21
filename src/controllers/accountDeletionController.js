@@ -154,7 +154,7 @@ export const confirmDeletion = async (req, res) => {
     }
 
     // Log the user out
-    res.clearCookie('jwt', { httpOnly: true, sameSite: 'strict' });
+    res.clearCookie('jwt', { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
     if (req.session) req.session.destroy?.();
 
     return res.status(200).json({

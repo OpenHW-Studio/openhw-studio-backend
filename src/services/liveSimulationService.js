@@ -433,8 +433,8 @@ export async function registerLiveSimulationWebSocket(httpServer) {
         .toLowerCase();
 
       // Call handleUpgrade synchronously BEFORE any async work so the
-      // WebSocket upgrade completes before other upgrade listeners (e.g. WSManager
-      // for ESP32/STM32) can intercept this connection.
+      // WebSocket upgrade completes before any other upgrade listener
+      // can intercept this connection.
       liveWss.handleUpgrade(request, socket, head, (ws) => {
         resolveSocketUser(request)
           .then((user) =>

@@ -87,7 +87,7 @@ export const getInfrastructureStatus = async (req, res) => {
         });
 
         // Ensure we include the requested services even if not found in docker ps
-        const targetServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
+        const targetServices = ['frontend', 'backend', 'mongodb', 'health-agent', 'compiler-worker'];
         const services = targetServices.map(target => {
             const found = containers.find(c => c.name.includes(target));
             if (found) {
@@ -143,22 +143,6 @@ export const getInfrastructureStatus = async (req, res) => {
             {
                 name: 'mongodb',
                 status: 'running (local)',
-                version: 'local-dev',
-                hash: 'N/A',
-                uptime: 'N/A',
-                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
-            },
-            {
-                name: 'esp32-worker',
-                status: 'offline (local)',
-                version: 'local-dev',
-                hash: 'N/A',
-                uptime: 'N/A',
-                resources: { cpu: 'N/A', mem: 'N/A', memPerc: 'N/A', storage: 'N/A', load: loadAvg }
-            },
-            {
-                name: 'stm32-worker',
-                status: 'offline (local)',
                 version: 'local-dev',
                 hash: 'N/A',
                 uptime: 'N/A',
@@ -242,8 +226,6 @@ export const getSystemLogs = async (req, res) => {
                     if (containerName.includes('frontend')) msgType = 'frontend';
                     else if (containerName.includes('backend')) msgType = 'backend';
                     else if (containerName.includes('mongo')) msgType = 'mongodb';
-                    else if (containerName.includes('stm32')) msgType = 'stm32-worker';
-                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
                     else if (containerName.includes('health')) msgType = 'health-agent';
                     else msgType = containerName;
                 } else {
@@ -287,8 +269,13 @@ const redactSensitiveData = (text) => {
  * Streams live system and docker logs using Server-Sent Events (SSE)
  */
 export const streamSystemLogs = (req, res) => {
-    const { service } = req.query; // 'all', 'backend', 'esp32-worker', 'stm32-worker'
-    
+    // Service allowlist — the value is interpolated into a `docker logs`
+    // child process argv (spawn, no shell) AND echoed back in the SSE
+    // intro line, so arbitrary values must never pass through.
+    const ALLOWED_LOG_SERVICES = new Set(['all', 'backend', 'frontend', 'mongodb', 'health-agent', 'compiler-worker']);
+    const rawService = String(req.query?.service || 'all').trim().toLowerCase();
+    const service = ALLOWED_LOG_SERVICES.has(rawService) ? rawService : 'all';
+
     // Set headers for Server-Sent Events
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -332,8 +319,6 @@ export const streamSystemLogs = (req, res) => {
                     if (containerName.includes('frontend')) msgType = 'frontend';
                     else if (containerName.includes('backend')) msgType = 'backend';
                     else if (containerName.includes('mongo')) msgType = 'mongodb';
-                    else if (containerName.includes('stm32')) msgType = 'stm32-worker';
-                    else if (containerName.includes('esp32')) msgType = 'esp32-worker';
                     else if (containerName.includes('health')) msgType = 'health-agent';
                     else msgType = containerName;
                 }
@@ -401,7 +386,7 @@ export const streamSystemLogs = (req, res) => {
  */
 export const restartService = async (req, res) => {
     const { name } = req.body;
-    const allowedServices = ['frontend', 'backend', 'mongodb', 'esp32-worker', 'stm32-worker', 'health-agent'];
+    const allowedServices = ['frontend', 'backend', 'mongodb', 'health-agent', 'compiler-worker'];
     
     if (!name || !allowedServices.includes(name)) {
         return res.status(403).json({ error: 'Invalid or restricted service name.' });
@@ -948,7 +933,9 @@ export const recalibrate = async (req, res) => {
     }
 };
 
-const SCRIPTS_FILE = path.join('/app/data', 'calibration_scripts.json');
+import { getDataRoot } from '../compiler/paths.js';
+
+const SCRIPTS_FILE = path.join(getDataRoot(), 'calibration_scripts.json');
 
 export const getCalibrationScripts = async (req, res) => {
     try {
@@ -991,14 +978,11 @@ export const updateCalibrationScripts = async (req, res) => {
 
 export const getHostStatus = async (req, res) => {
     try {
-        const isDocker = process.env.ROLE === 'main';
-        const healthAgentUrl = isDocker ? 'http://openhw-health-agent:8080' : 'http://127.0.0.1:8080';
-        
-        const response = await fetch(`${healthAgentUrl}/api/status`);
-        const data = await response.json();
-        res.json({ success: true, host: data });
+        const response = await fetch('http://openhw-health-agent:8080/api/status');
+        const hostData = await response.json();
+        res.json({ success: true, host: hostData });
     } catch (error) {
-        console.warn('[Admin] Failed to fetch host status from health agent (are you running locally on Windows?). Returning mock data.');
+        console.warn('[Admin] Failed to fetch host status from health agent. Returning mock data.');
         
         // Return N/A data for local Windows development so the UI still renders but is obviously inactive
         const mockData = {

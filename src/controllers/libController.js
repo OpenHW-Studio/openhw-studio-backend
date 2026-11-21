@@ -1,13 +1,21 @@
 import { execFile } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import fs from 'fs';
 import { logAdminAction } from './adminController.js';
 import { searchLibrariesLocal, getLibraryMetadata } from '../services/libraryIndexService.js';
+import { fetchAndExtractLibrary, syncPermanentLibraries, syncLibrariesIndexFile } from '../services/dynamicLibraryManager.js';
+import { getCacheDir, getPermanentDir } from '../compiler/paths.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const ARDUINO_CLI_PATH = process.env.ARDUINO_CLI_PATH || 'arduino-cli';
+
+// Single source of truth for the library pool (see src/compiler/paths.js).
+const CACHE_DIR = getCacheDir();
+const PERM_DIR = getPermanentDir();
+const CONFIG_FILE = path.resolve(__dirname, '../config/libraries.json');
 
 // Simple in-memory cache for library searches to boost performance
 const searchCache = new Map();
@@ -65,7 +73,6 @@ export const searchLibrary = (req, res) => {
 
 export const listLibraries = (req, res) => {
     try {
-        const PERM_DIR = path.resolve(__dirname, '../../../data/libraries/permanent');
         if (!fs.existsSync(PERM_DIR)) {
             return res.json({ libraries: [] });
         }
@@ -100,13 +107,6 @@ export const listLibraries = (req, res) => {
         return res.status(500).json({ error: 'Failed to list installed libraries.' });
     }
 };
-
-import { fetchAndExtractLibrary, syncPermanentLibraries, syncLibrariesIndexFile } from '../services/dynamicLibraryManager.js';
-import fs from 'fs';
-
-const CONFIG_FILE = path.resolve(__dirname, '../config/libraries.json');
-const CACHE_DIR = path.resolve(__dirname, '../../../data/libraries/cache');
-const PERM_DIR = path.resolve(__dirname, '../../../data/libraries/permanent');
 
 export const getLibrariesConfig = (req, res) => {
     try {
